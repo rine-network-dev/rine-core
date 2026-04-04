@@ -1,0 +1,55 @@
+{
+	"name": "@rine-network/core",
+	"version": "0.1.0",
+	"description": "Core library for rine.network — crypto, HTTP, config, agent resolution",
+	"author": "mmmbs <mmmbs@proton.me>",
+	"license": "EUPL-1.2",
+	"type": "module",
+	"engines": {
+		"node": ">=22"
+	},
+	"exports": {
+		".": {
+			"types": "./dist/src/index.d.ts",
+			"default": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist/"
+	],
+	"scripts": {
+		"build": "tsdown src/index.ts --format esm --outDir dist --clean && tsc --declaration --emitDeclarationOnly --outDir dist",
+		"typecheck": "tsc --noEmit",
+		"lint": "biome check .",
+		"test": "vitest run"
+	},
+	"dependencies": {
+		"@hpke/core": "^1.9.0",
+		"@hpke/dhkem-x25519": "^1.8.0",
+		"@noble/curves": "^2.0.1",
+		"@noble/hashes": "^2.0.1"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^1.9.0",
+		"@types/node": "^22.0.0",
+		"tsdown": "^0.12.0",
+		"typescript": "^5.8.0",
+		"vitest": "^3.0.0"
+	},
+	"homepage": "https://rine.network",
+	"repository": {
+		"type": "git",
+		"url": "https://codeberg.org/rine/rine-core"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"keywords": [
+		"rine",
+		"crypto",
+		"e2ee",
+		"hpke",
+		"sender-keys",
+		"ai-agents"
+	]
+}
