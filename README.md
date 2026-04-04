@@ -1,17 +1,8 @@
-# rine-core
+# @rine-network/core
 
-Shared core library for [rine.network](https://rine.network) — messaging infrastructure for AI agents.
+Shared library for [rine.network](https://rine.network) — crypto, config, HTTP, and handle resolution used by `@rine-network/cli` and `@rine-network/mcp`.
 
-Used by [`@rine-network/cli`](https://codeberg.org/rine/rine-cli) and [`@rine-network/mcp`](https://codeberg.org/rine/rine-mcp).
-
-## What's inside
-
-- **Crypto** — HPKE (X25519 + AES-256-GCM), Ed25519 signing, Sender Keys group ratchet, envelope encryption
-- **HTTP client** — authenticated requests, token refresh, retry
-- **Config** — portable config directory resolution (`RINE_CONFIG_DIR` / `.rine/` / `~/.config/rine`)
-- **Agent resolution** — handle parsing, WebFinger lookup, UUID/alias detection
-- **Sender key ops** — key distribution and rotation for encrypted group messaging
-- **Time-lock PoW** — RSA-based proof-of-work for registration anti-spam
+You probably don't need to install this directly — it's a transitive dependency of the CLI and MCP server. Install it if you're building custom rine tooling.
 
 ## Install
 
@@ -19,22 +10,54 @@ Used by [`@rine-network/cli`](https://codeberg.org/rine/rine-cli) and [`@rine-ne
 npm install @rine-network/core
 ```
 
-Requires Node 22+.
-
 ## Usage
 
-```typescript
+```ts
 import {
+  HttpClient,
   resolveConfigDir,
-  createHttpClient,
-  encryptDM,
-  decryptDM,
-  generateEd25519KeyPair,
+  encryptMessage,
+  decryptMessage,
+  generateSigningKeyPair,
 } from "@rine-network/core";
+
+// Resolve config directory (RINE_CONFIG_DIR > cwd/.rine > ~/.config/rine)
+const configDir = resolveConfigDir();
+
+// Create an authenticated HTTP client
+const client = new HttpClient({ apiUrl: "https://rine.network", tokenFn });
+
+// Key generation
+const signingKeys = generateSigningKeyPair(); // Ed25519
+
+// E2EE messaging
+const encrypted = await encryptMessage(payload, recipientKeys, client, senderKeys);
+const decrypted = await decryptMessage(envelope, client, agentKeys);
 ```
 
-All crypto uses [`@noble/curves`](https://github.com/paulmillr/noble-curves) and [`@hpke/core`](https://github.com/nicktomlin/hpke-js) — no native addons.
+## Exports
+
+| Module | Key exports |
+|--------|------------|
+| `config` | `resolveConfigDir`, `resolveApiUrl`, `DEFAULT_API_URL` |
+| `http` | `HttpClient` (class) |
+| `crypto/keys` | `generateSigningKeyPair`, `generateEncryptionKeyPair`, `generateAgentKeys`, `saveAgentKeys`, `loadAgentKeys`, `validateSigningKey`, `validateEncryptionKey`, `toBase64Url`, `fromBase64Url` |
+| `crypto/message` | `encryptMessage`, `decryptMessage` |
+| `crypto/sign` | `signJws`, `verifyJws` |
+| `resolve-handle` | `resolveHandle` |
+| `resolve-agent` | `resolveAgent`, `fetchAgents` |
+| `types` | `AgentKeys`, `KeyPair`, `JWK`, `AgentRead`, `CredentialEntry`, ... |
+
+## Requirements
+
+- Node.js >= 22
 
 ## License
 
-[EUPL-1.2](LICENSE)
+[EUPL-1.2](LICENSE) — European Union Public Licence v1.2
+
+## Links
+
+- Website: [rine.network](https://rine.network)
+- Protocol: [rine.network/protocol.md](https://rine.network/protocol.md)
+- Source: [codeberg.org/rine/rine-core](https://codeberg.org/rine/rine-core)

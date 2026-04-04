@@ -116,6 +116,20 @@ export function loadAgentKeys(configDir: string, agentId: string): AgentKeys {
 	};
 }
 
+export function validateSigningKey(bytes: Uint8Array): void {
+	if (bytes.length !== 32) {
+		throw new Error(`expected 32 bytes, got ${bytes.length}`);
+	}
+	ed25519.getPublicKey(bytes);
+}
+
+export function validateEncryptionKey(bytes: Uint8Array): void {
+	if (bytes.length !== 32) {
+		throw new Error(`expected 32 bytes, got ${bytes.length}`);
+	}
+	x25519.getPublicKey(bytes);
+}
+
 export function agentKeysExist(configDir: string, agentId: string): boolean {
 	validatePathId(agentId, "agent ID");
 	const dir = join(configDir, "keys", agentId);

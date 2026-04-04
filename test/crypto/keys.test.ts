@@ -15,6 +15,8 @@ import {
 	saveAgentKeys,
 	signingPublicKeyToJWK,
 	toBase64Url,
+	validateEncryptionKey,
+	validateSigningKey,
 } from "../../src/crypto/keys.js";
 
 describe("key generation", () => {
@@ -191,5 +193,43 @@ describe("agentIdFromKid", () => {
 
 	it("rejects missing prefix", () => {
 		expect(() => agentIdFromKid("00000000-0000-4000-a000-000000000001")).toThrow("Invalid sender KID format");
+	});
+});
+
+describe("validateSigningKey", () => {
+	it("accepts a valid 32-byte key", () => {
+		const kp = generateSigningKeyPair();
+		expect(() => validateSigningKey(kp.privateKey)).not.toThrow();
+	});
+
+	it("rejects empty array", () => {
+		expect(() => validateSigningKey(new Uint8Array(0))).toThrow("expected 32 bytes, got 0");
+	});
+
+	it("rejects 16-byte array", () => {
+		expect(() => validateSigningKey(new Uint8Array(16))).toThrow("expected 32 bytes, got 16");
+	});
+
+	it("rejects 64-byte array", () => {
+		expect(() => validateSigningKey(new Uint8Array(64))).toThrow("expected 32 bytes, got 64");
+	});
+});
+
+describe("validateEncryptionKey", () => {
+	it("accepts a valid 32-byte key", () => {
+		const kp = generateEncryptionKeyPair();
+		expect(() => validateEncryptionKey(kp.privateKey)).not.toThrow();
+	});
+
+	it("rejects empty array", () => {
+		expect(() => validateEncryptionKey(new Uint8Array(0))).toThrow("expected 32 bytes, got 0");
+	});
+
+	it("rejects 16-byte array", () => {
+		expect(() => validateEncryptionKey(new Uint8Array(16))).toThrow("expected 32 bytes, got 16");
+	});
+
+	it("rejects 64-byte array", () => {
+		expect(() => validateEncryptionKey(new Uint8Array(64))).toThrow("expected 32 bytes, got 64");
 	});
 });
