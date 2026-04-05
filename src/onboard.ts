@@ -56,11 +56,12 @@ export async function performRegistration(
 		throw new Error("Rate limited — please wait before retrying");
 	if (!challengeRes.ok) {
 		const body = (await challengeRes.json().catch(() => ({}))) as {
-			detail?: string;
+			detail?: unknown;
 		};
-		throw new Error(
-			`Registration failed: ${body.detail ?? challengeRes.statusText}`,
-		);
+		const detail = typeof body.detail === "string"
+			? body.detail
+			: body.detail ? JSON.stringify(body.detail) : challengeRes.statusText;
+		throw new Error(`Registration failed: ${detail}`);
 	}
 	const challenge = (await challengeRes.json()) as ChallengeResponse;
 
@@ -97,9 +98,12 @@ export async function performRegistration(
 		throw new Error("Challenge expired — please try again");
 	if (!solveRes.ok) {
 		const body = (await solveRes.json().catch(() => ({}))) as {
-			detail?: string;
+			detail?: unknown;
 		};
-		throw new Error(`Solve failed: ${body.detail ?? solveRes.statusText}`);
+		const detail = typeof body.detail === "string"
+			? body.detail
+			: body.detail ? JSON.stringify(body.detail) : solveRes.statusText;
+		throw new Error(`Solve failed: ${detail}`);
 	}
 	const data = (await solveRes.json()) as RegisterSolveResponse;
 
