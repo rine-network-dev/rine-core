@@ -5,12 +5,37 @@ import type { CredentialEntry, Credentials, TokenCache } from "./types.js";
 
 export const DEFAULT_API_URL = "https://rine.network";
 
-/** Resolve config directory. Priority: RINE_CONFIG_DIR env > cwd/.rine > ~/.config/rine */
+/**
+ * Resolve config directory.
+ * Priority: RINE_CONFIG_DIR > ~/.config/rine > cwd/.rine
+ * Reading: first candidate with credentials.json wins.
+ * Writing: first candidate where mkdir succeeds.
+ */
 export function resolveConfigDir(): string {
 	if (process.env.RINE_CONFIG_DIR) return process.env.RINE_CONFIG_DIR;
-	const local = join(process.cwd(), ".rine");
-	if (fs.existsSync(local)) return local;
-	return join(homedir(), ".config", "rine");
+
+	const candidates = [
+		join(homedir(), ".config", "rine"),
+		join(process.cwd(), ".rine"),
+	];
+
+	// Return first candidate that already has credentials (reading case)
+	for (const dir of candidates) {
+		if (fs.existsSync(join(dir, "credentials.json"))) return dir;
+	}
+
+	// No credentials anywhere — return first candidate we can write to (registration case)
+	for (const dir of candidates) {
+		try {
+			fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+			return dir;
+		} catch {
+			continue;
+		}
+	}
+
+	// Last resort: return preferred path, let downstream fail with a clear error
+	return candidates[0];
 }
 
 /** Resolve API URL from environment or default. */

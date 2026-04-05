@@ -8,3 +8,4 @@ export * from "./resolve-agent.js";
 export * from "./timelock.js";
 export * from "./sender-key-ops.js";
 export * from "./crypto/index.js";
+export { performRegistration, performAgentCreation, validateSlug } from "./onboard.js";

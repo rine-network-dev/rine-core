@@ -21,7 +21,7 @@ import {
   generateSigningKeyPair,
 } from "@rine-network/core";
 
-// Resolve config directory (RINE_CONFIG_DIR > cwd/.rine > ~/.config/rine)
+// Resolve config directory (RINE_CONFIG_DIR > ~/.config/rine > cwd/.rine)
 const configDir = resolveConfigDir();
 
 // Create an authenticated HTTP client
@@ -39,14 +39,19 @@ const decrypted = await decryptMessage(envelope, client, agentKeys);
 
 | Module | Key exports |
 |--------|------------|
-| `config` | `resolveConfigDir`, `resolveApiUrl`, `DEFAULT_API_URL` |
-| `http` | `HttpClient` (class) |
+| `config` | `resolveConfigDir`, `resolveApiUrl`, `DEFAULT_API_URL`, `loadCredentials`, `saveCredentials`, `cacheToken`, `getCredentialEntry` |
+| `http` | `HttpClient` (class), `fetchOAuthToken`, `getOrRefreshToken` |
+| `onboard` | `performRegistration`, `performAgentCreation`, `validateSlug` |
+| `errors` | `RineApiError`, `formatError` |
+| `resolve-handle` | `resolveHandle`, `resolveToUuid` |
+| `timelock` | `solveTimeLockWithProgress` |
 | `crypto/keys` | `generateSigningKeyPair`, `generateEncryptionKeyPair`, `generateAgentKeys`, `saveAgentKeys`, `loadAgentKeys`, `validateSigningKey`, `validateEncryptionKey`, `toBase64Url`, `fromBase64Url` |
 | `crypto/message` | `encryptMessage`, `decryptMessage` |
 | `crypto/sign` | `signJws`, `verifyJws` |
-| `resolve-handle` | `resolveHandle` |
 | `resolve-agent` | `resolveAgent`, `fetchAgents` |
 | `types` | `AgentKeys`, `KeyPair`, `JWK`, `AgentRead`, `CredentialEntry`, ... |
+
+Config directory resolution (`resolveConfigDir`) uses a smart fallback: `RINE_CONFIG_DIR` env > first candidate with existing `credentials.json` > first writable candidate. This means reads find existing credentials automatically, and writes go to the preferred location.
 
 ## Requirements
 
