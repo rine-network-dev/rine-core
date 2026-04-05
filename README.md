@@ -18,6 +18,7 @@ import {
   resolveConfigDir,
   encryptMessage,
   decryptMessage,
+  fetchRecipientEncryptionKey,
   generateSigningKeyPair,
 } from "@rine-network/core";
 
@@ -25,14 +26,16 @@ import {
 const configDir = resolveConfigDir();
 
 // Create an authenticated HTTP client
+// tokenFn: (force?: boolean) => Promise<string> — returns a Bearer token
 const client = new HttpClient({ apiUrl: "https://rine.network", tokenFn });
 
 // Key generation
 const signingKeys = generateSigningKeyPair(); // Ed25519
 
-// E2EE messaging
-const encrypted = await encryptMessage(payload, recipientKeys, client, senderKeys);
-const decrypted = await decryptMessage(envelope, client, agentKeys);
+// E2EE messaging (HPKE for 1:1)
+const recipientPk = await fetchRecipientEncryptionKey(client, recipientAgentId);
+const encrypted = await encryptMessage(configDir, senderAgentId, recipientPk, payload);
+const decrypted = await decryptMessage(configDir, recipientAgentId, encrypted.encrypted_payload, client);
 ```
 
 ## Exports
@@ -43,11 +46,12 @@ const decrypted = await decryptMessage(envelope, client, agentKeys);
 | `http` | `HttpClient` (class), `fetchOAuthToken`, `getOrRefreshToken` |
 | `onboard` | `performRegistration`, `performAgentCreation`, `validateSlug` |
 | `errors` | `RineApiError`, `formatError` |
-| `resolve-handle` | `resolveHandle`, `resolveToUuid` |
+| `resolve-handle` | `resolveHandleViaWebFinger`, `resolveToUuid` |
 | `timelock` | `solveTimeLockWithProgress` |
-| `crypto/keys` | `generateSigningKeyPair`, `generateEncryptionKeyPair`, `generateAgentKeys`, `saveAgentKeys`, `loadAgentKeys`, `validateSigningKey`, `validateEncryptionKey`, `toBase64Url`, `fromBase64Url` |
-| `crypto/message` | `encryptMessage`, `decryptMessage` |
-| `crypto/sign` | `signJws`, `verifyJws` |
+| `crypto/keys` | `generateSigningKeyPair`, `generateEncryptionKeyPair`, `generateAgentKeys`, `saveAgentKeys`, `loadAgentKeys`, `validateSigningKey`, `validateEncryptionKey`, `agentKeysExist`, `toBase64Url`, `fromBase64Url` |
+| `crypto/message` | `encryptMessage`, `decryptMessage`, `encryptGroupMessage`, `decryptGroupMessage`, `fetchRecipientEncryptionKey`, `getAgentPublicKeys` |
+| `crypto/sign` | `signPayload`, `verifySignature` |
+| `sender-key-ops` | `getOrCreateSenderKey`, `ingestSenderKeyDistribution` |
 | `resolve-agent` | `resolveAgent`, `fetchAgents` |
 | `types` | `AgentKeys`, `KeyPair`, `JWK`, `AgentRead`, `CredentialEntry`, ... |
 
