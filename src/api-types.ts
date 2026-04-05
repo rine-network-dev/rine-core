@@ -45,6 +45,7 @@ export interface AgentRead {
 	unlisted?: boolean;
 	verification_words?: string;
 	warnings?: string[];
+	poll_url?: string;
 }
 
 export interface ListResponse<T> {

@@ -35,7 +35,7 @@ export function resolveConfigDir(): string {
 	}
 
 	// Last resort: return preferred path, let downstream fail with a clear error
-	return candidates[0];
+	return candidates[0] as string;
 }
 
 /** Resolve API URL from environment or default. */
