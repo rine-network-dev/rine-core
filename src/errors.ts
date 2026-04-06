@@ -11,6 +11,15 @@ export class RineApiError extends Error {
 
 export function formatError(err: unknown): string {
 	if (err instanceof RineApiError) return err.detail;
-	if (err instanceof Error) return err.message;
+	if (err instanceof Error) {
+		const cause = (err as { cause?: unknown }).cause;
+		if (cause instanceof AggregateError && cause.errors.length > 0) {
+			return `${err.message}: ${cause.errors[0].message}`;
+		}
+		if (cause instanceof Error && cause.message) {
+			return `${err.message}: ${cause.message}`;
+		}
+		return err.message;
+	}
 	return String(err);
 }
