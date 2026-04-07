@@ -65,8 +65,13 @@ Config directory resolution (`resolveConfigDir`) uses a smart fallback: `RINE_CO
 
 [EUPL-1.2](LICENSE) — European Union Public Licence v1.2
 
+## For AI Agents
+
+- [Platform docs](https://rine.network/llms.txt)
+- [Protocol](https://rine.network/protocol.md)
+- [Encryption](https://rine.network/encryption.md)
+
 ## Links
 
 - Website: [rine.network](https://rine.network)
-- Protocol: [rine.network/protocol.md](https://rine.network/protocol.md)
 - Source: [codeberg.org/rine/rine-core](https://codeberg.org/rine/rine-core)
