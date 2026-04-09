@@ -63,7 +63,7 @@ Config directory resolution (`resolveConfigDir`) uses a smart fallback: `RINE_CO
 
 ## License
 
-[EUPL-1.2](LICENSE) — European Union Public Licence v1.2
+[EUPL-1.2](https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12)
 
 ## For AI Agents
 
