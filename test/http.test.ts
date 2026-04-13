@@ -118,6 +118,95 @@ describe("HttpClient", () => {
 		expect(result).toBeUndefined();
 	});
 
+	it("passes constructor signal to fetch on every request", async () => {
+		mockFetch(200, {});
+		const ac = new AbortController();
+		const client = new HttpClient({
+			tokenFn: async () => "tok",
+			apiUrl: "https://api.test",
+			signal: ac.signal,
+		});
+		await client.get("/a");
+		await client.post("/b", { x: 1 });
+		await client.put("/c", { y: 2 });
+		await client.patch("/d", { z: 3 });
+		await client.delete("/e");
+		const calls = (fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+		expect(calls).toHaveLength(5);
+		for (const call of calls) {
+			expect((call[1] as RequestInit).signal).toBe(ac.signal);
+		}
+	});
+
+	it("omits signal field when not provided", async () => {
+		mockFetch(200, {});
+		const client = new HttpClient({
+			tokenFn: async () => "tok",
+			apiUrl: "https://api.test",
+		});
+		await client.get("/test");
+		const calls = (fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+		expect(calls[0]).toBeDefined();
+		const init = calls[0]?.[1] as RequestInit;
+		expect(init.signal).toBeUndefined();
+	});
+
+	it("forwards signal to the retried fetch on 401 refresh leg", async () => {
+		let callCount = 0;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockImplementation(() => {
+				callCount++;
+				if (callCount === 1) {
+					return Promise.resolve({
+						ok: false,
+						status: 401,
+						statusText: "Unauthorized",
+						json: () => Promise.resolve({ detail: "expired" }),
+					});
+				}
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					statusText: "OK",
+					json: () => Promise.resolve({ ok: true }),
+				});
+			}),
+		);
+		const ac = new AbortController();
+		const client = new HttpClient({
+			tokenFn: vi.fn().mockResolvedValueOnce("old").mockResolvedValueOnce("new"),
+			apiUrl: "https://api.test",
+			canRefresh: true,
+			signal: ac.signal,
+		});
+		await client.get("/test");
+		const calls = (fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+		expect(calls).toHaveLength(2);
+		expect((calls[0]?.[1] as RequestInit).signal).toBe(ac.signal);
+		expect((calls[1]?.[1] as RequestInit).signal).toBe(ac.signal);
+	});
+
+	it("propagates AbortError from fetch without wrapping", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockImplementation(() => {
+				const err = new Error("The operation was aborted");
+				err.name = "AbortError";
+				return Promise.reject(err);
+			}),
+		);
+		const ac = new AbortController();
+		ac.abort();
+		const client = new HttpClient({
+			tokenFn: async () => "tok",
+			apiUrl: "https://api.test",
+			canRefresh: false,
+			signal: ac.signal,
+		});
+		await expect(client.get("/test")).rejects.toMatchObject({ name: "AbortError" });
+	});
+
 	it("merges extra headers", async () => {
 		mockFetch(200, {});
 		const client = new HttpClient({

@@ -11,6 +11,13 @@ export interface HttpClientOptions {
 	canRefresh?: boolean;
 	/** Headers injected on every request (e.g. X-Rine-Agent). */
 	defaultHeaders?: Record<string, string>;
+	/**
+	 * Default abort signal applied to every request made by this instance.
+	 * Use one short-lived HttpClient per cancellation scope — e.g. one per
+	 * SDK crypto operation. A fired signal propagates to fetch() as-is; the
+	 * resulting AbortError is NOT wrapped in RineApiError.
+	 */
+	signal?: AbortSignal;
 }
 
 async function parseErrorDetail(res: Response): Promise<string> {
@@ -31,12 +38,14 @@ export class HttpClient {
 	private readonly tokenFn: TokenFn;
 	private readonly canRefresh: boolean;
 	private readonly defaultHeaders: Record<string, string>;
+	private readonly defaultSignal: AbortSignal | undefined;
 
 	constructor(opts: HttpClientOptions) {
 		this.baseUrl = opts.apiUrl;
 		this.tokenFn = opts.tokenFn;
 		this.canRefresh = opts.canRefresh ?? true;
 		this.defaultHeaders = opts.defaultHeaders ?? {};
+		this.defaultSignal = opts.signal;
 	}
 
 	private async request(
@@ -66,7 +75,7 @@ export class HttpClient {
 			if (body !== undefined) {
 				headers["Content-Type"] = "application/json";
 			}
-			const init: RequestInit = { method, headers };
+			const init: RequestInit = { method, headers, signal: this.defaultSignal };
 			if (body !== undefined) {
 				init.body = JSON.stringify(body);
 			}
