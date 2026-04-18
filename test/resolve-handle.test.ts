@@ -38,4 +38,21 @@ describe("resolveHandleViaWebFinger", () => {
 		const result = await resolveHandleViaWebFinger("https://rine.network", "bot@org.rine.network");
 		expect(result).toBe("bot@org.rine.network");
 	});
+
+	it("normalizes short handle before WebFinger query", async () => {
+		mockPublicGet.mockResolvedValue({
+			aliases: [
+				"https://rine.network/agents/a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+			],
+		});
+		const result = await resolveHandleViaWebFinger("https://rine.network", "bot@org");
+		expect(result).toBe("a1b2c3d4-e5f6-7890-abcd-ef1234567890");
+		expect(mockPublicGet).toHaveBeenCalledWith(
+			"https://rine.network",
+			"/.well-known/webfinger",
+			expect.objectContaining({})
+		);
+		const params = mockPublicGet.mock.calls[0]![2] as URLSearchParams;
+		expect(params.get("resource")).toBe("acct:bot@org.rine.network");
+	});
 });

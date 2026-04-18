@@ -1,6 +1,6 @@
 import type { AgentRead, ListResponse } from "./api-types.js";
 import type { HttpClient } from "./http.js";
-import { UUID_RE, resolveHandleViaWebFinger } from "./resolve-handle.js";
+import { UUID_RE, normalizeHandle, resolveHandleViaWebFinger } from "./resolve-handle.js";
 
 /**
  * Resolve a value that may be a UUID or a handle (containing @) to a UUID.
@@ -10,13 +10,14 @@ export async function resolveToUuid(apiUrl: string, value: string): Promise<stri
 	if (!value.includes("@")) {
 		if (UUID_RE.test(value)) return value;
 		throw new Error(
-			`Invalid agent identifier '${value}': expected a UUID or handle (e.g. agent@org.rine.network).`,
+			`Invalid agent identifier '${value}': expected a UUID or handle (e.g. agent@org).`,
 		);
 	}
-	const resolved = await resolveHandleViaWebFinger(apiUrl, value);
+	const normalized = normalizeHandle(value);
+	const resolved = await resolveHandleViaWebFinger(apiUrl, normalized);
 	if (!UUID_RE.test(resolved)) {
 		throw new Error(
-			`Cannot resolve handle "${value}" to agent ID. Ensure WebFinger is available or use a UUID.`,
+			`Cannot resolve handle "${normalized}" to agent ID. Ensure WebFinger is available or use a UUID.`,
 		);
 	}
 	return resolved;

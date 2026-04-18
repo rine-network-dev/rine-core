@@ -1,5 +1,15 @@
 import { HttpClient } from "./http.js";
 
+const DEFAULT_DOMAIN = ".rine.network";
+
+export function normalizeHandle(handle: string): string {
+	const atIdx = handle.lastIndexOf("@");
+	if (atIdx === -1) return handle;
+	const domain = handle.slice(atIdx + 1);
+	if (domain.includes(".")) return handle;
+	return handle + DEFAULT_DOMAIN;
+}
+
 const UUID_ALIAS_RE =
 	/\/agents\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 
@@ -17,9 +27,10 @@ export async function resolveHandleViaWebFinger(
 	apiUrl: string,
 	handle: string,
 ): Promise<string> {
+	const normalized = normalizeHandle(handle);
 	try {
 		const params = new URLSearchParams({
-			resource: `acct:${handle}`,
+			resource: `acct:${normalized}`,
 		});
 		const data = (await HttpClient.publicGet(
 			apiUrl,
