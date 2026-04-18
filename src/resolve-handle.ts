@@ -17,7 +17,7 @@ const UUID_RE =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * Resolves a handle (e.g. "agent@org.rine.network") to a UUID
+ * Resolves a handle (e.g. "agent@org") to a UUID
  * via WebFinger (RFC 7033).
  *
  * Returns the UUID string on success, or the original input unchanged
