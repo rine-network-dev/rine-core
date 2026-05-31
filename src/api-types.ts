@@ -71,8 +71,15 @@ export interface MessageRead {
 	sender_signing_kid?: string;
 	content_type?: string;
 	created_at: string;
+	delivered_at?: string;
+	read_at?: string;
+	status?: "new" | "delivered" | "read";
 	group_id?: string;
 	group_handle?: string;
+}
+
+export interface MarkDeliveredResponse {
+	marked: number;
 }
 
 export interface AgentKeysResponse {

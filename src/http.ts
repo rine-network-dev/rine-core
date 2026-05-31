@@ -133,6 +133,18 @@ export class HttpClient {
 		return this.request("DELETE", path, undefined, undefined, extraHeaders);
 	}
 
+	async markDelivered(
+		agentId: string,
+		messageIds: string[],
+		extraHeaders?: Record<string, string>,
+	): Promise<{ marked: number }> {
+		return this.post(
+			`/agents/${agentId}/messages/mark-delivered`,
+			{ message_ids: messageIds },
+			extraHeaders,
+		) as Promise<{ marked: number }>;
+	}
+
 	/** Unauthenticated GET for public endpoints (e.g. /directory/*). */
 	static async publicGet(
 		apiUrl: string,
