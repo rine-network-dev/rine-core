@@ -1,5 +1,6 @@
 import type { BatchKeysResponse, GroupMemberRead, MessageRead, PaginatedResponse } from "./api-types.js";
-import { decryptMessage, encryptMessage, fromBase64Url, ingestSenderKeyDistribution, toBase64Url } from "./crypto/index.js";
+import { decryptMessage, encryptMessage, fromBase64Url, ingestSenderKeyDistribution, jwkToPqPublicKey, toBase64Url } from "./crypto/index.js";
+import type { PqJWK } from "./crypto/keys.js";
 import type { SenderKeyState } from "./crypto/sender-keys.js";
 import {
 	generateSenderKey,
@@ -56,11 +57,15 @@ export async function distributeSenderKey(
 			const recipientPk = fromBase64Url(
 				recipientKeyData.encryption_public_key.x,
 			);
+			const recipientPqPk = recipientKeyData.pq_encryption_public_key
+				? jwkToPqPublicKey(recipientKeyData.pq_encryption_public_key as PqJWK)
+				: undefined;
 			const encrypted = await encryptMessage(
 				configDir,
 				senderAgentId,
 				recipientPk,
 				distPayload,
+				recipientPqPk,
 			);
 			await client.post(
 				"/messages",

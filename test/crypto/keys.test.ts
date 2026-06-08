@@ -13,11 +13,13 @@ import {
 	jwkToPublicKey,
 	loadAgentKeys,
 	saveAgentKeys,
+	savePqEncryptionKey,
 	signingPublicKeyToJWK,
 	toBase64Url,
 	validateEncryptionKey,
 	validateSigningKey,
 } from "../../src/crypto/keys.js";
+import { generatePqKeyPair } from "../../src/crypto/hybrid.js";
 
 describe("key generation", () => {
 	it("generates 32-byte Ed25519 signing keys", () => {
@@ -40,12 +42,15 @@ describe("key generation", () => {
 		);
 	});
 
-	it("generateAgentKeys returns both key pairs", () => {
+	it("generateAgentKeys returns signing, encryption, and PQ key pairs", () => {
 		const keys = generateAgentKeys();
 		expect(keys.signing.privateKey).toHaveLength(32);
 		expect(keys.signing.publicKey).toHaveLength(32);
 		expect(keys.encryption.privateKey).toHaveLength(32);
 		expect(keys.encryption.publicKey).toHaveLength(32);
+		expect(keys.pqEncryption).toBeDefined();
+		expect(keys.pqEncryption!.publicKey).toHaveLength(1184);
+		expect(keys.pqEncryption!.privateKey).toHaveLength(2400);
 	});
 });
 
@@ -231,5 +236,55 @@ describe("validateEncryptionKey", () => {
 
 	it("rejects 64-byte array", () => {
 		expect(() => validateEncryptionKey(new Uint8Array(64))).toThrow("expected 32 bytes, got 64");
+	});
+});
+
+describe("savePqEncryptionKey", () => {
+	let tmpDir: string;
+
+	beforeEach(() => {
+		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rine-pq-save-test-"));
+	});
+
+	afterEach(() => {
+		fs.rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("saves PQ key and loadAgentKeys picks it up", () => {
+		const agentId = "00000000-0000-4000-a000-000000000010";
+		const keys = generateAgentKeys();
+		saveAgentKeys(tmpDir, agentId, { signing: keys.signing, encryption: keys.encryption });
+
+		const pqKeyPair = generatePqKeyPair();
+		savePqEncryptionKey(tmpDir, agentId, pqKeyPair);
+
+		const loaded = loadAgentKeys(tmpDir, agentId);
+		expect(loaded.pqEncryption).toBeDefined();
+		expect(
+			Buffer.from(loaded.pqEncryption!.privateKey).equals(Buffer.from(pqKeyPair.privateKey)),
+		).toBe(true);
+	});
+
+	it("does not overwrite existing signing or encryption keys", () => {
+		const agentId = "00000000-0000-4000-a000-000000000011";
+		const keys = generateAgentKeys();
+		saveAgentKeys(tmpDir, agentId, keys);
+		const originalSig = fs.readFileSync(path.join(tmpDir, "keys", agentId, "signing.key"), "utf-8");
+		const originalEnc = fs.readFileSync(path.join(tmpDir, "keys", agentId, "encryption.key"), "utf-8");
+
+		savePqEncryptionKey(tmpDir, agentId, generatePqKeyPair());
+
+		expect(fs.readFileSync(path.join(tmpDir, "keys", agentId, "signing.key"), "utf-8")).toBe(originalSig);
+		expect(fs.readFileSync(path.join(tmpDir, "keys", agentId, "encryption.key"), "utf-8")).toBe(originalEnc);
+	});
+
+	it("sets 0o600 permissions on pq_encryption.key", () => {
+		const agentId = "00000000-0000-4000-a000-000000000012";
+		const keys = generateAgentKeys();
+		saveAgentKeys(tmpDir, agentId, { signing: keys.signing, encryption: keys.encryption });
+		savePqEncryptionKey(tmpDir, agentId, generatePqKeyPair());
+
+		const stat = fs.statSync(path.join(tmpDir, "keys", agentId, "pq_encryption.key"));
+		expect(stat.mode & 0o777).toBe(0o600);
 	});
 });

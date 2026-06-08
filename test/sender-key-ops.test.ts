@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { distributeSenderKey, getOrCreateSenderKey } from "../src/sender-key-ops.js";
-import { generateAgentKeys, saveAgentKeys, toBase64Url } from "../src/crypto/keys.js";
+import { generateAgentKeys, pqPublicKeyToJWK, saveAgentKeys, toBase64Url } from "../src/crypto/keys.js";
 import { generateSenderKey } from "../src/crypto/sender-keys.js";
 import { loadSenderKeyStates, saveSenderKeyState } from "../src/crypto/sender-keys-helpers.js";
 
@@ -29,6 +29,27 @@ function makeBatchKeysResponse(agentIds: string[]) {
 		keys[id] = {
 			signing_public_key: { kty: "OKP", crv: "Ed25519", x: toBase64Url(k.signing.publicKey) },
 			encryption_public_key: { kty: "OKP", crv: "X25519", x: toBase64Url(k.encryption.publicKey) },
+		};
+	}
+	return { keys };
+}
+
+/**
+ * Batch fixture where each recipient also advertises a REAL ML-KEM
+ * pq_encryption_public_key, so the hybrid encrypt path genuinely runs.
+ */
+function makeHybridBatchKeysResponse(agentIds: string[]) {
+	const keys: Record<
+		string,
+		{ signing_public_key: object; encryption_public_key: object; pq_encryption_public_key: object }
+	> = {};
+	for (const id of agentIds) {
+		const k = generateAgentKeys();
+		if (!k.pqEncryption) throw new Error("expected generated PQ key");
+		keys[id] = {
+			signing_public_key: { kty: "OKP", crv: "Ed25519", x: toBase64Url(k.signing.publicKey) },
+			encryption_public_key: { kty: "OKP", crv: "X25519", x: toBase64Url(k.encryption.publicKey) },
+			pq_encryption_public_key: pqPublicKeyToJWK(k.pqEncryption.publicKey),
 		};
 	}
 	return { keys };
@@ -64,6 +85,27 @@ describe("distributeSenderKey", () => {
 			expect(call[1].type).toBe("rine.v1.sender_key_distribution");
 			expect(call[1].encryption_version).toBe("hpke-v1");
 		}
+	});
+
+	it("seals distribution as hpke-hybrid-v1 when a recipient advertises a PQ key", async () => {
+		const state = generateSenderKey(GROUP_ID, SENDER_ID);
+		const client = {
+			get: vi.fn().mockResolvedValue(makeHybridBatchKeysResponse([RECIPIENT_A])),
+			post: vi.fn().mockResolvedValue({ id: "msg-1" }),
+		};
+
+		const result = await distributeSenderKey(
+			client as never, dir, SENDER_ID, state, GROUP_ID, [RECIPIENT_A],
+		);
+
+		expect(result.succeeded).toEqual([RECIPIENT_A]);
+		expect(result.failed).toEqual([]);
+		expect(client.post).toHaveBeenCalledTimes(1);
+
+		const call = client.post.mock.calls[0]!;
+		expect(call[0]).toBe("/messages");
+		expect(call[1].type).toBe("rine.v1.sender_key_distribution");
+		expect(call[1].encryption_version).toBe("hpke-hybrid-v1");
 	});
 
 	it("reports missing keys as failures", async () => {

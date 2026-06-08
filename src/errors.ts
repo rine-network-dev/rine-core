@@ -3,6 +3,7 @@ export class RineApiError extends Error {
 		public readonly status: number,
 		public readonly detail: string,
 		public readonly raw?: unknown,
+		public readonly code?: string,
 	) {
 		super(`${status}: ${detail}`);
 		this.name = "RineApiError";

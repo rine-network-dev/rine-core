@@ -33,9 +33,13 @@ vi.mock("../src/timelock.js", async (importOriginal) => {
 
 vi.mock("../src/crypto/index.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../src/crypto/index.js")>();
+	// Mirrors the real generateAgentKeys(), which always populates pqEncryption
+	// (ML-KEM-768 public key is 1184 bytes). The hybrid PQ upload path in
+	// onboard.ts keys off the presence of this field.
 	const fakeKeys = {
 		signing: { privateKey: new Uint8Array(32), publicKey: new Uint8Array(32) },
 		encryption: { privateKey: new Uint8Array(32), publicKey: new Uint8Array(32) },
+		pqEncryption: { privateKey: new Uint8Array(2400), publicKey: new Uint8Array(1184) },
 	};
 	return {
 		...actual,
@@ -43,16 +47,22 @@ vi.mock("../src/crypto/index.js", async (importOriginal) => {
 		saveAgentKeys: vi.fn(),
 		signingPublicKeyToJWK: vi.fn(() => ({ kty: "OKP", crv: "Ed25519", x: "signing-pub" })),
 		encryptionPublicKeyToJWK: vi.fn(() => ({ kty: "OKP", crv: "X25519", x: "enc-pub" })),
+		pqPublicKeyToJWK: vi.fn(() => ({ kty: "MLKEM", alg: "ML-KEM-768", x: "pq-pub" })),
 	};
 });
+
+vi.mock("../src/mls-ops.js", () => ({
+	publishMlsKeyPackages: vi.fn().mockResolvedValue({ stored: 10 }),
+}));
 
 // ---------------------------------------------------------------------------
 // Helper imports (after mocks are registered)
 // ---------------------------------------------------------------------------
+import { publishMlsKeyPackages } from "../src/mls-ops.js";
 import { loadCredentials, saveCredentials, cacheToken } from "../src/config.js";
 import { fetchOAuthToken } from "../src/http.js";
 import { solveTimeLockWithProgress } from "../src/timelock.js";
-import { generateAgentKeys, saveAgentKeys, signingPublicKeyToJWK, encryptionPublicKeyToJWK } from "../src/crypto/index.js";
+import { generateAgentKeys, saveAgentKeys, signingPublicKeyToJWK, encryptionPublicKeyToJWK, pqPublicKeyToJWK } from "../src/crypto/index.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -276,6 +286,10 @@ describe("performAgentCreation", () => {
 		vi.mocked(loadCredentials).mockReturnValue({});
 		vi.mocked(saveCredentials).mockReset();
 		vi.mocked(saveAgentKeys).mockReset();
+		vi.mocked(generateAgentKeys).mockClear();
+		vi.mocked(pqPublicKeyToJWK).mockClear();
+		vi.mocked(publishMlsKeyPackages).mockClear();
+		vi.mocked(publishMlsKeyPackages).mockResolvedValue({ stored: 10 });
 	});
 
 	it("happy path: calls client.post, saves keys, returns agent data", async () => {
@@ -295,6 +309,20 @@ describe("performAgentCreation", () => {
 		expect(encryptionPublicKeyToJWK).toHaveBeenCalled();
 		expect(saveAgentKeys).toHaveBeenCalledWith(CONFIG_DIR, AGENT_ID, expect.anything());
 		expect(result).toMatchObject({ id: AGENT_ID, name: "Test Agent" });
+	});
+
+	it("publishes an initial batch of MLS KeyPackages (MLS-ready from birth)", async () => {
+		const client = makeClient();
+		await performAgentCreation(client, CONFIG_DIR, PROFILE, { name: "Test Agent" });
+		expect(publishMlsKeyPackages).toHaveBeenCalledWith(CONFIG_DIR, AGENT_ID, client);
+	});
+
+	it("agent creation succeeds even if MLS KeyPackage publish fails (non-fatal)", async () => {
+		vi.mocked(publishMlsKeyPackages).mockRejectedValueOnce(new Error("mls down"));
+		const client = makeClient();
+		const result = await performAgentCreation(client, CONFIG_DIR, PROFILE, { name: "Test Agent" });
+		expect(result).toMatchObject({ id: AGENT_ID });
+		expect(saveAgentKeys).toHaveBeenCalled();
 	});
 
 	it("with poll_url and existing profile: saves poll_url to credentials", async () => {
@@ -372,5 +400,80 @@ describe("performAgentCreation", () => {
 		await performAgentCreation(client, CONFIG_DIR, PROFILE, { name: "Test Agent" });
 		const body = vi.mocked(client.post).mock.calls[0]?.[1] as Record<string, unknown>;
 		expect(body).not.toHaveProperty("human_oversight");
+	});
+
+	// -----------------------------------------------------------------------
+	// PQ hybrid upload (T6 regression — A11)
+	//
+	// generateAgentKeys() always populates a pqEncryption keypair, so the POST
+	// body MUST carry pq_encryption_public_key as a ML-KEM JWK. If the
+	// `if (agentKeys.pqEncryption) { body.pq_encryption_public_key = ... }`
+	// block in onboard.ts were reverted, the property would vanish from the
+	// body and these assertions would fail.
+	// -----------------------------------------------------------------------
+
+	it("uploads pq_encryption_public_key as ML-KEM JWK when keys include pqEncryption", async () => {
+		const client = makeClient();
+		await performAgentCreation(client, CONFIG_DIR, PROFILE, { name: "Test Agent" });
+
+		expect(pqPublicKeyToJWK).toHaveBeenCalledWith(
+			vi.mocked(generateAgentKeys).mock.results[0]?.value.pqEncryption.publicKey,
+		);
+		expect(client.post).toHaveBeenCalledWith(
+			"/agents",
+			expect.objectContaining({
+				pq_encryption_public_key: { kty: "MLKEM", alg: "ML-KEM-768", x: "pq-pub" },
+			}),
+		);
+	});
+
+	it("omits pq_encryption_public_key when keys lack pqEncryption", async () => {
+		// Classical-only keypair (no PQ): the body must not carry the PQ JWK,
+		// but the classical fields MUST still be present and correct. Asserting
+		// the classical fields survived proves the function ran to completion on
+		// the no-PQ path (rather than the absence being a vacuous pass), and that
+		// dropping the PQ key did not corrupt the classical upload.
+		vi.mocked(generateAgentKeys).mockReturnValueOnce({
+			signing: { privateKey: new Uint8Array(32), publicKey: new Uint8Array(32) },
+			encryption: { privateKey: new Uint8Array(32), publicKey: new Uint8Array(32) },
+		});
+		const client = makeClient();
+		await performAgentCreation(client, CONFIG_DIR, PROFILE, { name: "Test Agent" });
+
+		const body = vi.mocked(client.post).mock.calls[0]?.[1] as Record<string, unknown>;
+		expect(body).not.toHaveProperty("pq_encryption_public_key");
+		expect(pqPublicKeyToJWK).not.toHaveBeenCalled();
+		// Classical fields still uploaded on the no-PQ path.
+		expect(body).toMatchObject({
+			name: "Test Agent",
+			signing_public_key: { kty: "OKP", crv: "Ed25519", x: "signing-pub" },
+			encryption_public_key: { kty: "OKP", crv: "X25519", x: "enc-pub" },
+		});
+	});
+
+	it("re-emits pq_encryption_public_key once the PQ key returns (negative→positive contrast)", async () => {
+		// Contrast guard for the `if (agentKeys.pqEncryption)` branch: the very
+		// same flow that omitted the PQ JWK above must re-emit it as soon as the
+		// keypair carries pqEncryption again. If the upload block were deleted,
+		// this positive-path assertion fails while the omission test above keeps
+		// passing — so the pair together pins BOTH directions of the guard.
+		vi.mocked(generateAgentKeys).mockReturnValueOnce({
+			signing: { privateKey: new Uint8Array(32), publicKey: new Uint8Array(32) },
+			encryption: { privateKey: new Uint8Array(32), publicKey: new Uint8Array(32) },
+		});
+		const classicalClient = makeClient();
+		await performAgentCreation(classicalClient, CONFIG_DIR, PROFILE, { name: "Test Agent" });
+		const classicalBody = vi.mocked(classicalClient.post).mock.calls[0]?.[1] as Record<string, unknown>;
+		expect(classicalBody).not.toHaveProperty("pq_encryption_public_key");
+
+		// Default mock keypair (with pqEncryption) on the next call → PQ JWK reappears.
+		const hybridClient = makeClient();
+		await performAgentCreation(hybridClient, CONFIG_DIR, PROFILE, { name: "Test Agent" });
+		const hybridBody = vi.mocked(hybridClient.post).mock.calls[0]?.[1] as Record<string, unknown>;
+		expect(hybridBody).toHaveProperty("pq_encryption_public_key", {
+			kty: "MLKEM",
+			alg: "ML-KEM-768",
+			x: "pq-pub",
+		});
 	});
 });

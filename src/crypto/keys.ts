@@ -1,12 +1,21 @@
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { ed25519, x25519 } from "@noble/curves/ed25519.js";
+import { ml_kem768 } from "@noble/post-quantum/ml-kem.js";
+import { generatePqKeyPair } from "./hybrid.js";
 
 export interface JWK {
 	kty: string;
 	crv: string;
 	x: string;
 	d?: string;
+}
+
+/** Public-key encoding for ML-KEM-768 (post-quantum). Not a standard OKP JWK. */
+export interface PqJWK {
+	kty: string;
+	alg: string;
+	x: string;
 }
 
 export interface KeyPair {
@@ -17,7 +26,11 @@ export interface KeyPair {
 export interface AgentKeys {
 	signing: KeyPair;
 	encryption: KeyPair;
+	pqEncryption?: KeyPair;
 }
+
+const MLKEM_PUBLIC_KEY_SIZE = 1184;
+const MLKEM_SECRET_KEY_SIZE = 2400;
 
 export function toBase64Url(bytes: Uint8Array): string {
 	return Buffer.from(bytes).toString("base64url");
@@ -43,6 +56,7 @@ export function generateAgentKeys(): AgentKeys {
 	return {
 		signing: generateSigningKeyPair(),
 		encryption: generateEncryptionKeyPair(),
+		pqEncryption: generatePqKeyPair(),
 	};
 }
 
@@ -62,7 +76,22 @@ export function jwkToPublicKey(jwk: JWK): Uint8Array {
 	return key;
 }
 
-const KID_RE = /^rine:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+export function pqPublicKeyToJWK(publicKey: Uint8Array): PqJWK {
+	return { kty: "MLKEM", alg: "ML-KEM-768", x: toBase64Url(publicKey) };
+}
+
+export function jwkToPqPublicKey(jwk: PqJWK): Uint8Array {
+	const key = fromBase64Url(jwk.x);
+	if (key.length !== MLKEM_PUBLIC_KEY_SIZE) {
+		throw new Error(
+			`Invalid PQ public key: expected ${MLKEM_PUBLIC_KEY_SIZE} bytes, got ${key.length}`,
+		);
+	}
+	return key;
+}
+
+const KID_RE =
+	/^rine:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 
 export function agentIdFromKid(kid: string): string {
 	const match = KID_RE.exec(kid);
@@ -70,7 +99,8 @@ export function agentIdFromKid(kid: string): string {
 	return match[1]!;
 }
 
-const PATH_SAFE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const PATH_SAFE_RE =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function validatePathId(id: string, label: string): void {
 	if (!PATH_SAFE_RE.test(id)) {
@@ -78,7 +108,11 @@ export function validatePathId(id: string, label: string): void {
 	}
 }
 
-export function saveAgentKeys(configDir: string, agentId: string, keys: AgentKeys): void {
+export function saveAgentKeys(
+	configDir: string,
+	agentId: string,
+	keys: AgentKeys,
+): void {
 	validatePathId(agentId, "agent ID");
 	const dir = join(configDir, "keys", agentId);
 	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -90,6 +124,29 @@ export function saveAgentKeys(configDir: string, agentId: string, keys: AgentKey
 	const encPath = join(dir, "encryption.key");
 	fs.writeFileSync(encPath, toBase64Url(keys.encryption.privateKey), "utf-8");
 	fs.chmodSync(encPath, 0o600);
+
+	if (keys.pqEncryption) {
+		const pqPath = join(dir, "pq_encryption.key");
+		fs.writeFileSync(
+			pqPath,
+			toBase64Url(keys.pqEncryption.privateKey),
+			"utf-8",
+		);
+		fs.chmodSync(pqPath, 0o600);
+	}
+}
+
+export function savePqEncryptionKey(
+	configDir: string,
+	agentId: string,
+	pqKeyPair: KeyPair,
+): void {
+	validatePathId(agentId, "agent ID");
+	const dir = join(configDir, "keys", agentId);
+	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+	const pqPath = join(dir, "pq_encryption.key");
+	fs.writeFileSync(pqPath, toBase64Url(pqKeyPair.privateKey), "utf-8");
+	fs.chmodSync(pqPath, 0o600);
 }
 
 export function loadAgentKeys(configDir: string, agentId: string): AgentKeys {
@@ -99,21 +156,42 @@ export function loadAgentKeys(configDir: string, agentId: string): AgentKeys {
 	const sigRaw = fs.readFileSync(join(dir, "signing.key"), "utf-8").trim();
 	const sigPriv = fromBase64Url(sigRaw);
 	if (sigPriv.length !== 32) {
-		throw new Error(`Corrupt signing key: expected 32 bytes, got ${sigPriv.length}`);
+		throw new Error(
+			`Corrupt signing key: expected 32 bytes, got ${sigPriv.length}`,
+		);
 	}
 	const sigPub = ed25519.getPublicKey(sigPriv);
 
 	const encRaw = fs.readFileSync(join(dir, "encryption.key"), "utf-8").trim();
 	const encPriv = fromBase64Url(encRaw);
 	if (encPriv.length !== 32) {
-		throw new Error(`Corrupt encryption key: expected 32 bytes, got ${encPriv.length}`);
+		throw new Error(
+			`Corrupt encryption key: expected 32 bytes, got ${encPriv.length}`,
+		);
 	}
 	const encPub = x25519.getPublicKey(encPriv);
 
-	return {
+	const keys: AgentKeys = {
 		signing: { privateKey: sigPriv, publicKey: sigPub },
 		encryption: { privateKey: encPriv, publicKey: encPub },
 	};
+
+	const pqPath = join(dir, "pq_encryption.key");
+	if (fs.existsSync(pqPath)) {
+		const pqRaw = fs.readFileSync(pqPath, "utf-8").trim();
+		const pqPriv = fromBase64Url(pqRaw);
+		if (pqPriv.length !== MLKEM_SECRET_KEY_SIZE) {
+			throw new Error(
+				`Corrupt PQ key: expected ${MLKEM_SECRET_KEY_SIZE} bytes, got ${pqPriv.length}`,
+			);
+		}
+		keys.pqEncryption = {
+			privateKey: pqPriv,
+			publicKey: ml_kem768.getPublicKey(pqPriv),
+		};
+	}
+
+	return keys;
 }
 
 export function validateSigningKey(bytes: Uint8Array): void {

@@ -17,4 +17,6 @@ export type TokenCache = Record<string, CachedToken>;
 
 export interface ApiError {
 	detail: string | { msg: string; type: string }[];
+	/** Structured error code for typed errors, e.g. "epoch_conflict". */
+	error?: string;
 }

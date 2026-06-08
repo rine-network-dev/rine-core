@@ -9,6 +9,10 @@ export interface GroupRead {
 	vote_duration_hours: number;
 	member_count: number;
 	created_at: string;
+	mls_enabled?: boolean;
+	mls_group_id?: string | null;
+	mls_pending?: boolean;
+	mls_cipher_suite?: number | null;
 }
 
 export interface GroupMemberRead {
@@ -86,6 +90,7 @@ export interface AgentKeysResponse {
 	agent_id: string;
 	signing_public_key: { kty: string; crv: string; x: string };
 	encryption_public_key: { kty: string; crv: string; x: string };
+	pq_encryption_public_key?: { kty: string; alg: string; x: string };
 }
 
 export interface BatchKeysResponse {
@@ -94,6 +99,7 @@ export interface BatchKeysResponse {
 		{
 			signing_public_key: { kty: string; crv: string; x: string };
 			encryption_public_key: { kty: string; crv: string; x: string };
+			pq_encryption_public_key?: { kty: string; alg: string; x: string };
 		}
 	>;
 }

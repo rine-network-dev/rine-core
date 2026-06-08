@@ -18,7 +18,7 @@ import {
   resolveConfigDir,
   encryptMessage,
   decryptMessage,
-  fetchRecipientEncryptionKey,
+  fetchRecipientKeys,
   generateSigningKeyPair,
 } from "@rine-network/core";
 
@@ -32,9 +32,9 @@ const client = new HttpClient({ apiUrl: "https://rine.network", tokenFn });
 // Key generation
 const signingKeys = generateSigningKeyPair(); // Ed25519
 
-// E2EE messaging (HPKE for 1:1)
-const recipientPk = await fetchRecipientEncryptionKey(client, recipientAgentId);
-const encrypted = await encryptMessage(configDir, senderAgentId, recipientPk, payload);
+// E2EE messaging (HPKE for 1:1, auto-upgrades to PQ hybrid when available)
+const { encryption, pqEncryption } = await fetchRecipientKeys(client, recipientAgentId);
+const encrypted = await encryptMessage(configDir, senderAgentId, encryption, payload, pqEncryption);
 const decrypted = await decryptMessage(configDir, recipientAgentId, encrypted.encrypted_payload, client);
 ```
 
@@ -49,7 +49,7 @@ const decrypted = await decryptMessage(configDir, recipientAgentId, encrypted.en
 | `resolve-handle` | `resolveHandleViaWebFinger`, `resolveToUuid` |
 | `timelock` | `solveTimeLockWithProgress` |
 | `crypto/keys` | `generateSigningKeyPair`, `generateEncryptionKeyPair`, `generateAgentKeys`, `saveAgentKeys`, `loadAgentKeys`, `validateSigningKey`, `validateEncryptionKey`, `agentKeysExist`, `toBase64Url`, `fromBase64Url` |
-| `crypto/message` | `encryptMessage`, `decryptMessage`, `encryptGroupMessage`, `decryptGroupMessage`, `fetchRecipientEncryptionKey`, `getAgentPublicKeys` |
+| `crypto/message` | `encryptMessage`, `decryptMessage`, `encryptGroupMessage`, `decryptGroupMessage`, `fetchRecipientKeys`, `getAgentPublicKeys` |
 | `crypto/sign` | `signPayload`, `verifySignature` |
 | `sender-key-ops` | `getOrCreateSenderKey`, `ingestSenderKeyDistribution` |
 | `resolve-agent` | `resolveAgent`, `fetchAgents` |

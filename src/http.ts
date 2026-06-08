@@ -20,17 +20,24 @@ export interface HttpClientOptions {
 	signal?: AbortSignal;
 }
 
-async function parseErrorDetail(res: Response): Promise<string> {
+/**
+ * Parse an error response body ONCE, extracting both the human-readable detail
+ * and the structured error code. The server sends {"error": "<code>", "detail":
+ * "..."} for typed errors (e.g. epoch_conflict); callers use `code` to branch.
+ */
+async function parseError(res: Response): Promise<{ detail: string; code?: string }> {
 	try {
 		const body = (await res.json()) as ApiError;
-		if (typeof body.detail === "string") return body.detail;
+		const code = typeof body.error === "string" ? body.error : undefined;
+		if (typeof body.detail === "string") return { detail: body.detail, code };
 		if (Array.isArray(body.detail)) {
-			return body.detail.map((e) => e.msg).join("; ");
+			return { detail: body.detail.map((e) => e.msg).join("; "), code };
 		}
+		return { detail: res.statusText, code };
 	} catch {
 		// ignore parse failures
 	}
-	return res.statusText;
+	return { detail: res.statusText };
 }
 
 export class HttpClient {
@@ -87,8 +94,8 @@ export class HttpClient {
 			res = await doFetch(true);
 		}
 		if (!res.ok) {
-			const detail = await parseErrorDetail(res);
-			throw new RineApiError(res.status, detail, res);
+			const { detail, code } = await parseError(res);
+			throw new RineApiError(res.status, detail, res, code);
 		}
 		if (res.status === 204) return undefined;
 		return res.json();
@@ -155,8 +162,8 @@ export class HttpClient {
 		const url = qs ? `${apiUrl}${path}?${qs}` : `${apiUrl}${path}`;
 		const res = await fetch(url, { headers: { Accept: "application/json" } });
 		if (!res.ok) {
-			const detail = await parseErrorDetail(res);
-			throw new RineApiError(res.status, detail, res);
+			const { detail, code } = await parseError(res);
+			throw new RineApiError(res.status, detail, res, code);
 		}
 		return res.json();
 	}

@@ -4,6 +4,19 @@ All notable changes to `@rine-network/core` are documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-06-01
+
+### Added
+- `generateAgentKeys()` now includes an ML-KEM-768 post-quantum key pair
+  (`pqEncryption`) by default. All new agents are PQ-capable.
+- `hpke-hybrid-v1` encryption version: `encryptMessage()` auto-negotiates
+  X25519+ML-KEM-768 hybrid encryption when the recipient publishes a PQ key.
+- `fetchRecipientKeys()` returns both classical and PQ public keys.
+
+### Removed
+- `fetchRecipientEncryptionKey()` — replaced by `fetchRecipientKeys()` which
+  returns `{ encryption: Uint8Array, pqEncryption?: Uint8Array }`.
+
 ## [0.4.0] — 2026-04-10
 
 ### Added

@@ -10,8 +10,11 @@ import {
 	saveAgentKeys,
 	signingPublicKeyToJWK,
 	encryptionPublicKeyToJWK,
+	pqPublicKeyToJWK,
 } from "./crypto/index.js";
 import { solveTimeLockWithProgress } from "./timelock.js";
+import { publishMlsKeyPackages } from "./mls-ops.js";
+import type { HttpClient } from "./http.js";
 
 interface ChallengeResponse {
 	challenge_id: string;
@@ -153,6 +156,11 @@ export async function performAgentCreation(
 			agentKeys.encryption.publicKey,
 		),
 	};
+	if (agentKeys.pqEncryption) {
+		body.pq_encryption_public_key = pqPublicKeyToJWK(
+			agentKeys.pqEncryption.publicKey,
+		);
+	}
 	if (params.humanOversight !== undefined)
 		body.human_oversight = params.humanOversight;
 	if (params.unlisted !== undefined) body.unlisted = params.unlisted;
@@ -162,6 +170,16 @@ export async function performAgentCreation(
 	};
 
 	saveAgentKeys(configDir, agent.id, agentKeys);
+
+	// Publish an initial batch of MLS KeyPackages so the agent can be added to
+	// MLS groups from birth. Best-effort: a failure here must never abort agent
+	// creation (the agent works fine on sender-key groups without them, and
+	// KeyPackages can be republished later). Only `.post` is used.
+	try {
+		await publishMlsKeyPackages(configDir, agent.id, client as unknown as HttpClient);
+	} catch {
+		// non-fatal — agent is usable; KeyPackages can be published later
+	}
 
 	// Save poll_url to credentials if returned
 	if (agent.poll_url) {
