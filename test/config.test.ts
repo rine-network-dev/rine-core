@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	DEFAULT_API_URL,
@@ -23,7 +23,9 @@ function withEnv(key: string, value: string | undefined, fn: () => void): void {
 	const prev = process.env[key];
 	if (value === undefined) delete process.env[key];
 	else process.env[key] = value;
-	try { fn(); } finally {
+	try {
+		fn();
+	} finally {
 		if (prev === undefined) delete process.env[key];
 		else process.env[key] = prev;
 	}
@@ -149,8 +151,12 @@ describe("resolveApiUrl", () => {
 describe("credentials round-trip", () => {
 	let dir: string;
 
-	beforeEach(() => { dir = makeTmpDir(); });
-	afterEach(() => { fs.rmSync(dir, { recursive: true }); });
+	beforeEach(() => {
+		dir = makeTmpDir();
+	});
+	afterEach(() => {
+		fs.rmSync(dir, { recursive: true });
+	});
 
 	it("returns empty object for missing file", () => {
 		expect(loadCredentials(dir)).toEqual({});
@@ -174,8 +180,12 @@ describe("credentials round-trip", () => {
 describe("token cache round-trip", () => {
 	let dir: string;
 
-	beforeEach(() => { dir = makeTmpDir(); });
-	afterEach(() => { fs.rmSync(dir, { recursive: true }); });
+	beforeEach(() => {
+		dir = makeTmpDir();
+	});
+	afterEach(() => {
+		fs.rmSync(dir, { recursive: true });
+	});
 
 	it("returns empty object for missing file", () => {
 		expect(loadTokenCache(dir)).toEqual({});
@@ -193,8 +203,12 @@ describe("token cache round-trip", () => {
 describe("cacheToken", () => {
 	let dir: string;
 
-	beforeEach(() => { dir = makeTmpDir(); });
-	afterEach(() => { fs.rmSync(dir, { recursive: true }); });
+	beforeEach(() => {
+		dir = makeTmpDir();
+	});
+	afterEach(() => {
+		fs.rmSync(dir, { recursive: true });
+	});
 
 	it("caches token with computed expiry", () => {
 		vi.useFakeTimers();
@@ -211,16 +225,67 @@ describe("cacheToken", () => {
 			vi.useRealTimers();
 		}
 	});
+
+	it("does not throw when config dir is read-only (0o444)", () => {
+		// Verify the chmod actually blocks writes on this machine; if running as root
+		// the restriction won't apply, so we fall back to a targeted spy.
+		fs.chmodSync(dir, 0o444);
+		const probe = `${dir}/probe.txt`;
+		let chmodEffective = false;
+		try {
+			fs.writeFileSync(probe, "x");
+		} catch {
+			chmodEffective = true;
+		}
+		fs.chmodSync(dir, 0o755); // restore so cleanup works
+
+		if (chmodEffective) {
+			// Real read-only dir: re-apply the restriction, test, then restore
+			fs.chmodSync(dir, 0o444);
+			try {
+				expect(() =>
+					cacheToken(dir, "default", { access_token: "tok", expires_in: 900 }),
+				).not.toThrow();
+			} finally {
+				fs.chmodSync(dir, 0o755);
+			}
+		} else {
+			// chmod ineffective (e.g. running as root) — simulate via spy
+			const writeStub = vi
+				.spyOn(fs, "writeFileSync")
+				.mockImplementation((path, _data, _opts) => {
+					if (String(path).includes("token_cache")) {
+						const err = Object.assign(new Error("EACCES: permission denied"), {
+							code: "EACCES",
+						});
+						throw err;
+					}
+				});
+			try {
+				expect(() =>
+					cacheToken(dir, "default", { access_token: "tok", expires_in: 900 }),
+				).not.toThrow();
+			} finally {
+				writeStub.mockRestore();
+			}
+		}
+	});
 });
 
 describe("getCredentialEntry", () => {
 	let dir: string;
 
-	beforeEach(() => { dir = makeTmpDir(); });
-	afterEach(() => { fs.rmSync(dir, { recursive: true }); });
+	beforeEach(() => {
+		dir = makeTmpDir();
+	});
+	afterEach(() => {
+		fs.rmSync(dir, { recursive: true });
+	});
 
 	it("prefers env vars over file", () => {
-		saveCredentials(dir, { default: { client_id: "file", client_secret: "file" } });
+		saveCredentials(dir, {
+			default: { client_id: "file", client_secret: "file" },
+		});
 		withEnv("RINE_CLIENT_ID", "env-id", () => {
 			withEnv("RINE_CLIENT_SECRET", "env-secret", () => {
 				const entry = getCredentialEntry(dir);
@@ -233,7 +298,9 @@ describe("getCredentialEntry", () => {
 	it("falls back to credentials file", () => {
 		withEnv("RINE_CLIENT_ID", undefined, () => {
 			withEnv("RINE_CLIENT_SECRET", undefined, () => {
-				saveCredentials(dir, { default: { client_id: "file-id", client_secret: "file-secret" } });
+				saveCredentials(dir, {
+					default: { client_id: "file-id", client_secret: "file-secret" },
+				});
 				const entry = getCredentialEntry(dir);
 				expect(entry?.client_id).toBe("file-id");
 			});

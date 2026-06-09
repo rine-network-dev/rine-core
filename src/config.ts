@@ -29,9 +29,7 @@ export function resolveConfigDir(): string {
 		try {
 			fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 			return dir;
-		} catch {
-			continue;
-		}
+		} catch {}
 	}
 
 	// Last resort: return preferred path, let downstream fail with a clear error
@@ -66,7 +64,10 @@ export function loadCredentials(configDir: string): Credentials {
 
 export function saveCredentials(configDir: string, creds: Credentials): void {
 	ensureDir(configDir);
-	writeAtomic(join(configDir, "credentials.json"), JSON.stringify(creds, null, 2));
+	writeAtomic(
+		join(configDir, "credentials.json"),
+		JSON.stringify(creds, null, 2),
+	);
 }
 
 export function loadTokenCache(configDir: string): TokenCache {
@@ -81,7 +82,10 @@ export function loadTokenCache(configDir: string): TokenCache {
 
 export function saveTokenCache(configDir: string, cache: TokenCache): void {
 	ensureDir(configDir);
-	writeAtomic(join(configDir, "token_cache.json"), JSON.stringify(cache, null, 2));
+	writeAtomic(
+		join(configDir, "token_cache.json"),
+		JSON.stringify(cache, null, 2),
+	);
 }
 
 export function cacheToken(
@@ -94,7 +98,15 @@ export function cacheToken(
 		access_token: token.access_token,
 		expires_at: Date.now() / 1000 + token.expires_in,
 	};
-	saveTokenCache(configDir, cache);
+	// Token cache is a disposable best-effort optimisation. A write failure (e.g.
+	// read-only or foreign-owned token_cache.json) must NOT crash an otherwise-
+	// successful auth flow — the caller already holds the fresh token in memory.
+	// See: token-storm diagnosis (phases/cc-plugin-token-storm-fix/SPEC.md).
+	try {
+		saveTokenCache(configDir, cache);
+	} catch {
+		// swallow — cache miss on next call is the only consequence
+	}
 }
 
 /**
