@@ -7,6 +7,7 @@ export * from "./resolve-handle.js";
 export * from "./resolve-agent.js";
 export * from "./timelock.js";
 export * from "./sender-key-ops.js";
+export * from "./group-invite-ops.js";
 export * from "./crypto/index.js";
 export * from "./mls-ops.js";
 // Resolve the name clash: both the low-level crypto primitive and the

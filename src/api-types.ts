@@ -35,6 +35,8 @@ export interface JoinRequestRead {
 	created_at: string;
 	resolved_at?: string;
 	your_vote?: string;
+	group_handle?: string;
+	group_name?: string;
 }
 
 export interface AgentRead {
