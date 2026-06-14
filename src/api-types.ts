@@ -124,6 +124,29 @@ export interface WebhookDeliveryRead {
 	created_at: string;
 }
 
+// rine Funnel hook rows (funnel_schemas.py). NEVER carry a secret (D5/D6) — the
+// HMAC secret is generated + stored client-side and never crosses the wire.
+// `control_ws_url` is the broker control-WS endpoint (e.g.
+// "wss://funnel.rine.network/_funnel/v1") returned by BOTH create and list — the
+// relay uses it VERBATIM and NEVER reconstructs it from the API base (the API
+// base resolves to the primary IP / Caddy, which has no funnel route).
+export interface HookRead {
+	hook_name: string;
+	hostname: string;
+	active: boolean;
+	created_at: string;
+	control_ws_url: string;
+}
+
+export interface HookCreated extends HookRead {
+	agent_id: string;
+}
+
+export interface HookListResponse {
+	items: HookRead[];
+	total: number;
+}
+
 export interface VoteResponse {
 	request_id: string;
 	your_vote: string;
