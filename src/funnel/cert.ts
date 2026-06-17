@@ -12,6 +12,7 @@
 // never a server call. The backend's DNS provider token is server-side only and
 // is never referenced relay-side (asserted by a static source grep in the tests).
 
+import { crypto as acmeCrypto } from "acme-client";
 import { isRenewalDue, isTerminalAcmeError } from "./backoff.js";
 import {
 	type AcmeOptions,
@@ -23,6 +24,12 @@ import {
 	saveMeta,
 	wipeHandleCache,
 } from "./cert-cache.js";
+import {
+	loadAttemptLedger,
+	saveAttemptLedger,
+	withAgentIssuanceLock,
+} from "./cert-lock.js";
+import { agentWildcardFqdn } from "./csr.js";
 import { type IssueCertDeps, type IssuedCert, issueCert } from "./issue.js";
 
 // `cert.ts` is the relay-facing barrel: it re-exports the cache, backoff,
@@ -44,11 +51,19 @@ export {
 	isRenewalDue,
 	isTerminalAcmeError,
 	nextBackoffDelayMs,
+	renewalDueWithJitter,
 } from "./backoff.js";
 export {
+	type AttemptLedger,
+	loadAttemptLedger,
+	saveAttemptLedger,
+	withAgentIssuanceLock,
+} from "./cert-lock.js";
+export {
 	type KeypairAndCsr,
+	agentLabel,
+	agentWildcardFqdn,
 	generateCertKeypairAndCsr,
-	hookFqdn,
 } from "./csr.js";
 export { type IssueCertDeps, type IssuedCert, issueCert } from "./issue.js";
 
@@ -62,8 +77,17 @@ export interface EnsureCertResult extends IssuedCert {
  * (REQ-CERT-13). A valid, fresh cached cert opens the gate immediately with NO
  * ACME round-trip. Otherwise issue, persist atomically, and reset the failure
  * counter on success. On failure the persisted `consecutive_failures` is bumped
- * (read from the prior meta so a crash-loop never resets it to zero) and the
- * error re-thrown — a failed cold start installs NOTHING (gate stays closed).
+ * (read from the wipe-surviving attempt-ledger so a crash-loop — even one that
+ * wipes the cache — never resets it to zero) and the error re-thrown — a failed
+ * cold start installs NOTHING (gate stays closed).
+ *
+ * `handle` is the AGENT label (REQ-CERT-42): one shared `*.{agentLabel}.hook`
+ * wildcard serves every hook of the agent. Two guards make the sharing safe:
+ *  - REQ-CERT-48 (SAN-match): a cached cert whose single wildcard SAN no longer
+ *    matches the current agent label is force-reissued, never served mismatched.
+ *  - AUD-B2/SCALE-4 (issuance lock): the ACME order runs under a cross-process
+ *    per-agent lock; if a sibling hook-relay holds it, this run reuses whatever
+ *    the sibling installs instead of firing a duplicate order.
  */
 export async function ensureCert(args: {
 	handle: string;
@@ -83,23 +107,51 @@ export async function ensureCert(args: {
 	const directoryUrl = acmeDirectoryUrl(options);
 
 	const cached = loadCachedCert(configDir, handle, options);
-	if (cached && !isRenewalDue(cached.meta, deps.now())) {
+	if (
+		cached &&
+		certMatchesAgentLabel(cached.certPem, handle) &&
+		!isRenewalDue(cached.meta, deps.now())
+	) {
 		return { ready: true, fromCache: true, ...cached };
 	}
 
-	const priorFailures =
-		loadMeta(configDir, handle, options)?.consecutive_failures ?? 0;
+	// Read the crash-loop counter from the wipe-surviving ledger, but never below
+	// the prior meta — a meta-seeded counter (pre-existing tooling/tests) still
+	// drives the bump even before a ledger exists.
+	const priorFailures = Math.max(
+		loadAttemptLedger(configDir, handle, options).consecutive_failures,
+		loadMeta(configDir, handle, options)?.consecutive_failures ?? 0,
+	);
+
 	try {
-		const issued = await issueCert({
-			handle,
-			agentId,
-			delegationId,
-			directoryUrl,
-			deps,
-		});
+		const locked = await withAgentIssuanceLock(
+			{ configDir, certKey: handle, opts: options, now: deps.now },
+			() => issueCert({ handle, agentId, delegationId, directoryUrl, deps }),
+		);
+		if (!locked.acquired) {
+			// A sibling hook-relay of the same agent is mid-issuance for the identical
+			// wildcard (AUD-B2/SCALE-4). Reuse whatever it installs rather than firing
+			// a duplicate ACME order. This is NOT an ACME failure — it must NOT bump
+			// the crash-loop ledger (that would wrongly penalize the agent's whole
+			// fleet), so it throws the SIBLING_IN_PROGRESS sentinel the catch skips. If
+			// the cert has not landed yet, the relay backs off and re-checks the cache.
+			const sibling = loadCachedCert(configDir, handle, options);
+			if (sibling) return { ready: true, fromCache: true, ...sibling };
+			throw new SiblingIssuanceInProgress();
+		}
+		const issued = locked.result;
 		saveCert(configDir, handle, options, issued); // atomic, consecutive_failures: 0
+		saveAttemptLedger(configDir, handle, options, {
+			consecutive_failures: 0,
+			last_attempt_ts: deps.now(),
+		});
 		return { ready: true, fromCache: false, ...issued };
 	} catch (err) {
+		if (err instanceof SiblingIssuanceInProgress) throw err; // not an ACME failure
+		saveAttemptLedger(configDir, handle, options, {
+			consecutive_failures: priorFailures + 1,
+			last_attempt_ts: deps.now(),
+		});
 		persistFailure(configDir, handle, options, {
 			delegationId,
 			directoryUrl,
@@ -115,10 +167,30 @@ export async function ensureCert(args: {
 }
 
 /**
+ * Thrown when a sibling hook-relay of the same agent already holds the per-agent
+ * issuance lock and the shared wildcard cert has not landed yet (AUD-B2). It is a
+ * RETRYABLE signal (the relay backs off and re-checks the cache), never an ACME
+ * failure — so it does NOT bump the crash-loop backoff ledger.
+ */
+export class SiblingIssuanceInProgress extends Error {
+	constructor() {
+		super("per-agent wildcard issuance in progress (sibling hook)");
+		this.name = "SiblingIssuanceInProgress";
+	}
+}
+
+/**
  * Graceful teardown (REQ-CERT-16): best-effort ACME revoke (relay-local — the
  * server holds no key and cannot revoke, REQ-CERT-15), then a SCOPED wipe of
  * just this handle's cache dir. A revoke failure (offline) is swallowed; the
  * local wipe is the meaningful local effect and always runs.
+ *
+ * NOT wired into the relay's single-hook teardown path (REQ-CERT-44): the cert
+ * is now the per-agent `*.{agentLabel}.hook` wildcard SHARED by every hook of the
+ * agent, so revoking it on one hook's BIND-revoked would kill all the agent's
+ * sibling hooks. The kill switch is server-side DNS+route teardown, not relay
+ * revocation. This stays a retained library primitive for an explicit, whole-agent
+ * teardown — exercised by cert.test.ts, never called from `runRelayLoop`.
  */
 export async function revokeAndWipeCache(args: {
 	handle: string;
@@ -166,4 +238,27 @@ function persistFailure(
 
 function describe(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * REQ-CERT-48 (AUD-D1, defence-in-depth): does the cached leaf's SAN set still
+ * cover the current agent label's wildcard? The label is UUID-derived and
+ * immutable so this can never legitimately drift — but if a future label-scheme
+ * change ever desyncs the cached cert from the live hostname, force-reissue loud
+ * rather than serve a name-mismatched (though still time-valid) cert that fails
+ * every TLS handshake. A cert that cannot be parsed (e.g. a test fixture) is
+ * treated as matching so the normal renewal/cache logic still governs it.
+ */
+function certMatchesAgentLabel(certPem: string, agentLabel: string): boolean {
+	const expected = agentWildcardFqdn(agentLabel);
+	let info: ReturnType<typeof acmeCrypto.readCertificateInfo>;
+	try {
+		info = acmeCrypto.readCertificateInfo(certPem);
+	} catch {
+		return true; // unparseable -> can't assert a mismatch; defer to renewal logic
+	}
+	return (
+		info.domains.altNames.includes(expected) ||
+		info.domains.commonName === expected
+	);
 }

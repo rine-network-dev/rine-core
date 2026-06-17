@@ -27,10 +27,14 @@ import { describe, expect, it } from "vitest";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FUNNEL_SRC = join(HERE, "../../src/funnel");
 
-/** The funnel relay modules the no-body-log contract (REQ-SEC-15/16) scopes to. */
+/** The funnel relay modules the no-body-log contract (REQ-SEC-15/16) scopes to.
+ * `edge-pipe.ts` is the SHARED-EDGE sibling of `tls-listener.ts` (Phase B): the
+ * broker forwards the DECRYPTED request down the mux, so the relay parses a
+ * plaintext body it must NEVER log (REQ-SEC-22) — same guard, same forbidden set. */
 const RELAY_MODULES = [
 	"relay-adapter.ts",
 	"tls-listener.ts",
+	"edge-pipe.ts",
 	"tunnel.ts",
 ] as const;
 
@@ -161,7 +165,7 @@ function scanModule(file: string): Leak[] {
 }
 
 describe("funnel relay — no-body-log STRUCTURAL guard (REQ-SEC-16)", () => {
-	it("scopes to exactly the three named relay modules and they all exist", () => {
+	it("scopes to exactly the named relay modules and they all exist", () => {
 		for (const m of RELAY_MODULES) {
 			expect(() => readFileSync(join(FUNNEL_SRC, m), "utf-8")).not.toThrow();
 		}

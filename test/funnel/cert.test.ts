@@ -1,4 +1,14 @@
-// REQ-CERT-01,03,04,09,10,11,12,13,14,15,16,32 — relay-side local ACME DNS-01 cert client.
+// REQ-CERT-01,09,10,11,12,13,14,15,16,32 + REQ-CERT-40/42/43/45/48 (B2) —
+// relay-side local ACME DNS-01 cert client, now per-AGENT-WILDCARD.
+//
+// Phase shift (funnel-cert-scaling, B2 LOAD-BEARING, SCALE-6): a zero-trust relay
+// no longer mints a per-HOOK cert. It mints ONE `*.{agentLabel}.hook.rine.network`
+// wildcard cert per agent and REUSES it across every hook that agent owns. The
+// cache key is the AGENT label (the second-to-last DNS label of a `.hook`
+// hostname), extracted from the server-authoritative hostname via the REAL
+// `agentLabel(hostname)` — never a stubbed key. The whole point of the phase is
+// that a per-hook SAN would silently regress to per-hook certs, so the SAN
+// CARDINALITY == 1 and is independent of hook_name.
 //
 // FROZEN-CONTRACT (a violation is a build defect, asserted below):
 //  - cert private key born + stays LOCAL; DNS-01 ONLY (no HTTP-01/TLS-ALPN-01);
@@ -14,8 +24,7 @@
 // All externals are MOCKED: the ACME directory/order (NEVER hits Let's Encrypt,
 // not even staging — real LE-staging is reserved for the Wave-3 E2E), the
 // dns-challenge HTTP POST, the DNS propagation resolver, and the filesystem
-// (a per-test temp dir). These tests MUST fail now (no implementation yet) and
-// fail for the right reason: the module under test does not exist.
+// (a per-test temp dir).
 
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,13 +36,14 @@ import { RineApiError } from "../../src/errors.js";
 // are the PURE, deterministic pieces — exercised with a fake HttpClient so no
 // test touches the network (the ACME order + propagation poll stay Wave-3 E2E).
 import { makeDnsPost, tagLeRateLimit } from "../../src/funnel/acme.js";
-// Module under test — does not exist yet (Track D will create it). The import
-// is intentionally a single barrel so a missing export surfaces as a clear
+// Module under test — a single barrel so a missing export surfaces as a clear
 // "right reason" failure rather than a runtime TypeError mid-test.
 import {
 	type CertMeta,
 	type IssueCertDeps,
 	acmeDirectoryUrl,
+	agentLabel,
+	agentWildcardFqdn,
 	ensureCert,
 	funnelCacheDir,
 	generateCertKeypairAndCsr,
@@ -41,23 +51,50 @@ import {
 	isRenewalDue,
 	isTerminalAcmeError,
 	issueCert,
+	loadAttemptLedger,
 	loadCachedCert,
 	loadMeta,
 	nextBackoffDelayMs,
 	revokeAndWipeCache,
 	saveCert,
 	saveMeta,
+	wipeHandleCache,
 } from "../../src/funnel/cert.js";
 import type { HttpClient } from "../../src/http.js";
 
 // ── shared fixtures ─────────────────────────────────────────────────────────
+//
+// AGENT_LABEL is a REAL Crockford-base32 agent-UUID label (26 chars, hyphen-free)
+// as the backend `funnel_naming.agent_label` would emit. The relay never sees the
+// UUID — it reads this label off the `.hook` hostname. The CACHE KEY for a
+// zero-trust cert is `agentLabel(hostname)`, so the tests derive the key the SAME
+// way the relay does (the second-to-last label), never a hand-stubbed string.
 
-const HANDLE = "gh-acme";
-const FQDN = `${HANDLE}.hook.rine.network`;
-const AGENT_ID = "00000000-0000-4000-a000-0000000000aa";
+const AGENT_LABEL = "6ynpzezqnd9vqvnbzyxqxcw001"; // agent_label(deadbeef-…-0001)
+const AGENT_LABEL_B = "0h248h248h848v248h248h248h"; // a DIFFERENT agent
+const AGENT_ID = "deadbeef-dead-4eef-baaf-feedface0001";
 const DELEGATION_ID = "deadbeefdeadbeefdeadbeefdeadbeef";
 const LE_PROD = "https://acme-v02.api.letsencrypt.org/directory";
 const LE_STAGING = "https://acme-staging-v02.api.letsencrypt.org/directory";
+
+/** A zero-trust hostname `{hook}.{agentLabel}.hook.rine.network`. */
+function ztHost(hook: string, label = AGENT_LABEL): string {
+	return `${hook}.${label}.hook.rine.network`;
+}
+
+/** The per-agent wildcard the cert CN/SAN must equal. */
+const WILDCARD = agentWildcardFqdn(AGENT_LABEL);
+
+/**
+ * The cache KEY a relay uses for a hook — the agent label extracted from the live
+ * hostname (REQ-CERT-42/SCALE-6). Driving the tests through this real extraction
+ * (not a stubbed key) is what proves two hooks of one agent collapse onto ONE
+ * cache dir: if the extraction or the keying ever regressed to per-hook, these
+ * tests would order twice.
+ */
+function keyFor(hook: string, label = AGENT_LABEL): string {
+	return agentLabel(ztHost(hook, label));
+}
 
 function makeTmpDir(): string {
 	return fs.mkdtempSync(join(tmpdir(), "rine-funnel-cert-test-"));
@@ -91,12 +128,49 @@ function makeMeta(daysFromNow: number, over: Partial<CertMeta> = {}): CertMeta {
 }
 
 /**
+ * A real (parseable) self-signed leaf whose single SAN is the per-agent wildcard
+ * `*.{label}.hook.rine.network`. The REQ-CERT-48 SAN-match gate reads the cached
+ * cert's SAN via `acmeCrypto.readCertificateInfo`, so the force-reissue /
+ * serve-from-cache split can only be exercised with a cert that lib can parse —
+ * a "CERT" string stub is treated as matching (defer to renewal) and would not
+ * drive the gate. Built with @peculiar/x509 (already an acme-client dependency).
+ */
+async function makeParseableLeaf(label: string): Promise<string> {
+	const x509 = await import("@peculiar/x509");
+	const { webcrypto } = await import("node:crypto");
+	x509.cryptoProvider.set(webcrypto as unknown as Crypto);
+	const fqdn = agentWildcardFqdn(label);
+	const keys = await webcrypto.subtle.generateKey(
+		{ name: "ECDSA", namedCurve: "P-256" },
+		false,
+		["sign", "verify"],
+	);
+	const cert = await x509.X509CertificateGenerator.createSelfSigned({
+		serialNumber: "01",
+		name: `CN=${fqdn}`,
+		notBefore: new Date(),
+		notAfter: new Date(Date.now() + 365 * 86_400_000),
+		signingAlgorithm: { name: "ECDSA", hash: "SHA-256" },
+		keys: keys as CryptoKeyPair,
+		extensions: [
+			new x509.SubjectAlternativeNameExtension([{ type: "dns", value: fqdn }]),
+		],
+	});
+	return cert.toString("pem");
+}
+
+/**
  * A fully-mocked dependency bundle for issueCert. The ACME client, the
  * dns-challenge poster, and the DNS-propagation resolver are all spies, so no
  * test ever touches the network. The sequence each spy records lets us assert
- * the exact issuance order.
+ * the exact issuance order. The dns-challenge `set` echoes the AGENT-WILDCARD
+ * challenge name `_acme-challenge.{agentLabel}.hook` (ONE per agent, REQ-CERT-43)
+ * so the propagation-poll assertions watch the record the backend actually wrote.
  */
-function makeIssueDeps(over: Partial<IssueCertDeps> = {}): {
+function makeIssueDeps(
+	over: Partial<IssueCertDeps> = {},
+	label = AGENT_LABEL,
+): {
 	deps: IssueCertDeps;
 	order: string[];
 	dnsPost: ReturnType<typeof vi.fn>;
@@ -104,13 +178,10 @@ function makeIssueDeps(over: Partial<IssueCertDeps> = {}): {
 	const order: string[] = [];
 	const dnsPost = vi.fn(async (action: "set" | "clear", value?: string) => {
 		order.push(action === "set" ? "dns:set" : "dns:clear");
-		// echo the backend contract shape so callers can assert no key leaks. The
-		// backend returns the DIRECT TXT FQDN (no CNAME/`acme.` delegation): the
-		// relative `_acme-challenge.<cert-domain>.hook` rrset in the rine.network zone.
 		return action === "set"
 			? {
 					status: "set",
-					fqdn: `_acme-challenge.${DELEGATION_ID}.hook.rine.network`,
+					fqdn: `_acme-challenge.${label}.hook.rine.network`,
 					_value: value,
 				}
 			: { status: "cleared" };
@@ -151,34 +222,70 @@ function makeIssueDeps(over: Partial<IssueCertDeps> = {}): {
 	return { deps, order, dnsPost };
 }
 
-// ── REQ-CERT-09 / REQ-CERT-01: local keypair + CSR, DNS-01 only ─────────────
+// ── REQ-CERT-40 / REQ-CERT-09: per-agent WILDCARD keypair + CSR ──────────────
 
-describe("generateCertKeypairAndCsr — local EC P-256 keypair + CSR (REQ-CERT-09)", () => {
-	it("generates an EC P-256 keypair and a CSR whose CN/SAN is <handle>.hook.rine.network", async () => {
-		const out = await generateCertKeypairAndCsr(HANDLE);
+describe("generateCertKeypairAndCsr — per-agent wildcard CSR (REQ-CERT-40/09)", () => {
+	it("CN and the SINGLE SAN are the per-agent wildcard *.{agentLabel}.hook.rine.network", async () => {
+		const out = await generateCertKeypairAndCsr(AGENT_LABEL);
 		expect(out.csrPem).toContain("CERTIFICATE REQUEST");
-		expect(out.commonName).toBe(FQDN);
-		expect(out.subjectAltNames).toContain(FQDN);
+		expect(out.commonName).toBe(WILDCARD);
+		expect(out.subjectAltNames).toEqual([WILDCARD]);
+	});
+
+	it("SAN CARDINALITY is exactly 1 and INDEPENDENT of hook_name (a per-hook SAN would regress to per-hook certs)", async () => {
+		// The wildcard is derived from the AGENT label only — there is no hook_name
+		// argument at all, so the SAN cannot vary per hook. Two issuances for the
+		// same agent yield the identical SAN set of cardinality one.
+		const a = await generateCertKeypairAndCsr(AGENT_LABEL);
+		const b = await generateCertKeypairAndCsr(AGENT_LABEL);
+		expect(a.subjectAltNames).toHaveLength(1);
+		expect(b.subjectAltNames).toHaveLength(1);
+		expect(a.subjectAltNames).toEqual(b.subjectAltNames);
+		expect(a.commonName).toBe(b.commonName);
 	});
 
 	it("uses the EC P-256 (prime256v1) curve, matching modern Let's Encrypt defaults", async () => {
-		const out = await generateCertKeypairAndCsr(HANDLE);
-		// Behavioral: the emitted private key is an EC key on the P-256 curve.
+		const out = await generateCertKeypairAndCsr(AGENT_LABEL);
 		expect(out.keyAlgorithm).toBe("EC");
 		expect(out.keyCurve).toMatch(/(P-256|prime256v1|secp256r1)/i);
 	});
 
 	it("produces a fresh, unique keypair on each call (no key reuse across issuances)", async () => {
-		const a = await generateCertKeypairAndCsr(HANDLE);
-		const b = await generateCertKeypairAndCsr(HANDLE);
+		const a = await generateCertKeypairAndCsr(AGENT_LABEL);
+		const b = await generateCertKeypairAndCsr(AGENT_LABEL);
 		expect(a.keyPem).not.toBe(b.keyPem);
 	});
 
 	it("returns the private key in PEM form for LOCAL storage only — never a network field", async () => {
-		const out = await generateCertKeypairAndCsr(HANDLE);
+		const out = await generateCertKeypairAndCsr(AGENT_LABEL);
 		expect(out.keyPem).toContain("PRIVATE KEY");
 		// The CSR (the only thing that goes to LE) carries the PUBLIC key, never the private one.
 		expect(out.csrPem).not.toContain("PRIVATE KEY");
+	});
+});
+
+// ── REQ-CERT-42 / SCALE-6: agentLabel(hostname) extraction (cache key source) ─
+
+describe("agentLabel — extracts the agent label from a .hook hostname (REQ-CERT-42)", () => {
+	it("returns the SECOND-TO-LAST label (the agent label) of {hook}.{agentLabel}.hook.rine.network", () => {
+		expect(agentLabel(ztHost("github"))).toBe(AGENT_LABEL);
+		expect(agentLabel(ztHost("ci-deploy"))).toBe(AGENT_LABEL);
+	});
+
+	it("yields the SAME label for every hook of one agent (the per-agent collapse)", () => {
+		expect(agentLabel(ztHost("hook-a"))).toBe(agentLabel(ztHost("hook-b")));
+	});
+
+	it("yields DIFFERENT labels for two different agents", () => {
+		expect(agentLabel(ztHost("h", AGENT_LABEL))).not.toBe(
+			agentLabel(ztHost("h", AGENT_LABEL_B)),
+		);
+	});
+
+	it("THROWS on a non-.hook (e.g. shared-edge .edge) host so a mis-tiered host can never feed the ZT cert path", () => {
+		expect(() =>
+			agentLabel(`h--${AGENT_LABEL}.edge.rine.network`),
+		).toThrow(/zero-trust|\.hook/i);
 	});
 });
 
@@ -186,16 +293,13 @@ describe("DNS-01 is the only solver (REQ-CERT-01)", () => {
 	it("issuance never invokes an HTTP-01 or TLS-ALPN-01 solver and never binds an ACME listener", async () => {
 		const { deps } = makeIssueDeps();
 		await issueCert({
-			handle: HANDLE,
+			handle: AGENT_LABEL,
 			agentId: AGENT_ID,
 			delegationId: DELEGATION_ID,
 			directoryUrl: LE_PROD,
 			deps,
 		});
-		// The deps bundle exposes ONLY a dns-01 path — there is no http/alpn solver
-		// to call. Assert the order's solver step is the dns endpoint, never a listener.
 		expect(deps.acme.newOrder as ReturnType<typeof vi.fn>).toHaveBeenCalled();
-		// No property named like an http/alpn solver exists on deps.acme.
 		expect(Object.keys(deps.acme)).not.toContain("http01");
 		expect(Object.keys(deps.acme)).not.toContain("tlsAlpn01");
 	});
@@ -212,7 +316,7 @@ describe("DNS-01 is the only solver (REQ-CERT-01)", () => {
 		});
 		await expect(
 			issueCert({
-				handle: HANDLE,
+				handle: AGENT_LABEL,
 				agentId: AGENT_ID,
 				delegationId: DELEGATION_ID,
 				directoryUrl: LE_PROD,
@@ -228,7 +332,7 @@ describe("issueCert sequence ordering (REQ-CERT-10)", () => {
 	it("runs exactly: newOrder -> dns:set -> propagation -> validate -> download -> dns:clear", async () => {
 		const { deps, order } = makeIssueDeps();
 		await issueCert({
-			handle: HANDLE,
+			handle: AGENT_LABEL,
 			agentId: AGENT_ID,
 			delegationId: DELEGATION_ID,
 			directoryUrl: LE_PROD,
@@ -247,7 +351,7 @@ describe("issueCert sequence ordering (REQ-CERT-10)", () => {
 	it("POSTs {action:set,value:<token>} to the dns-challenge endpoint with the LE-issued token", async () => {
 		const { deps, dnsPost } = makeIssueDeps();
 		await issueCert({
-			handle: HANDLE,
+			handle: AGENT_LABEL,
 			agentId: AGENT_ID,
 			delegationId: DELEGATION_ID,
 			directoryUrl: LE_PROD,
@@ -266,45 +370,42 @@ describe("issueCert sequence ordering (REQ-CERT-10)", () => {
 		});
 		await expect(
 			issueCert({
-				handle: HANDLE,
+				handle: AGENT_LABEL,
 				agentId: AGENT_ID,
 				delegationId: DELEGATION_ID,
 				directoryUrl: LE_PROD,
 				deps,
 			}),
 		).rejects.toThrow();
-		// clear MUST still run after the failure
 		expect(dnsPost).toHaveBeenCalledWith("clear");
 		expect(order[order.length - 1]).toBe("dns:clear");
 	});
 
-	it("polls the FQDN the BACKEND returned from dns-challenge `set`, not a relay-side guess (C1)", async () => {
+	it("polls the AGENT-WILDCARD challenge FQDN the BACKEND returned (_acme-challenge.{agentLabel}.hook), one per agent", async () => {
 		const { deps } = makeIssueDeps();
 		await issueCert({
-			handle: HANDLE,
+			handle: AGENT_LABEL,
 			agentId: AGENT_ID,
 			delegationId: DELEGATION_ID,
 			directoryUrl: LE_PROD,
 			deps,
 		});
-		// The server owns the `_acme-challenge.<cert-domain>.hook.rine.network` name
-		// (direct TXT in the rine.network zone, no delegation); the poll must target
-		// the `fqdn` from the `set` response so it watches the record the backend
-		// actually wrote (REQ-CERT-10).
+		// The server owns ONE `_acme-challenge.{agentLabel}.hook.rine.network` per
+		// agent (NOT per hook, REQ-CERT-43); the poll watches that exact record.
 		expect(deps.waitForPropagation).toHaveBeenCalledWith({
-			fqdn: `_acme-challenge.${DELEGATION_ID}.hook.rine.network`,
+			fqdn: `_acme-challenge.${AGENT_LABEL}.hook.rine.network`,
 			expectedValue: "tok-from-le",
 		});
 	});
 
-	it("falls back to the cert-handle direct FQDN only when the set response omits fqdn", async () => {
+	it("falls back to the delegationId direct FQDN only when the set response omits fqdn", async () => {
 		const { deps } = makeIssueDeps({
 			dnsPost: vi.fn(async (action: "set" | "clear") =>
 				action === "set" ? { status: "set" } : { status: "cleared" },
 			),
 		});
 		await issueCert({
-			handle: HANDLE,
+			handle: AGENT_LABEL,
 			agentId: AGENT_ID,
 			delegationId: DELEGATION_ID,
 			directoryUrl: LE_PROD,
@@ -319,7 +420,7 @@ describe("issueCert sequence ordering (REQ-CERT-10)", () => {
 	it("waits for DNS propagation BEFORE telling LE to validate (avoid burning a validation attempt)", async () => {
 		const { deps, order } = makeIssueDeps();
 		await issueCert({
-			handle: HANDLE,
+			handle: AGENT_LABEL,
 			agentId: AGENT_ID,
 			delegationId: DELEGATION_ID,
 			directoryUrl: LE_PROD,
@@ -340,7 +441,7 @@ describe("issueCert sequence ordering (REQ-CERT-10)", () => {
 		});
 		await expect(
 			issueCert({
-				handle: HANDLE,
+				handle: AGENT_LABEL,
 				agentId: AGENT_ID,
 				delegationId: DELEGATION_ID,
 				directoryUrl: LE_PROD,
@@ -348,7 +449,6 @@ describe("issueCert sequence ordering (REQ-CERT-10)", () => {
 			}),
 		).rejects.toThrow(/propagation/i);
 		expect(order).not.toContain("acme:validate");
-		// still cleaned up its TXT
 		expect(order).toContain("dns:clear");
 	});
 });
@@ -359,7 +459,7 @@ describe("FROZEN-CONTRACT: key material is never transmitted (REQ-CERT-09)", () 
 	it("the dns-challenge POST body carries ONLY the public ACME token — never PEM key material", async () => {
 		const { deps, dnsPost } = makeIssueDeps();
 		await issueCert({
-			handle: HANDLE,
+			handle: AGENT_LABEL,
 			agentId: AGENT_ID,
 			delegationId: DELEGATION_ID,
 			directoryUrl: LE_PROD,
@@ -375,9 +475,7 @@ describe("FROZEN-CONTRACT: key material is never transmitted (REQ-CERT-09)", () 
 	it("the DNS provider token is never referenced relay-side in ANY funnel source (server-side-only secret)", () => {
 		// Static guard: the dns-challenge HTTP call lives in acme.ts and the whole
 		// funnel/ tree is re-exported, so glob EVERY src/funnel/*.ts — not just
-		// cert.ts — to catch a future regression that named the token anywhere. The
-		// live name is HETZNER_DNS_API_TOKEN (the legacy HOOK_DNS_API_TOKEN must also
-		// never reappear).
+		// cert.ts — to catch a future regression that named the token anywhere.
 		const funnelDir = join(__dirname, "..", "..", "src", "funnel");
 		const files = fs.readdirSync(funnelDir).filter((f) => f.endsWith(".ts"));
 		expect(files.length).toBeGreaterThan(1);
@@ -417,11 +515,11 @@ describe("acmeDirectoryUrl — staging/prod selection (REQ-CERT-11)", () => {
 });
 
 describe("cache segregation: staging and prod never collide (REQ-CERT-11/12)", () => {
-	it("staging and prod resolve to DIFFERENT per-handle cache directories", () => {
+	it("staging and prod resolve to DIFFERENT per-agent cache directories", () => {
 		const cfg = makeTmpDir();
 		try {
-			const prodDir = handleCacheDir(cfg, HANDLE, { staging: false });
-			const stagingDir = handleCacheDir(cfg, HANDLE, { staging: true });
+			const prodDir = handleCacheDir(cfg, AGENT_LABEL, { staging: false });
+			const stagingDir = handleCacheDir(cfg, AGENT_LABEL, { staging: true });
 			expect(prodDir).not.toBe(stagingDir);
 		} finally {
 			fs.rmSync(cfg, { recursive: true, force: true });
@@ -431,10 +529,9 @@ describe("cache segregation: staging and prod never collide (REQ-CERT-11/12)", (
 	it("a cached staging cert is NOT presented in prod mode (directory mismatch -> miss)", () => {
 		const cfg = makeTmpDir();
 		try {
-			// Write a valid+fresh cert under the STAGING directory.
 			saveCert(
 				cfg,
-				HANDLE,
+				AGENT_LABEL,
 				{ staging: true },
 				{
 					certPem: "CERT",
@@ -442,8 +539,7 @@ describe("cache segregation: staging and prod never collide (REQ-CERT-11/12)", (
 					meta: makeMeta(80, { directory_url: LE_STAGING }),
 				},
 			);
-			// Loading in PROD mode must not find/return it.
-			const loaded = loadCachedCert(cfg, HANDLE, { staging: false });
+			const loaded = loadCachedCert(cfg, AGENT_LABEL, { staging: false });
 			expect(loaded).toBeNull();
 		} finally {
 			fs.rmSync(cfg, { recursive: true, force: true });
@@ -462,73 +558,74 @@ describe("cert cache layout + permissions (REQ-CERT-12)", () => {
 		fs.rmSync(cfg, { recursive: true, force: true });
 	});
 
-	it("the funnel root is ${configDir}/funnel and per-handle dirs live under it", () => {
+	it("the funnel root is ${configDir}/funnel and per-agent dirs live under it", () => {
 		expect(funnelCacheDir(cfg, {})).toBe(join(cfg, "funnel"));
-		expect(handleCacheDir(cfg, HANDLE, {})).toContain(join(cfg, "funnel"));
-		expect(handleCacheDir(cfg, HANDLE, {})).toContain(HANDLE);
+		expect(handleCacheDir(cfg, AGENT_LABEL, {})).toContain(join(cfg, "funnel"));
+		expect(handleCacheDir(cfg, AGENT_LABEL, {})).toContain(AGENT_LABEL);
 	});
 
-	it("writes cert.pem, key.pem and meta.json into the per-handle dir", () => {
+	it("writes cert.pem, key.pem and meta.json into the per-agent dir", () => {
 		saveCert(
 			cfg,
-			HANDLE,
+			AGENT_LABEL,
 			{},
 			{ certPem: "CERT", keyPem: "KEY", meta: makeMeta(80) },
 		);
-		const dir = handleCacheDir(cfg, HANDLE, {});
+		const dir = handleCacheDir(cfg, AGENT_LABEL, {});
 		expect(fs.existsSync(join(dir, "cert.pem"))).toBe(true);
 		expect(fs.existsSync(join(dir, "key.pem"))).toBe(true);
 		expect(fs.existsSync(join(dir, "meta.json"))).toBe(true);
 	});
 
-	it("creates per-handle directories 0700", () => {
+	it("creates per-agent directories 0700", () => {
 		saveCert(
 			cfg,
-			HANDLE,
+			AGENT_LABEL,
 			{},
 			{ certPem: "CERT", keyPem: "KEY", meta: makeMeta(80) },
 		);
-		const dir = handleCacheDir(cfg, HANDLE, {});
+		const dir = handleCacheDir(cfg, AGENT_LABEL, {});
 		expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
 	});
 
 	it("writes cert.pem / key.pem / meta.json with 0600 permissions", () => {
 		saveCert(
 			cfg,
-			HANDLE,
+			AGENT_LABEL,
 			{},
 			{ certPem: "CERT", keyPem: "KEY", meta: makeMeta(80) },
 		);
-		const dir = handleCacheDir(cfg, HANDLE, {});
+		const dir = handleCacheDir(cfg, AGENT_LABEL, {});
 		expect(fs.statSync(join(dir, "cert.pem")).mode & 0o777).toBe(0o600);
 		expect(fs.statSync(join(dir, "key.pem")).mode & 0o777).toBe(0o600);
 		expect(fs.statSync(join(dir, "meta.json")).mode & 0o777).toBe(0o600);
 	});
 
-	it("the ACME account key is SHARED across handles at ${configDir}/funnel/acme-account.key (0600)", () => {
-		// Two handles, one relay, one LE account key.
+	it("the ACME account key is SHARED across agents at ${configDir}/funnel/acme-account.key (REQ-CERT-45)", () => {
+		// Two agents, one relay, one LE account key — unchanged by the per-agent
+		// wildcard (REQ-CERT-45): no per-hook AND no per-agent account key.
 		saveCert(
 			cfg,
-			HANDLE,
+			AGENT_LABEL,
 			{},
 			{ certPem: "C", keyPem: "K", meta: makeMeta(80) },
 		);
 		saveCert(
 			cfg,
-			"gh-other",
+			AGENT_LABEL_B,
 			{},
 			{ certPem: "C", keyPem: "K", meta: makeMeta(80) },
 		);
 		const accountKey = join(funnelCacheDir(cfg, {}), "acme-account.key");
-		// The account key lives at the funnel root, NOT inside a per-handle dir.
-		expect(accountKey.includes(HANDLE)).toBe(false);
-		// And once an issuance has run it is created 0600 (asserted via the deps path below).
+		// The account key lives at the funnel root, NOT inside a per-agent dir.
+		expect(accountKey.includes(AGENT_LABEL)).toBe(false);
+		expect(accountKey.includes(AGENT_LABEL_B)).toBe(false);
 	});
 
 	it("meta.json records directory_url, not_after, delegation_id, last_attempt_ts, consecutive_failures", () => {
 		const meta = makeMeta(80, { consecutive_failures: 3 });
-		saveCert(cfg, HANDLE, {}, { certPem: "CERT", keyPem: "KEY", meta });
-		const loaded = loadMeta(cfg, HANDLE, {});
+		saveCert(cfg, AGENT_LABEL, {}, { certPem: "CERT", keyPem: "KEY", meta });
+		const loaded = loadMeta(cfg, AGENT_LABEL, {});
 		expect(loaded).not.toBeNull();
 		expect(loaded?.directory_url).toBe(LE_PROD);
 		expect(loaded?.delegation_id).toBe(DELEGATION_ID);
@@ -538,12 +635,11 @@ describe("cert cache layout + permissions (REQ-CERT-12)", () => {
 	});
 
 	it("writes ATOMICALLY (temp + rename) — an interrupted write never leaves a half-cert", () => {
-		// Spy renameSync to assert the atomic temp->final move is the mechanism used.
 		const renameSpy = vi.spyOn(fs, "renameSync");
 		try {
 			saveCert(
 				cfg,
-				HANDLE,
+				AGENT_LABEL,
 				{},
 				{ certPem: "CERT", keyPem: "KEY", meta: makeMeta(80) },
 			);
@@ -556,11 +652,279 @@ describe("cert cache layout + permissions (REQ-CERT-12)", () => {
 	});
 
 	it("loadCachedCert returns null for a corrupt/partial cache rather than loading a half-cert", () => {
-		const dir = handleCacheDir(cfg, HANDLE, {});
+		const dir = handleCacheDir(cfg, AGENT_LABEL, {});
 		fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-		// cert present but key + meta missing (interrupted write)
 		fs.writeFileSync(join(dir, "cert.pem"), "PARTIAL");
-		expect(loadCachedCert(cfg, HANDLE, {})).toBeNull();
+		expect(loadCachedCert(cfg, AGENT_LABEL, {})).toBeNull();
+	});
+});
+
+// ── B2 (LOAD-BEARING, SCALE-6): one wildcard cert REUSED across an agent's hooks ─
+// The phase's whole reason to exist. Hook A then hook B of the SAME agent must
+// order ONCE and share ONE cache dir keyed by the agent label extracted from the
+// REAL hostname; a different agent gets a different cert; wiping one agent never
+// touches another; single-hook teardown never wipes the shared dir while a
+// sibling lives.
+
+describe("B2 — per-agent wildcard cert REUSE (REQ-CERT-40/42)", () => {
+	let cfg: string;
+	beforeEach(() => {
+		cfg = makeTmpDir();
+	});
+	afterEach(() => {
+		fs.rmSync(cfg, { recursive: true, force: true });
+	});
+
+	it("ensureCert for hook A then hook B of the SAME agent orders ONCE (cache HIT on B)", async () => {
+		const { deps } = makeIssueDeps();
+		// Both calls key by `agentLabel(hostname)` — the SAME label for both hooks.
+		const keyA = keyFor("hook-a");
+		const keyB = keyFor("hook-b");
+		expect(keyA).toBe(keyB); // proven via the real extraction, not a stub
+
+		const a = await ensureCert({
+			handle: keyA,
+			agentId: AGENT_ID,
+			delegationId: "hook-a",
+			configDir: cfg,
+			options: {},
+			deps,
+		});
+		const b = await ensureCert({
+			handle: keyB,
+			agentId: AGENT_ID,
+			delegationId: "hook-b",
+			configDir: cfg,
+			options: {},
+			deps,
+		});
+		expect(a.fromCache).toBe(false);
+		expect(b.fromCache).toBe(true); // reused the wildcard from hook A
+		expect(deps.acme.newOrder).toHaveBeenCalledTimes(1);
+	});
+
+	it("both hooks of one agent share ONE cache dir (named by the agent label)", async () => {
+		const { deps } = makeIssueDeps();
+		await ensureCert({
+			handle: keyFor("hook-a"),
+			agentId: AGENT_ID,
+			delegationId: "hook-a",
+			configDir: cfg,
+			options: {},
+			deps,
+		});
+		await ensureCert({
+			handle: keyFor("hook-b"),
+			agentId: AGENT_ID,
+			delegationId: "hook-b",
+			configDir: cfg,
+			options: {},
+			deps,
+		});
+		// One dir, named by the agent label, holds the single wildcard cert.
+		const dir = handleCacheDir(cfg, AGENT_LABEL, {});
+		expect(handleCacheDir(cfg, keyFor("hook-a"), {})).toBe(dir);
+		expect(handleCacheDir(cfg, keyFor("hook-b"), {})).toBe(dir);
+		expect(fs.existsSync(join(dir, "cert.pem"))).toBe(true);
+	});
+
+	it("a DIFFERENT agent gets a DIFFERENT cache dir + a SECOND ACME order (cross-tenant key isolation)", async () => {
+		const { deps } = makeIssueDeps();
+		await ensureCert({
+			handle: keyFor("h", AGENT_LABEL),
+			agentId: AGENT_ID,
+			delegationId: "h",
+			configDir: cfg,
+			options: {},
+			deps,
+		});
+		await ensureCert({
+			handle: keyFor("h", AGENT_LABEL_B),
+			agentId: "11111111-1111-4111-b111-111111111111",
+			delegationId: "h",
+			configDir: cfg,
+			options: {},
+			deps,
+		});
+		expect(deps.acme.newOrder).toHaveBeenCalledTimes(2);
+		expect(handleCacheDir(cfg, AGENT_LABEL, {})).not.toBe(
+			handleCacheDir(cfg, AGENT_LABEL_B, {}),
+		);
+		expect(loadCachedCert(cfg, AGENT_LABEL, {})).not.toBeNull();
+		expect(loadCachedCert(cfg, AGENT_LABEL_B, {})).not.toBeNull();
+	});
+
+	it("wiping agent A's cert never touches agent B's cert (scoped teardown)", async () => {
+		saveCert(
+			cfg,
+			AGENT_LABEL,
+			{},
+			{ certPem: "C", keyPem: "K", meta: makeMeta(80) },
+		);
+		saveCert(
+			cfg,
+			AGENT_LABEL_B,
+			{},
+			{ certPem: "C", keyPem: "K", meta: makeMeta(80) },
+		);
+		const { deps } = makeIssueDeps();
+		await revokeAndWipeCache({
+			handle: AGENT_LABEL,
+			configDir: cfg,
+			options: {},
+			deps,
+		});
+		expect(fs.existsSync(handleCacheDir(cfg, AGENT_LABEL, {}))).toBe(false);
+		expect(fs.existsSync(handleCacheDir(cfg, AGENT_LABEL_B, {}))).toBe(true);
+	});
+
+	it("after one hook tears down, a SIBLING hook of the same agent still reuses the wildcard (no re-order)", async () => {
+		// Hook A issues + installs the wildcard; hook B then reuses it without a new
+		// order. (Single-hook teardown must NOT wipe the shared dir — the cache key
+		// is the agent label, so the relay deliberately does not revoke/wipe a live
+		// agent's wildcard on one hook's teardown, REQ-CERT-44.)
+		const { deps } = makeIssueDeps();
+		await ensureCert({
+			handle: keyFor("hook-a"),
+			agentId: AGENT_ID,
+			delegationId: "hook-a",
+			configDir: cfg,
+			options: {},
+			deps,
+		});
+		const b = await ensureCert({
+			handle: keyFor("hook-b"),
+			agentId: AGENT_ID,
+			delegationId: "hook-b",
+			configDir: cfg,
+			options: {},
+			deps,
+		});
+		expect(b.fromCache).toBe(true);
+		expect(deps.acme.newOrder).toHaveBeenCalledTimes(1);
+		// The shared wildcard is still on disk (a sibling teardown did NOT wipe it).
+		expect(loadCachedCert(cfg, AGENT_LABEL, {})).not.toBeNull();
+	});
+});
+
+// ── B2 (REQ-CERT-48): SAN-match force-reissue gate ──────────────────────────
+
+describe("B2 — SAN-match gate: a cached cert whose SAN != current agent label force-reissues (REQ-CERT-48)", () => {
+	let cfg: string;
+	beforeEach(() => {
+		cfg = makeTmpDir();
+	});
+	afterEach(() => {
+		fs.rmSync(cfg, { recursive: true, force: true });
+	});
+
+	it("a cached, time-VALID cert whose wildcard SAN matches the current agent label is SERVED from cache", async () => {
+		const matchingPem = await makeParseableLeaf(AGENT_LABEL);
+		saveCert(
+			cfg,
+			AGENT_LABEL,
+			{},
+			{ certPem: matchingPem, keyPem: "KEY", meta: makeMeta(80) },
+		);
+		const { deps } = makeIssueDeps();
+		const res = await ensureCert({
+			handle: AGENT_LABEL,
+			agentId: AGENT_ID,
+			delegationId: DELEGATION_ID,
+			configDir: cfg,
+			options: {},
+			deps,
+		});
+		expect(res.fromCache).toBe(true);
+		expect(deps.acme.newOrder).not.toHaveBeenCalled();
+	});
+
+	it("a cached, time-VALID cert whose SAN is a DIFFERENT agent's wildcard is FORCE-REISSUED (not served mismatched)", async () => {
+		// Stale SAN simulates a (hypothetical) label-scheme drift — must fail loud
+		// (reissue), never silently serve a name-mismatched cert (REQ-CERT-48).
+		const stalePem = await makeParseableLeaf(AGENT_LABEL_B);
+		saveCert(
+			cfg,
+			AGENT_LABEL,
+			{},
+			{ certPem: stalePem, keyPem: "KEY", meta: makeMeta(80) },
+		);
+		const { deps } = makeIssueDeps();
+		const res = await ensureCert({
+			handle: AGENT_LABEL,
+			agentId: AGENT_ID,
+			delegationId: DELEGATION_ID,
+			configDir: cfg,
+			options: {},
+			deps,
+		});
+		expect(res.fromCache).toBe(false);
+		expect(deps.acme.newOrder).toHaveBeenCalledTimes(1);
+	});
+});
+
+// ── B2 (SCALE-4): cache wipe does NOT immediately re-order the identical wildcard ─
+
+describe("B2 — attempt-ledger survives a cache wipe (SCALE-4): a crash-loop never re-burns the dup-cert budget", () => {
+	let cfg: string;
+	beforeEach(() => {
+		cfg = makeTmpDir();
+	});
+	afterEach(() => {
+		fs.rmSync(cfg, { recursive: true, force: true });
+	});
+
+	it("a failed issuance persists consecutive_failures OUTSIDE the wiped subtree, so a wipe does not reset backoff", async () => {
+		// Fail once → ledger records 1 at the funnel ROOT. Then WIPE the per-agent
+		// subtree (single-hook teardown shape). The ledger (outside the subtree)
+		// must survive so the next failure goes to 2, never restarts at 1 — a wiped
+		// crash-loop must not re-roll the duplicate-certificate budget.
+		const base = makeIssueDeps();
+		const failing = makeIssueDeps({
+			acme: {
+				...base.deps.acme,
+				newOrder: vi.fn(async () => {
+					throw new Error("order failed");
+				}),
+			},
+		});
+		await expect(
+			ensureCert({
+				handle: AGENT_LABEL,
+				agentId: AGENT_ID,
+				delegationId: DELEGATION_ID,
+				configDir: cfg,
+				options: {},
+				deps: failing.deps,
+			}),
+		).rejects.toThrow();
+
+		// Wipe the per-agent subtree (single-hook teardown shape). The attempt-ledger
+		// lives at the funnel ROOT, OUTSIDE this subtree, so wipeHandleCache must
+		// LEAVE it intact (SCALE-4) — that is the property under test.
+		wipeHandleCache(cfg, AGENT_LABEL, {});
+		expect(fs.existsSync(handleCacheDir(cfg, AGENT_LABEL, {}))).toBe(false);
+
+		const failing2 = makeIssueDeps({
+			acme: {
+				...base.deps.acme,
+				newOrder: vi.fn(async () => {
+					throw new Error("order failed again");
+				}),
+			},
+		});
+		await expect(
+			ensureCert({
+				handle: AGENT_LABEL,
+				agentId: AGENT_ID,
+				delegationId: DELEGATION_ID,
+				configDir: cfg,
+				options: {},
+				deps: failing2.deps,
+			}),
+		).rejects.toThrow();
+		// The wipe-surviving ledger drove the count to 2, not back to 1.
+		expect(loadAttemptLedger(cfg, AGENT_LABEL, {}).consecutive_failures).toBe(2);
 	});
 });
 
@@ -578,13 +942,13 @@ describe("cache reuse across restarts (REQ-CERT-13/32)", () => {
 	it("a valid + fresh cached cert is reused — ensureCert performs NO ACME round-trip", async () => {
 		saveCert(
 			cfg,
-			HANDLE,
+			AGENT_LABEL,
 			{},
 			{ certPem: "CERT", keyPem: "KEY", meta: makeMeta(80) },
 		);
 		const { deps } = makeIssueDeps();
 		const result = await ensureCert({
-			handle: HANDLE,
+			handle: AGENT_LABEL,
 			agentId: AGENT_ID,
 			delegationId: DELEGATION_ID,
 			configDir: cfg,
@@ -598,7 +962,7 @@ describe("cache reuse across restarts (REQ-CERT-13/32)", () => {
 	it("a cold start with no cache triggers issuance (a single ACME order, not a per-boot storm)", async () => {
 		const { deps } = makeIssueDeps();
 		await ensureCert({
-			handle: HANDLE,
+			handle: AGENT_LABEL,
 			agentId: AGENT_ID,
 			delegationId: DELEGATION_ID,
 			configDir: cfg,
@@ -646,13 +1010,13 @@ describe("ensureCert renews a cert inside the 30-day window (REQ-CERT-14)", () =
 		try {
 			saveCert(
 				cfg,
-				HANDLE,
+				AGENT_LABEL,
 				{},
 				{ certPem: "OLD", keyPem: "OLDKEY", meta: makeMeta(10) },
 			);
 			const { deps } = makeIssueDeps();
 			const result = await ensureCert({
-				handle: HANDLE,
+				handle: AGENT_LABEL,
 				agentId: AGENT_ID,
 				delegationId: DELEGATION_ID,
 				configDir: cfg,
@@ -708,8 +1072,7 @@ describe("persisted consecutive_failures across restarts (REQ-CERT-13)", () => {
 	});
 
 	it("a failed issuance BUMPS and PERSISTS consecutive_failures in meta.json", async () => {
-		// Pre-seed meta so a failure can increment a persisted counter.
-		saveMeta(cfg, HANDLE, {}, makeMeta(0, { consecutive_failures: 2 }));
+		saveMeta(cfg, AGENT_LABEL, {}, makeMeta(0, { consecutive_failures: 2 }));
 		const base = makeIssueDeps();
 		const { deps } = makeIssueDeps({
 			acme: {
@@ -721,7 +1084,7 @@ describe("persisted consecutive_failures across restarts (REQ-CERT-13)", () => {
 		});
 		await expect(
 			ensureCert({
-				handle: HANDLE,
+				handle: AGENT_LABEL,
 				agentId: AGENT_ID,
 				delegationId: DELEGATION_ID,
 				configDir: cfg,
@@ -729,14 +1092,12 @@ describe("persisted consecutive_failures across restarts (REQ-CERT-13)", () => {
 				deps,
 			}),
 		).rejects.toThrow();
-		const meta = loadMeta(cfg, HANDLE, {});
+		const meta = loadMeta(cfg, AGENT_LABEL, {});
 		expect(meta?.consecutive_failures).toBe(3);
 	});
 
 	it("a crash-loop does NOT reset the persisted backoff counter to zero on boot", async () => {
-		saveMeta(cfg, HANDLE, {}, makeMeta(0, { consecutive_failures: 4 }));
-		// A fresh ensureCert run that fails again must read the persisted 4 and go to 5,
-		// never silently restart from 0 (the token-storm precedent).
+		saveMeta(cfg, AGENT_LABEL, {}, makeMeta(0, { consecutive_failures: 4 }));
 		const base = makeIssueDeps();
 		const { deps } = makeIssueDeps({
 			acme: {
@@ -748,7 +1109,7 @@ describe("persisted consecutive_failures across restarts (REQ-CERT-13)", () => {
 		});
 		await expect(
 			ensureCert({
-				handle: HANDLE,
+				handle: AGENT_LABEL,
 				agentId: AGENT_ID,
 				delegationId: DELEGATION_ID,
 				configDir: cfg,
@@ -756,21 +1117,21 @@ describe("persisted consecutive_failures across restarts (REQ-CERT-13)", () => {
 				deps,
 			}),
 		).rejects.toThrow();
-		expect(loadMeta(cfg, HANDLE, {})?.consecutive_failures).toBe(5);
+		expect(loadMeta(cfg, AGENT_LABEL, {})?.consecutive_failures).toBe(5);
 	});
 
 	it("a SUCCESSFUL issuance RESETS consecutive_failures to 0", async () => {
-		saveMeta(cfg, HANDLE, {}, makeMeta(0, { consecutive_failures: 4 }));
+		saveMeta(cfg, AGENT_LABEL, {}, makeMeta(0, { consecutive_failures: 4 }));
 		const { deps } = makeIssueDeps();
 		await ensureCert({
-			handle: HANDLE,
+			handle: AGENT_LABEL,
 			agentId: AGENT_ID,
 			delegationId: DELEGATION_ID,
 			configDir: cfg,
 			options: {},
 			deps,
 		});
-		expect(loadMeta(cfg, HANDLE, {})?.consecutive_failures).toBe(0);
+		expect(loadMeta(cfg, AGENT_LABEL, {})?.consecutive_failures).toBe(0);
 	});
 });
 
@@ -790,9 +1151,6 @@ describe("isTerminalAcmeError — LE rate-limit ceilings are inviolable (REQ-CER
 	});
 
 	it("classifies the MODERN LE duplicate wording (parenthetical count) as TERMINAL by message alone", () => {
-		// LE surfaces `too many certificates (5) already issued ...` — the count
-		// breaks the old contiguous substring, so the stem `too many certificates`
-		// must still tag it terminal even with NO leRateLimit tag attached.
 		const err = new Error(
 			"Error creating new order :: too many certificates (5) already issued for hook.rine.network in the last 168h",
 		);
@@ -829,7 +1187,7 @@ describe("isTerminalAcmeError — LE rate-limit ceilings are inviolable (REQ-CER
 			});
 			await expect(
 				ensureCert({
-					handle: HANDLE,
+					handle: AGENT_LABEL,
 					agentId: AGENT_ID,
 					delegationId: DELEGATION_ID,
 					configDir: cfg,
@@ -857,7 +1215,7 @@ describe("cold-start gate — no readiness until a valid cert+key is installed (
 	it("ensureCert returns the cert+key only after a successful install (ready=true)", async () => {
 		const { deps } = makeIssueDeps();
 		const result = await ensureCert({
-			handle: HANDLE,
+			handle: AGENT_LABEL,
 			agentId: AGENT_ID,
 			delegationId: DELEGATION_ID,
 			configDir: cfg,
@@ -881,7 +1239,7 @@ describe("cold-start gate — no readiness until a valid cert+key is installed (
 		});
 		await expect(
 			ensureCert({
-				handle: HANDLE,
+				handle: AGENT_LABEL,
 				agentId: AGENT_ID,
 				delegationId: DELEGATION_ID,
 				configDir: cfg,
@@ -889,21 +1247,20 @@ describe("cold-start gate — no readiness until a valid cert+key is installed (
 				deps,
 			}),
 		).rejects.toThrow();
-		// Nothing installed -> a subsequent cache load is still a miss.
-		expect(loadCachedCert(cfg, HANDLE, {})).toBeNull();
+		expect(loadCachedCert(cfg, AGENT_LABEL, {})).toBeNull();
 	});
 
 	it("persists the freshly-issued cert+key+meta to the cache on a successful cold start", async () => {
 		const { deps } = makeIssueDeps();
 		await ensureCert({
-			handle: HANDLE,
+			handle: AGENT_LABEL,
 			agentId: AGENT_ID,
 			delegationId: DELEGATION_ID,
 			configDir: cfg,
 			options: {},
 			deps,
 		});
-		const cached = loadCachedCert(cfg, HANDLE, {});
+		const cached = loadCachedCert(cfg, AGENT_LABEL, {});
 		expect(cached).not.toBeNull();
 		expect(cached?.certPem).toContain("CERTIFICATE");
 	});
@@ -920,28 +1277,28 @@ describe("revokeAndWipeCache — graceful teardown, best-effort (REQ-CERT-16)", 
 		fs.rmSync(cfg, { recursive: true, force: true });
 	});
 
-	it("attempts an ACME revoke and then DELETES the per-handle cache dir", async () => {
+	it("attempts an ACME revoke and then DELETES the per-agent cache dir", async () => {
 		saveCert(
 			cfg,
-			HANDLE,
+			AGENT_LABEL,
 			{},
 			{ certPem: "CERT", keyPem: "KEY", meta: makeMeta(80) },
 		);
 		const { deps } = makeIssueDeps();
 		await revokeAndWipeCache({
-			handle: HANDLE,
+			handle: AGENT_LABEL,
 			configDir: cfg,
 			options: {},
 			deps,
 		});
 		expect(deps.acme.revoke).toHaveBeenCalledTimes(1);
-		expect(fs.existsSync(handleCacheDir(cfg, HANDLE, {}))).toBe(false);
+		expect(fs.existsSync(handleCacheDir(cfg, AGENT_LABEL, {}))).toBe(false);
 	});
 
 	it("wipes the cache even when the ACME revoke FAILS (offline) — best-effort revoke", async () => {
 		saveCert(
 			cfg,
-			HANDLE,
+			AGENT_LABEL,
 			{},
 			{ certPem: "CERT", keyPem: "KEY", meta: makeMeta(80) },
 		);
@@ -954,35 +1311,39 @@ describe("revokeAndWipeCache — graceful teardown, best-effort (REQ-CERT-16)", 
 				}),
 			},
 		});
-		// Must NOT throw; the local wipe is the meaningful local effect.
 		await expect(
-			revokeAndWipeCache({ handle: HANDLE, configDir: cfg, options: {}, deps }),
+			revokeAndWipeCache({
+				handle: AGENT_LABEL,
+				configDir: cfg,
+				options: {},
+				deps,
+			}),
 		).resolves.not.toThrow();
-		expect(fs.existsSync(handleCacheDir(cfg, HANDLE, {}))).toBe(false);
+		expect(fs.existsSync(handleCacheDir(cfg, AGENT_LABEL, {}))).toBe(false);
 	});
 
-	it("does not touch a DIFFERENT handle's cache (scoped wipe)", async () => {
+	it("does not touch a DIFFERENT agent's cache (scoped wipe)", async () => {
 		saveCert(
 			cfg,
-			HANDLE,
+			AGENT_LABEL,
 			{},
 			{ certPem: "C", keyPem: "K", meta: makeMeta(80) },
 		);
 		saveCert(
 			cfg,
-			"gh-other",
+			AGENT_LABEL_B,
 			{},
 			{ certPem: "C", keyPem: "K", meta: makeMeta(80) },
 		);
 		const { deps } = makeIssueDeps();
 		await revokeAndWipeCache({
-			handle: HANDLE,
+			handle: AGENT_LABEL,
 			configDir: cfg,
 			options: {},
 			deps,
 		});
-		expect(fs.existsSync(handleCacheDir(cfg, HANDLE, {}))).toBe(false);
-		expect(fs.existsSync(handleCacheDir(cfg, "gh-other", {}))).toBe(true);
+		expect(fs.existsSync(handleCacheDir(cfg, AGENT_LABEL, {}))).toBe(false);
+		expect(fs.existsSync(handleCacheDir(cfg, AGENT_LABEL_B, {}))).toBe(true);
 	});
 });
 
@@ -994,19 +1355,17 @@ describe("FROZEN-CONTRACT: revocation is relay-local (REQ-CERT-15)", () => {
 		try {
 			saveCert(
 				cfg,
-				HANDLE,
+				AGENT_LABEL,
 				{},
 				{ certPem: "CERT", keyPem: "KEY", meta: makeMeta(80) },
 			);
 			const { deps, dnsPost } = makeIssueDeps();
 			await revokeAndWipeCache({
-				handle: HANDLE,
+				handle: AGENT_LABEL,
 				configDir: cfg,
 				options: {},
 				deps,
 			});
-			// revoke goes through the ACME client; it does NOT POST a "revoke" action
-			// to the dns-challenge endpoint (the server holds no key and cannot revoke).
 			expect(deps.acme.revoke).toHaveBeenCalled();
 			for (const call of dnsPost.mock.calls) {
 				expect(call[0]).not.toMatch(/revoke/i);
@@ -1051,7 +1410,7 @@ describe("makeDnsPost — backend dns-challenge POST wiring (REQ-CERT-08/D4, REQ
 		expect(call?.[1]).toEqual({ action: "set", value: "tok-123" });
 		const serialized = JSON.stringify(call?.[1]);
 		expect(serialized).not.toContain("PRIVATE KEY");
-		expect(serialized).not.toContain(FQDN);
+		expect(serialized).not.toContain(WILDCARD);
 		expect(serialized).not.toContain("HETZNER_DNS_API_TOKEN");
 		expect(serialized).not.toContain("HOOK_DNS_API_TOKEN");
 	});
@@ -1083,7 +1442,6 @@ describe("makeDnsPost — backend dns-challenge POST wiring (REQ-CERT-08/D4, REQ
 		await expect(makeDnsPost(http, AGENT_ID)("set", "tok")).resolves.toEqual({
 			status: "set",
 		});
-		// exactly two attempts: the 429 then the single retry, same body re-posted
 		expect(post).toHaveBeenCalledTimes(2);
 		expect(post.mock.calls[0]?.[1]).toEqual(post.mock.calls[1]?.[1]);
 	});

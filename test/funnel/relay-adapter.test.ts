@@ -212,6 +212,53 @@ describe("relay adapter — verify failure path (REQ-CLI-08)", () => {
 	});
 });
 
+// ── T1: empty-secret fail-closed (forged HMAC("",body) must NOT verify) ──────
+
+describe("relay adapter — empty-secret fail-closed (T1)", () => {
+	it('rejects an attacker-forged sha256=HMAC("", body) when the secret is empty', async () => {
+		// The attacker controls the body AND signs it with the empty key — the same
+		// computation a fail-OPEN relay would do, so this must fail closed.
+		const deps = makeDeps({ secret: "" });
+		const result = await handleWebhookRequest(deps, {
+			headers: { "x-hub-signature-256": sign("", SENTINEL_BODY) },
+			rawBody: Buffer.from(SENTINEL_BODY),
+		});
+		expect(result.verified).toBe(false);
+		expect(result.relayed).toBe(false);
+		expect(deps.client.post).not.toHaveBeenCalled();
+		expect(message.encryptMessage).not.toHaveBeenCalled();
+	});
+
+	it("rejects a bare X-Hook-Signature forged with the empty key", async () => {
+		const deps = makeDeps({ secret: "" });
+		const result = await handleWebhookRequest(deps, {
+			headers: { "x-hook-signature": sign("", SENTINEL_BODY) },
+			rawBody: Buffer.from(SENTINEL_BODY),
+		});
+		expect(result.verified).toBe(false);
+		expect(deps.client.post).not.toHaveBeenCalled();
+	});
+});
+
+// ── T2: verified-sender, untrusted-content marker ────────────────────────────
+
+describe("relay adapter — content-trust marker (T2)", () => {
+	it("marks the relayed message as untrusted-external content alongside the hook name", async () => {
+		const deps = makeDeps();
+		await handleWebhookRequest(deps, {
+			headers: { "x-hub-signature-256": sign(SECRET, SENTINEL_BODY) },
+			rawBody: Buffer.from(SENTINEL_BODY),
+		});
+		const body = deps.client.post.mock.calls[0]?.[1] as Record<string, unknown>;
+		const metadata = body.metadata as Record<string, unknown>;
+		expect(metadata["rine.content_trust"]).toBe("untrusted-external");
+		// The frozen contract is preserved: same type, self-addressed, hook_name kept.
+		expect(body.type).toBe("rine.v1.webhook");
+		expect(body.to_agent_id).toBe(AGENT_ID);
+		expect(metadata["rine.hook_name"]).toBe(HOOK_NAME);
+	});
+});
+
 // ── REQ-SEC-15/16: no-body-log behavioral proof ─────────────────────────────
 
 describe("relay adapter — no-body-log (REQ-SEC-15/16)", () => {

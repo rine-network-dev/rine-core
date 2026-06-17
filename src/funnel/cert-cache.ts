@@ -1,8 +1,14 @@
-// rine Funnel cert cache (REQ-CERT-11/12): per-handle cert+key+meta under the
+// rine Funnel cert cache (REQ-CERT-11/12): per-cert-key cert+key+meta under the
 // config dir, with the SAME perm discipline as crypto/keys.ts — dirs 0700, files
 // 0600, atomic temp+rename writes. The cert private key is born here and never
 // leaves the box (FROZEN-CONTRACT). Staging and prod are segregated into distinct
 // subtrees so a staging cert is never presented in prod mode.
+//
+// The cache key (`certKey`) is now the AGENT label, not a per-hook label
+// (REQ-CERT-42): every hook of an agent shares ONE `funnel/{agentLabel}/` subtree
+// and ONE `*.{agentLabel}.hook.rine.network` wildcard cert. The per-agent
+// issuance lock + the wipe-surviving attempt-ledger that this sharing requires
+// live in `cert-lock.ts` (kept out of the wiped subtree).
 
 import * as fs from "node:fs";
 import { join } from "node:path";
@@ -63,16 +69,20 @@ export function funnelCacheDir(configDir: string, opts: AcmeOptions): string {
 	return isStaging(opts) ? join(root, "staging") : root;
 }
 
-/** The per-handle cache dir under the (staging-segregated) funnel root. */
+/**
+ * The per-cert-key cache dir under the (staging-segregated) funnel root.
+ * `certKey` is the AGENT label (REQ-CERT-42): all of an agent's hook-relays share
+ * this ONE dir, so it holds the single per-agent wildcard cert+key+meta.
+ */
 export function handleCacheDir(
 	configDir: string,
-	handle: string,
+	certKey: string,
 	opts: AcmeOptions,
 ): string {
-	return join(funnelCacheDir(configDir, opts), handle);
+	return join(funnelCacheDir(configDir, opts), certKey);
 }
 
-/** One LE account key per relay, shared across handles, at the funnel root. */
+/** One LE account key per relay, shared across cert keys, at the funnel root. */
 export function accountKeyPath(configDir: string, opts: AcmeOptions): string {
 	return join(funnelCacheDir(configDir, opts), "acme-account.key");
 }
@@ -86,10 +96,10 @@ function writeSecret(path: string, content: string): void {
 
 function ensureHandleDir(
 	configDir: string,
-	handle: string,
+	certKey: string,
 	opts: AcmeOptions,
 ): string {
-	const dir = handleCacheDir(configDir, handle, opts);
+	const dir = handleCacheDir(configDir, certKey, opts);
 	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 	// recursive mkdir honors umask for already-existing parents; pin the leaf 0700.
 	fs.chmodSync(dir, 0o700);
@@ -98,20 +108,20 @@ function ensureHandleDir(
 
 export function saveMeta(
 	configDir: string,
-	handle: string,
+	certKey: string,
 	opts: AcmeOptions,
 	meta: CertMeta,
 ): void {
-	const dir = ensureHandleDir(configDir, handle, opts);
+	const dir = ensureHandleDir(configDir, certKey, opts);
 	writeSecret(join(dir, META_FILE), `${JSON.stringify(meta, null, 2)}\n`);
 }
 
 export function loadMeta(
 	configDir: string,
-	handle: string,
+	certKey: string,
 	opts: AcmeOptions,
 ): CertMeta | null {
-	const path = join(handleCacheDir(configDir, handle, opts), META_FILE);
+	const path = join(handleCacheDir(configDir, certKey, opts), META_FILE);
 	try {
 		return JSON.parse(fs.readFileSync(path, "utf-8")) as CertMeta;
 	} catch {
@@ -121,16 +131,16 @@ export function loadMeta(
 
 export function saveCert(
 	configDir: string,
-	handle: string,
+	certKey: string,
 	opts: AcmeOptions,
 	cert: CachedCert,
 ): void {
-	const dir = ensureHandleDir(configDir, handle, opts);
+	const dir = ensureHandleDir(configDir, certKey, opts);
 	// Write key first, then cert, then meta — meta is the last write so a partial
 	// install (interrupted before meta lands) reads back as a cache miss.
 	writeSecret(join(dir, KEY_FILE), cert.keyPem);
 	writeSecret(join(dir, CERT_FILE), cert.certPem);
-	saveMeta(configDir, handle, opts, cert.meta);
+	saveMeta(configDir, certKey, opts, cert.meta);
 }
 
 /**
@@ -140,10 +150,10 @@ export function saveCert(
  */
 export function loadCachedCert(
 	configDir: string,
-	handle: string,
+	certKey: string,
 	opts: AcmeOptions,
 ): CachedCert | null {
-	const dir = handleCacheDir(configDir, handle, opts);
+	const dir = handleCacheDir(configDir, certKey, opts);
 	try {
 		const certPem = fs.readFileSync(join(dir, CERT_FILE), "utf-8");
 		const keyPem = fs.readFileSync(join(dir, KEY_FILE), "utf-8");
@@ -161,13 +171,22 @@ export function loadCachedCert(
 	}
 }
 
-/** Scoped wipe of one handle's cache dir (REQ-CERT-16). Other handles untouched. */
+/**
+ * Scoped wipe of one cert key's cert+key+meta subtree (REQ-CERT-16). Other cert
+ * keys are untouched. The per-agent issuance lock and the attempt-ledger live at
+ * the funnel ROOT (cert-lock.ts), OUTSIDE this subtree, so a wipe does NOT reset
+ * the crash-loop backoff and never strands a held lock (SCALE-4). Because the
+ * cache key is now the agent label, a relay MUST NOT call this on a single hook's
+ * teardown while sibling hooks of the same agent are still live — it would wipe
+ * the shared wildcard. The wildcard teardown-revoke is dropped (REQ-CERT-44); the
+ * kill switch is server-side DNS+route teardown.
+ */
 export function wipeHandleCache(
 	configDir: string,
-	handle: string,
+	certKey: string,
 	opts: AcmeOptions,
 ): void {
-	fs.rmSync(handleCacheDir(configDir, handle, opts), {
+	fs.rmSync(handleCacheDir(configDir, certKey, opts), {
 		recursive: true,
 		force: true,
 	});

@@ -29,6 +29,16 @@ export interface LocalPipe {
 	close(): void;
 	pause?(): void;
 	resume?(): void;
+	/**
+	 * Optional: the pipe signals it is DONE with this conn (relay→broker CLOSE).
+	 * The zero-trust loopback pipe omits it — its teardown is driven by GitHub's
+	 * post-response close flowing back as raw passthrough EOF. The shared-edge
+	 * `edge-pipe` (Phase B) uses it: after synthesizing the 204/400/500 it has
+	 * nothing more to send, so it closes the conn so the broker promptly shuts the
+	 * terminated TLS stream (GitHub gets the response + close_notify) instead of
+	 * waiting on a keep-alive idle timeout.
+	 */
+	onClose?(cb: () => void): void;
 }
 
 /** The minimal WS surface the driver needs (real WebSocket or a fake in tests). */
@@ -75,6 +85,16 @@ export function createMuxClient(args: MuxClientArgs): MuxClient {
 		);
 	}
 
+	/** Relay→broker CLOSE for a conn the pipe has finished (shared-edge, Phase B). */
+	function sendClose(connId: number): void {
+		ws.send(
+			encodeFrame(
+				{ frameType: FrameType.CLOSE, connId, payload: new Uint8Array(0) },
+				maxFrame,
+			),
+		);
+	}
+
 	function teardown(connId: number): void {
 		const state = conns.get(connId);
 		if (!state) return;
@@ -95,6 +115,13 @@ export function createMuxClient(args: MuxClientArgs): MuxClient {
 				state.paused = false;
 				state.pipe.resume?.();
 			}
+		});
+		// A pipe that signals completion (shared-edge edge-pipe) → relay→broker
+		// CLOSE so the broker shuts its terminated TLS stream promptly, then drop
+		// our half. The zero-trust loopback pipe omits onClose (no-op here).
+		pipe.onClose?.(() => {
+			sendClose(frame.connId);
+			teardown(frame.connId);
 		});
 	}
 

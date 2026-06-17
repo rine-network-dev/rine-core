@@ -14,7 +14,7 @@ import { Client, crypto as acmeCrypto } from "acme-client";
 import { RineApiError } from "../errors.js";
 import type { HttpClient } from "../http.js";
 import { type AcmeOptions, accountKeyPath } from "./cert-cache.js";
-import { acmeDirectoryUrl, hookFqdn } from "./csr.js";
+import { acmeDirectoryUrl, agentWildcardFqdn } from "./csr.js";
 import type { DnsChallengeResult, IssueCertDeps } from "./issue.js";
 import { sleep, waitForTxtPropagation } from "./propagation.js";
 
@@ -96,7 +96,10 @@ export function makeAcmeClientDeps(
 	return {
 		acme: {
 			async newOrder({ handle }) {
-				const fqdn = hookFqdn(handle);
+				// `handle` is the AGENT label; order the per-agent wildcard identifier
+				// `*.{agentLabel}.hook.rine.network` (REQ-CERT-40). DNS-01 is already
+				// the only solver and wildcards require it — no new solver code.
+				const fqdn = agentWildcardFqdn(handle);
 				try {
 					const order = await client.createOrder({
 						identifiers: [{ type: "dns", value: fqdn }],

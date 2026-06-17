@@ -9,8 +9,12 @@ import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import { join } from "node:path";
 
-/** DNS-label-safe hook name (mirrors the backend HOOK_NAME_PATTERN). */
-const HOOK_NAME_RE = /^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/;
+/**
+ * DNS-label-safe hook name (mirrors the backend HOOK_NAME_PATTERN): lowercase,
+ * <=32 chars, no leading/trailing hyphen, and NO consecutive hyphens so the
+ * shared-edge `--` separator stays unambiguous (SEC-2).
+ */
+const HOOK_NAME_RE = /^[a-z0-9](-?[a-z0-9]){0,31}$/;
 
 export function isValidHookName(name: string): boolean {
 	return HOOK_NAME_RE.test(name);

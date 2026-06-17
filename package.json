@@ -1,6 +1,6 @@
 {
 	"name": "@rine-network/core",
-	"version": "0.6.1",
+	"version": "0.6.5",
 	"description": "Core library for rine.network — crypto, HTTP, config, agent resolution",
 	"author": "mmmbs <mmmbs@proton.me>",
 	"license": "EUPL-1.2",
@@ -30,7 +30,7 @@
 		"@noble/hashes": "^2.0.1",
 		"@noble/post-quantum": "^0.6.1",
 		"acme-client": "^5.4.0",
-		"ts-mls": "^2.0.0-rc.13"
+		"ts-mls": "2.0.0-rc.13"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^1.9.0",

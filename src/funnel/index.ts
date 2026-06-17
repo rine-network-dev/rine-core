@@ -8,5 +8,7 @@ export * from "./acme.js";
 // per-request verify→encrypt→self-send adapter, and the local HMAC-secret store.
 export * from "./tunnel.js";
 export * from "./tls-listener.js";
+export * from "./edge-pipe.js";
 export * from "./relay-adapter.js";
+export * from "./idempotency-store.js";
 export * from "./secret-store.js";
