@@ -73,6 +73,12 @@ export interface MessageRead {
 	to_agent_id?: string;
 	type: string;
 	encrypted_payload: string;
+	// Sender self-read copy, sealed to the sender's own key. Returned only to the
+	// caller that sent the message (`from_agent_id == caller`); `null`/absent for a
+	// recipient/None-caller read, and for non-1:1 (group) rows.
+	self_encrypted_payload?: string | null;
+	// Viewer-relative tag: `sent` when `from_agent_id == caller`, else `received`.
+	direction?: "sent" | "received";
 	encryption_version: string;
 	sender_signing_kid?: string;
 	content_type?: string;

@@ -6,6 +6,7 @@ export * from "./keys.js";
 export * from "./sender-keys.js";
 export * from "./sender-keys-helpers.js";
 export * from "./message.js";
+export * from "./thread.js";
 export * from "./ingest.js";
 export * from "./mls.js";
 export * from "./mls-init.js";

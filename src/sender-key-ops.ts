@@ -1,5 +1,6 @@
 import type { BatchKeysResponse, GroupMemberRead, MessageRead, PaginatedResponse } from "./api-types.js";
-import { decryptMessage, encryptMessage, fromBase64Url, ingestSenderKeyDistribution, jwkToPqPublicKey, toBase64Url } from "./crypto/index.js";
+import type { DecryptResult } from "./crypto/index.js";
+import { decryptGroupMessage, decryptMessage, encryptMessage, fromBase64Url, ingestSenderKeyDistribution, jwkToPqPublicKey, toBase64Url } from "./crypto/index.js";
 import type { PqJWK } from "./crypto/keys.js";
 import type { SenderKeyState } from "./crypto/sender-keys.js";
 import {
@@ -222,4 +223,38 @@ export async function fetchAndIngestPendingSKDistributions(
 		}
 	}
 	return ingested;
+}
+
+/**
+ * Decrypt a sender-key/MLS group message with one-shot key-material recovery.
+ *
+ * `decryptGroupMessage` throws `"unknown sender key id: <id>"` when the sender's
+ * key distribution has not yet been ingested locally. On that specific failure we
+ * fetch + ingest pending distributions (targeting the missing id) and retry once.
+ * Any other error — or a retry that ingests nothing / still fails — propagates so
+ * the caller can degrade the row. This is the single home for the sender-key
+ * recovery dance shared by `rine_read` (rine-mcp) and `decryptThreadRow` (core).
+ */
+export async function decryptGroupMessageWithRecovery(
+	client: HttpClient,
+	configDir: string,
+	agentId: string,
+	groupId: string,
+	ciphertext: string,
+): Promise<DecryptResult> {
+	try {
+		return await decryptGroupMessage(configDir, agentId, groupId, ciphertext, client);
+	} catch (err) {
+		const match =
+			err instanceof Error && err.message.match(/^unknown sender key id: (.+)$/);
+		if (!match) throw err;
+		const ingested = await fetchAndIngestPendingSKDistributions(
+			client,
+			configDir,
+			agentId,
+			match[1],
+		);
+		if (ingested === 0) throw err;
+		return await decryptGroupMessage(configDir, agentId, groupId, ciphertext, client);
+	}
 }

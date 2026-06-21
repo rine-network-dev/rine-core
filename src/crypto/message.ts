@@ -37,6 +37,15 @@ export interface EncryptResult {
 	encrypted_payload: string;
 	encryption_version: string;
 	sender_signing_kid: string;
+	/**
+	 * A second ciphertext of the same signed envelope, sealed to the SENDER's own
+	 * encryption key(s), enabling sender self-read of 1:1 messages. Only produced
+	 * by {@link encryptMessage} (1:1 `hpke-v1`/`hpke-hybrid-v1`); the group encrypt
+	 * paths leave it `undefined` (groups already self-read via client caches).
+	 * Hybrid when the sender publishes a PQ key, classical otherwise — independent
+	 * of the recipient's negotiated version (it seals to the sender's keys).
+	 */
+	self_encrypted_payload?: string;
 }
 
 export type VerificationStatus = "verified" | "invalid" | "unverifiable";
@@ -89,6 +98,20 @@ export async function encryptMessage(
 	const signature = signPayload(keys.signing.privateKey, plaintext);
 	const envelope = encodeEnvelope(kid, signature, plaintext);
 
+	// Self-seal: a second ciphertext of the same envelope, sealed to the SENDER's
+	// own key(s), so the sender can later self-read its own 1:1 message. The
+	// self-seal negotiates on the SENDER's PQ capability (hybrid when the sender
+	// publishes an ML-KEM key, classical otherwise) — independent of the recipient
+	// version below. Purely additive: the recipient output is unchanged.
+	const selfSealed = keys.pqEncryption
+		? await sealHybrid(
+				keys.encryption.publicKey,
+				keys.pqEncryption.publicKey,
+				envelope,
+			)
+		: await seal(keys.encryption.publicKey, envelope);
+	const self_encrypted_payload = toBase64Url(selfSealed);
+
 	// Auto-negotiate: use hybrid PQ when the recipient publishes an ML-KEM key,
 	// otherwise fall back to classical HPKE. hpke-v1 output stays byte-for-byte.
 	if (recipientPqEncryptionPk && recipientPqEncryptionPk.length > 0) {
@@ -101,6 +124,7 @@ export async function encryptMessage(
 			encrypted_payload: toBase64Url(encrypted),
 			encryption_version: "hpke-hybrid-v1",
 			sender_signing_kid: kid,
+			self_encrypted_payload,
 		};
 	}
 
@@ -109,6 +133,7 @@ export async function encryptMessage(
 		encrypted_payload: toBase64Url(encrypted),
 		encryption_version: "hpke-v1",
 		sender_signing_kid: kid,
+		self_encrypted_payload,
 	};
 }
 

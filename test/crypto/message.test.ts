@@ -77,6 +77,48 @@ describe("DM encrypt/decrypt round-trip", () => {
 		expect(result.senderKid).toBe(`rine:${SENDER_ID}`);
 	});
 
+	it("produces a self-seal blob for a classical sender", async () => {
+		const encrypted = await encryptMessage(
+			dir, SENDER_ID, recipientKeys.encryption.publicKey, { hi: "self" },
+		);
+		expect(typeof encrypted.self_encrypted_payload).toBe("string");
+		expect(encrypted.self_encrypted_payload?.length).toBeGreaterThan(0);
+	});
+
+	it("self-blob round-trips: the sender can decrypt its own message", async () => {
+		const payload = { secret: "codeword-banana", turn: 1 };
+		const encrypted = await encryptMessage(
+			dir, SENDER_ID, recipientKeys.encryption.publicKey, payload,
+		);
+		expect(encrypted.self_encrypted_payload).toBeDefined();
+
+		// Self-read = decrypt with the SENDER's own id + the self-blob.
+		const client = mockClientWithKeys(senderKeys);
+		const result = await decryptMessage(
+			dir, SENDER_ID, encrypted.self_encrypted_payload as string, client as never,
+		);
+
+		expect(JSON.parse(result.plaintext)).toEqual(payload);
+		expect(result.verified).toBe(true);
+		expect(result.verificationStatus).toBe("verified");
+	});
+
+	it("hpke-v1 recipient output stays valid (self-blob is additive)", async () => {
+		const payload = { msg: "recipient-still-works" };
+		const encrypted = await encryptMessage(
+			dir, SENDER_ID, recipientKeys.encryption.publicKey, payload,
+		);
+		// Recipient path is unchanged: still hpke-v1, still opens for the recipient.
+		expect(encrypted.encryption_version).toBe("hpke-v1");
+
+		const client = mockClientWithKeys(senderKeys);
+		const result = await decryptMessage(
+			dir, RECIPIENT_ID, encrypted.encrypted_payload, client as never,
+		);
+		expect(JSON.parse(result.plaintext)).toEqual(payload);
+		expect(result.verified).toBe(true);
+	});
+
 	it("reports invalid when sender key doesn't match", async () => {
 		const payload = { msg: "spoofed" };
 		const encrypted = await encryptMessage(
@@ -139,6 +181,14 @@ describe("Group encrypt/decrypt round-trip", () => {
 
 		expect(JSON.parse(decrypted.plaintext)).toEqual(payload);
 		expect(decrypted.verified).toBe(true);
+	});
+
+	it("group encrypt produces NO self-blob (groups self-read via cache)", async () => {
+		const senderState = generateSenderKey(GROUP_ID, SENDER_ID);
+		const { result: encrypted } = await encryptGroupMessage(
+			dir, SENDER_ID, GROUP_ID, senderState, { announcement: "x" },
+		);
+		expect(encrypted.self_encrypted_payload).toBeUndefined();
 	});
 
 	it("rejects group message with invalid signature", async () => {

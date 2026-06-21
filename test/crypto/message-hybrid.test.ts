@@ -2,10 +2,11 @@ import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { generatePqKeyPair } from "../../src/crypto/hybrid.js";
+import { VERSION_HYBRID, generatePqKeyPair } from "../../src/crypto/hybrid.js";
 import {
 	type AgentKeys,
 	type KeyPair,
+	fromBase64Url,
 	generateAgentKeys,
 	loadAgentKeys,
 	pqPublicKeyToJWK,
@@ -222,6 +223,95 @@ describe("encryptMessage auto-negotiation", () => {
 			new Uint8Array(0),
 		);
 		expect(encrypted.encryption_version).toBe("hpke-v1");
+	});
+});
+
+describe("self-seal negotiation (independent of recipient)", () => {
+	let dir: string;
+	beforeEach(() => {
+		dir = makeTmpDir();
+	});
+	afterEach(() => fs.rmSync(dir, { recursive: true }));
+
+	it("a PQ-capable sender produces a HYBRID self-blob", async () => {
+		setupHybridAgent(dir, SENDER_ID);
+		const recipientKeys = setupHybridAgent(dir, RECIPIENT_ID);
+		const encrypted = await encryptMessage(
+			dir,
+			SENDER_ID,
+			recipientKeys.encryption.publicKey,
+			{ msg: "pq" },
+			requirePq(recipientKeys).publicKey,
+		);
+		expect(encrypted.self_encrypted_payload).toBeDefined();
+		const selfBytes = fromBase64Url(encrypted.self_encrypted_payload as string);
+		expect(selfBytes[0]).toBe(VERSION_HYBRID);
+	});
+
+	it("a classical sender produces a CLASSICAL self-blob", async () => {
+		setupClassicalAgent(dir, SENDER_ID);
+		const recipientKeys = setupHybridAgent(dir, RECIPIENT_ID);
+		const encrypted = await encryptMessage(
+			dir,
+			SENDER_ID,
+			recipientKeys.encryption.publicKey,
+			{ msg: "classical" },
+			requirePq(recipientKeys).publicKey,
+		);
+		expect(encrypted.self_encrypted_payload).toBeDefined();
+		const selfBytes = fromBase64Url(encrypted.self_encrypted_payload as string);
+		expect(selfBytes[0]).not.toBe(VERSION_HYBRID);
+	});
+
+	it("PQ sender → classical recipient: recipient is hpke-v1, self-blob is hybrid", async () => {
+		const senderKeys = setupHybridAgent(dir, SENDER_ID);
+		const recipientKeys = setupClassicalAgent(dir, RECIPIENT_ID);
+		const encrypted = await encryptMessage(
+			dir,
+			SENDER_ID,
+			recipientKeys.encryption.publicKey,
+			{ msg: "asymmetric" },
+			// recipient has no PQ key → classical recipient negotiation
+		);
+		// Recipient blob negotiates on the recipient: classical → hpke-v1.
+		expect(encrypted.encryption_version).toBe("hpke-v1");
+		// Self-blob negotiates on the SENDER: PQ-capable → hybrid.
+		const selfBytes = fromBase64Url(encrypted.self_encrypted_payload as string);
+		expect(selfBytes[0]).toBe(VERSION_HYBRID);
+
+		// And the hybrid self-blob round-trips for the PQ-capable sender.
+		const client = mockClient(senderKeys);
+		const result = await decryptMessage(
+			dir,
+			SENDER_ID,
+			encrypted.self_encrypted_payload as string,
+			client as never,
+		);
+		expect(JSON.parse(result.plaintext)).toEqual({ msg: "asymmetric" });
+		expect(result.verified).toBe(true);
+	});
+
+	it("hybrid self-read round-trips for a PQ-capable sender", async () => {
+		const senderKeys = setupHybridAgent(dir, SENDER_ID);
+		const recipientKeys = setupHybridAgent(dir, RECIPIENT_ID);
+		const payload = { recall: "turn-1-fact" };
+		const encrypted = await encryptMessage(
+			dir,
+			SENDER_ID,
+			recipientKeys.encryption.publicKey,
+			payload,
+			requirePq(recipientKeys).publicKey,
+		);
+		const client = mockClient(senderKeys);
+		const result = await decryptMessage(
+			dir,
+			SENDER_ID,
+			encrypted.self_encrypted_payload as string,
+			client as never,
+		);
+		expect(JSON.parse(result.plaintext)).toEqual(payload);
+		expect(result.verified).toBe(true);
+		expect(result.verificationStatus).toBe("verified");
 	});
 });
 
