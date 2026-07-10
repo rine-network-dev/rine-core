@@ -451,6 +451,137 @@ describe("performAgentCreation", () => {
 		});
 	});
 
+	// -----------------------------------------------------------------------
+	// SPIFFE identity verification wiring (REQ-SPF-10): performAgentCreation
+	// runs verifyIdentitySpiffe after POST /agents when --verify-identity is set
+	// or SPIFFE_ENDPOINT_SOCKET is present.
+	// -----------------------------------------------------------------------
+
+	const SOCKET_ENV = "SPIFFE_ENDPOINT_SOCKET";
+	const SPIFFE_AUDIENCE = "spiffe://challenge.rine.network/tok-1";
+	const SPIFFE_RESULT = {
+		agent_id: AGENT_ID,
+		spiffe_id: "spiffe://prod.acme.example/web",
+		trust_domain: "prod.acme.example",
+		trust_tier: 2,
+		verified_at: "2026-06-30T00:00:00Z",
+	};
+
+	/** Client whose POST routes /agents, the SVID challenge, and verify-svid. */
+	function makeSpiffeClient() {
+		return {
+			get: vi.fn(),
+			delete: vi.fn(),
+			put: vi.fn(),
+			patch: vi.fn(),
+			post: vi.fn(async (path: string) => {
+				// Fresh copy per call: performAgentCreation mutates agent.identity,
+				// and BASE_AGENT is shared across the whole describe block.
+				if (path === "/agents") return { ...BASE_AGENT };
+				if (path.endsWith("/verify-svid/challenge"))
+					return { audience: SPIFFE_AUDIENCE, expires_in: 300 };
+				if (path.endsWith("/verify-svid")) return SPIFFE_RESULT;
+				return BASE_AGENT;
+			}),
+		};
+	}
+
+	it("verifyIdentity flag + --svid: creates agent then verifies, attaching identity", async () => {
+		const client = makeSpiffeClient();
+		const result = await performAgentCreation(client, CONFIG_DIR, PROFILE, {
+			name: "Test Agent",
+			verifyIdentity: true,
+			svid: "the.jwt.svid",
+		});
+
+		const paths = vi.mocked(client.post).mock.calls.map((c) => c[0]);
+		expect(paths).toEqual([
+			"/agents",
+			`/agents/${AGENT_ID}/verify-svid/challenge`,
+			`/agents/${AGENT_ID}/verify-svid`,
+		]);
+		expect(result.identity).toEqual(SPIFFE_RESULT);
+	});
+
+	it("does NOT verify identity when neither flag nor SPIFFE endpoint present", async () => {
+		delete process.env[SOCKET_ENV];
+		const client = makeSpiffeClient();
+		const result = await performAgentCreation(client, CONFIG_DIR, PROFILE, {
+			name: "Test Agent",
+		});
+		const paths = vi.mocked(client.post).mock.calls.map((c) => c[0]);
+		expect(paths).toEqual(["/agents"]);
+		expect(result.identity).toBeUndefined();
+	});
+
+	it("auto-runs verification when SPIFFE_ENDPOINT_SOCKET is present (with --svid)", async () => {
+		process.env[SOCKET_ENV] = "unix:///tmp/spire.sock";
+		try {
+			const client = makeSpiffeClient();
+			const result = await performAgentCreation(client, CONFIG_DIR, PROFILE, {
+				name: "Test Agent",
+				svid: "the.jwt.svid",
+			});
+			expect(result.identity).toEqual(SPIFFE_RESULT);
+		} finally {
+			delete process.env[SOCKET_ENV];
+		}
+	});
+
+	it("surfaces a verification failure (no SVID + endpoint) as identityError — agent created, error not swallowed, NOT thrown", async () => {
+		process.env[SOCKET_ENV] = "unix:///tmp/spire.sock";
+		try {
+			const client = makeSpiffeClient();
+			// Must NOT throw — a verify failure after the agent exists would otherwise
+			// suppress the creation-success output. The error is captured instead.
+			const result = await performAgentCreation(client, CONFIG_DIR, PROFILE, {
+				name: "Test Agent",
+				log: () => {},
+			});
+			// Agent was created + keys saved; the verify failure is surfaced, not thrown.
+			expect(saveAgentKeys).toHaveBeenCalled();
+			expect(result).toMatchObject({ id: AGENT_ID });
+			expect(result.identity).toBeUndefined();
+			expect(result.identityError).toContain("auto-fetch");
+		} finally {
+			delete process.env[SOCKET_ENV];
+		}
+	});
+
+	it("a supplied --svid triggers verification even WITHOUT --verify-identity (no silent discard)", async () => {
+		delete process.env[SOCKET_ENV];
+		const client = makeSpiffeClient();
+		const result = await performAgentCreation(client, CONFIG_DIR, PROFILE, {
+			name: "Test Agent",
+			svid: "the.jwt.svid",
+		});
+		const paths = vi.mocked(client.post).mock.calls.map((c) => c[0]);
+		expect(paths).toEqual([
+			"/agents",
+			`/agents/${AGENT_ID}/verify-svid/challenge`,
+			`/agents/${AGENT_ID}/verify-svid`,
+		]);
+		expect(result.identity).toEqual(SPIFFE_RESULT);
+	});
+
+	it("captures a verify HTTP failure in identityError without throwing (creation preserved)", async () => {
+		const client = makeSpiffeClient();
+		vi.mocked(client.post).mockImplementation(async (path: string) => {
+			if (path === "/agents") return { ...BASE_AGENT };
+			if (path.endsWith("/verify-svid/challenge"))
+				return { audience: SPIFFE_AUDIENCE, expires_in: 300 };
+			if (path.endsWith("/verify-svid")) throw new Error("422 invalid SVID");
+			return BASE_AGENT;
+		});
+		const result = await performAgentCreation(client, CONFIG_DIR, PROFILE, {
+			name: "Test Agent",
+			svid: "bad.jwt",
+		});
+		expect(result).toMatchObject({ id: AGENT_ID });
+		expect(result.identity).toBeUndefined();
+		expect(result.identityError).toContain("422");
+	});
+
 	it("re-emits pq_encryption_public_key once the PQ key returns (negative→positive contrast)", async () => {
 		// Contrast guard for the `if (agentKeys.pqEncryption)` branch: the very
 		// same flow that omitted the PQ JWK above must re-emit it as soon as the

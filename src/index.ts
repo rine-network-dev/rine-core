@@ -15,4 +15,16 @@ export * from "./mls-ops.js";
 // high-level orchestrator are named externalJoinMlsGroup. Surfaces consume the
 // orchestrator, so it wins at the package root.
 export { externalJoinMlsGroup } from "./mls-ops.js";
-export { performRegistration, performAgentCreation, validateSlug } from "./onboard.js";
+export {
+	performRegistration,
+	performAgentCreation,
+	validateSlug,
+	verifyIdentitySpiffe,
+	hasSpiffeEndpoint,
+	SpiffeVerificationError,
+	SPIFFE_ENDPOINT_SOCKET_ENV,
+} from "./onboard.js";
+export type {
+	VerifyIdentityResult,
+	VerifyIdentitySpiffeOptions,
+} from "./onboard.js";
