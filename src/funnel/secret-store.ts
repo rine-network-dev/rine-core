@@ -16,8 +16,32 @@ import { join } from "node:path";
  */
 const HOOK_NAME_RE = /^[a-z0-9](-?[a-z0-9]){0,31}$/;
 
+/**
+ * Minimum hook-name length. The name becomes the leading DNS label of the
+ * funnel hostname, and the relay appends a `--` separator to build the cert
+ * subject. A name shorter than 3 chars pushes that `--` into label positions
+ * 3–4 — the R-LDH reserved slot (the `xn--` ACE-prefix form) — which Let's
+ * Encrypt refuses to certify, so the relay never gets a cert (REQ-FSH-07).
+ */
+export const HOOK_NAME_MIN_LENGTH = 3;
+
+/**
+ * Return a human-readable reason a hook name is un-certifiable, or `null` when
+ * it is valid. Callers can surface the exact rule violated at create time
+ * instead of failing cold at cert issuance.
+ */
+export function hookNameError(name: string): string | null {
+	if (name.length < HOOK_NAME_MIN_LENGTH) {
+		return `hook name must be at least ${HOOK_NAME_MIN_LENGTH} characters (DNS label rule)`;
+	}
+	if (!HOOK_NAME_RE.test(name)) {
+		return "hook name must use lowercase letters, digits and single hyphens (no leading, trailing, or consecutive hyphens; max 32)";
+	}
+	return null;
+}
+
 export function isValidHookName(name: string): boolean {
-	return HOOK_NAME_RE.test(name);
+	return hookNameError(name) === null;
 }
 
 /** Generate a 32-byte HMAC secret as 64 hex chars (client-side only). */
