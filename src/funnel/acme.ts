@@ -13,6 +13,7 @@ import { dirname } from "node:path";
 import { Client, crypto as acmeCrypto } from "acme-client";
 import { RineApiError } from "../errors.js";
 import type { HttpClient } from "../http.js";
+import { retryAfterMsFromError } from "../retry.js";
 import { type AcmeOptions, accountKeyPath } from "./cert-cache.js";
 import { acmeDirectoryUrl, agentWildcardFqdn } from "./csr.js";
 import type { DnsChallengeResult, IssueCertDeps } from "./issue.js";
@@ -55,7 +56,7 @@ export function makeDnsPost(
 			return (await http.post(path, body, agentHeaders)) as DnsChallengeResult;
 		} catch (err) {
 			if (err instanceof RineApiError && err.status === 429) {
-				const retryAfter = retryAfterMs(err);
+				const retryAfter = retryAfterMsFromError(err);
 				if (retryAfter > 0) await sleep(retryAfter);
 				return (await http.post(
 					path,
@@ -66,16 +67,6 @@ export function makeDnsPost(
 			throw err;
 		}
 	};
-}
-
-function retryAfterMs(err: RineApiError): number {
-	const res = err.raw;
-	if (res instanceof Response) {
-		const header = res.headers.get("retry-after");
-		const secs = header ? Number(header) : Number.NaN;
-		if (Number.isFinite(secs) && secs > 0) return secs * 1000;
-	}
-	return 0;
 }
 
 /**

@@ -1,6 +1,13 @@
-import { cacheToken, loadTokenCache } from "./config.js";
+import type { AgentKeysResponse } from "./api-types.js";
+import type { TtlCache } from "./cache.js";
 import { RineApiError } from "./errors.js";
-import type { ApiError, CredentialEntry } from "./types.js";
+import { sleep } from "./funnel/propagation.js";
+import { MAX_RETRY_WAIT_MS, retryAfterMsFromResponse } from "./retry.js";
+import type { ApiError } from "./types.js";
+
+// The token helpers moved to token.ts to keep this file under the size cap; they
+// stay reachable from "./http.js" for back-compat with existing import sites.
+export { fetchOAuthToken, getOrRefreshToken } from "./token.js";
 
 export type TokenFn = (force?: boolean) => Promise<string>;
 
@@ -18,6 +25,14 @@ export interface HttpClientOptions {
 	 * resulting AbortError is NOT wrapped in RineApiError.
 	 */
 	signal?: AbortSignal;
+	/**
+	 * Optional per-agent key cache (GET /agents/{id}/keys) shared by
+	 * fetchRecipientKeys and verifyEnvelopeSender. Attach it to a PERSISTENT client
+	 * (or, in the SDK, to a single instance threaded into every short-lived core
+	 * client) so a multi-agent host stops re-fetching the same keys on every send
+	 * and inbound-verify (D-5). Absent ⇒ no caching.
+	 */
+	keyCache?: TtlCache<AgentKeysResponse>;
 }
 
 /**
@@ -25,7 +40,9 @@ export interface HttpClientOptions {
  * and the structured error code. The server sends {"error": "<code>", "detail":
  * "..."} for typed errors (e.g. epoch_conflict); callers use `code` to branch.
  */
-async function parseError(res: Response): Promise<{ detail: string; code?: string }> {
+async function parseError(
+	res: Response,
+): Promise<{ detail: string; code?: string }> {
 	try {
 		const body = (await res.json()) as ApiError;
 		const code = typeof body.error === "string" ? body.error : undefined;
@@ -46,6 +63,8 @@ export class HttpClient {
 	private readonly canRefresh: boolean;
 	private readonly defaultHeaders: Record<string, string>;
 	private readonly defaultSignal: AbortSignal | undefined;
+	/** Shared per-agent key cache; see {@link HttpClientOptions.keyCache}. */
+	readonly keyCache: TtlCache<AgentKeysResponse> | undefined;
 
 	constructor(opts: HttpClientOptions) {
 		this.baseUrl = opts.apiUrl;
@@ -53,6 +72,7 @@ export class HttpClient {
 		this.canRefresh = opts.canRefresh ?? true;
 		this.defaultHeaders = opts.defaultHeaders ?? {};
 		this.defaultSignal = opts.signal;
+		this.keyCache = opts.keyCache;
 	}
 
 	private async request(
@@ -92,6 +112,13 @@ export class HttpClient {
 		let res = await doFetch();
 		if (res.status === 401 && this.canRefresh) {
 			res = await doFetch(true);
+		}
+		// Single 429 retry honoring Retry-After (capped), mirroring the Python SDK's
+		// normal-call behavior (REQ-TS-03, D-6). Read the header off `res` — never the
+		// body — so the retried response is the one parseError consumes on failure.
+		if (res.status === 429) {
+			await sleep(Math.min(retryAfterMsFromResponse(res), MAX_RETRY_WAIT_MS));
+			res = await doFetch();
 		}
 		if (!res.ok) {
 			const { detail, code } = await parseError(res);
@@ -167,63 +194,4 @@ export class HttpClient {
 		}
 		return res.json();
 	}
-}
-
-/**
- * Fetches an OAuth token from POST /oauth/token.
- */
-export async function fetchOAuthToken(
-	apiUrl: string,
-	clientId: string,
-	clientSecret: string,
-): Promise<{ access_token: string; expires_in: number }> {
-	const res = await fetch(`${apiUrl}/oauth/token`, {
-		method: "POST",
-		headers: { "Content-Type": "application/x-www-form-urlencoded" },
-		body: new URLSearchParams({
-			grant_type: "client_credentials",
-			client_id: clientId,
-			client_secret: clientSecret,
-		}).toString(),
-	});
-	if (!res.ok) {
-		const body = (await res.json().catch(() => ({}))) as {
-			detail?: string;
-		};
-		throw new RineApiError(res.status, body.detail ?? "Token request failed");
-	}
-	return res.json() as Promise<{ access_token: string; expires_in: number }>;
-}
-
-/**
- * Resolves a valid access token. Priority:
- * 1. opts.envToken — used directly, no cache/refresh
- * 2. Token cache — returned if not expired (60s margin)
- * 3. POST /oauth/token — fetches fresh token and caches it
- */
-export async function getOrRefreshToken(
-	configDir: string,
-	apiUrl: string,
-	entry: CredentialEntry | undefined,
-	profileName: string,
-	opts?: { force?: boolean; envToken?: string },
-): Promise<string> {
-	if (opts?.envToken) return opts.envToken;
-
-	const now = Date.now() / 1000;
-	if (!opts?.force) {
-		const cache = loadTokenCache(configDir);
-		const cached = cache[profileName];
-		if (cached !== undefined && cached.expires_at - now > 60) {
-			return cached.access_token;
-		}
-	}
-
-	if (!entry) {
-		throw new RineApiError(0, "No credentials found. Run login first.");
-	}
-
-	const data = await fetchOAuthToken(apiUrl, entry.client_id, entry.client_secret);
-	cacheToken(configDir, profileName, data);
-	return data.access_token;
 }

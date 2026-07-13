@@ -1,7 +1,6 @@
-import type { AgentKeysResponse } from "../api-types.js";
 import type { HttpClient } from "../http.js";
+import { verifyEnvelopeSender } from "./agent-keys.js";
 import { decodeEnvelope, encodeEnvelope } from "./envelope.js";
-import type { InnerEnvelope } from "./envelope.js";
 import { open, seal } from "./hpke.js";
 import { VERSION_HYBRID, openHybrid, sealHybrid } from "./hybrid.js";
 import { MlsError } from "ts-mls";
@@ -12,10 +11,7 @@ import { externalJoinMlsGroup } from "../mls-ops-join.js";
 import {
 	type AgentKeys,
 	type PqJWK,
-	agentIdFromKid,
 	fromBase64Url,
-	jwkToPqPublicKey,
-	jwkToPublicKey,
 	loadAgentKeys,
 	pqPublicKeyToJWK,
 	signingPublicKeyToJWK,
@@ -31,7 +27,7 @@ import {
 	openGroup,
 	sealGroup,
 } from "./sender-keys.js";
-import { signPayload, verifySignature } from "./sign.js";
+import { signPayload } from "./sign.js";
 
 export interface EncryptResult {
 	encrypted_payload: string;
@@ -57,29 +53,15 @@ export interface DecryptResult {
 	verificationStatus: VerificationStatus;
 }
 
-async function verifyEnvelopeSender(
-	decoded: InnerEnvelope,
-	client: HttpClient,
-): Promise<{ verified: boolean; verificationStatus: VerificationStatus }> {
-	let verified = false;
-	let verificationStatus: VerificationStatus = "unverifiable";
-	try {
-		const senderAgentId = agentIdFromKid(decoded.kid);
-		const senderKeys = (await client.get(
-			`/agents/${senderAgentId}/keys`,
-		)) as AgentKeysResponse;
-		const senderSigningPk = jwkToPublicKey(senderKeys.signing_public_key);
-		verified = verifySignature(
-			senderSigningPk,
-			decoded.payload,
-			decoded.signature,
-		);
-		verificationStatus = verified ? "verified" : "invalid";
-	} catch {
-		// Could not fetch sender's key — signature unverifiable
-	}
-	return { verified, verificationStatus };
-}
+// fetchRecipientKeys / verifyEnvelopeSender (and the per-agent key cache they read
+// through) live in ./agent-keys.js; re-exported here so existing "./message.js"
+// import sites keep working.
+export {
+	fetchAgentKeys,
+	fetchRecipientKeys,
+	verifyEnvelopeSender,
+} from "./agent-keys.js";
+export type { RecipientKeys } from "./agent-keys.js";
 
 function signingKid(agentId: string): string {
 	return `rine:${agentId}`;
@@ -135,28 +117,6 @@ export async function encryptMessage(
 		sender_signing_kid: kid,
 		self_encrypted_payload,
 	};
-}
-
-export interface RecipientKeys {
-	encryption: Uint8Array;
-	pqEncryption?: Uint8Array;
-}
-
-/** Fetch a recipient's encryption keys, including the optional PQ key for hybrid mode. */
-export async function fetchRecipientKeys(
-	client: HttpClient,
-	agentId: string,
-): Promise<RecipientKeys> {
-	const data = (await client.get(
-		`/agents/${agentId}/keys`,
-	)) as AgentKeysResponse;
-	const out: RecipientKeys = {
-		encryption: jwkToPublicKey(data.encryption_public_key),
-	};
-	if (data.pq_encryption_public_key) {
-		out.pqEncryption = jwkToPqPublicKey(data.pq_encryption_public_key as PqJWK);
-	}
-	return out;
 }
 
 export async function decryptMessage(
