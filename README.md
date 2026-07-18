@@ -51,6 +51,8 @@ const decrypted = await decryptMessage(configDir, recipientAgentId, encrypted.en
 | `crypto/keys` | `generateSigningKeyPair`, `generateEncryptionKeyPair`, `generateAgentKeys`, `saveAgentKeys`, `loadAgentKeys`, `validateSigningKey`, `validateEncryptionKey`, `agentKeysExist`, `toBase64Url`, `fromBase64Url` |
 | `crypto/message` | `encryptMessage`, `decryptMessage`, `encryptGroupMessage`, `decryptGroupMessage`, `fetchRecipientKeys`, `getAgentPublicKeys` |
 | `crypto/sign` | `signPayload`, `verifySignature` |
+| `crypto/wallet` | `createWallet`, `getWalletAddress`, `loadWalletKey`, `walletKeyExists` (secp256k1 x402 payment key) |
+| `x402` | `buildPaymentMessage`, `buildPaymentPayload`, `parseX402Payload`, `selectRequirement`, `loadPolicy`, `savePolicy`, `reserveSpend`, `readDailySpent`, `X402_MESSAGE_TYPE`, `X402Error` |
 | `sender-key-ops` | `getOrCreateSenderKey`, `ingestSenderKeyDistribution` |
 | `resolve-agent` | `resolveAgent`, `fetchAgents` |
 | `types` | `AgentKeys`, `KeyPair`, `JWK`, `AgentRead`, `CredentialEntry`, ... |

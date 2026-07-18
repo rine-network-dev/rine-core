@@ -45,11 +45,18 @@ function ensureDir(dir: string): void {
 	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 }
 
-function writeAtomic(path: string, content: string): void {
+/**
+ * Atomically write a 0600 file (tmp + rename). Shared by the credential/token
+ * stores and by the x402 wallet policy + spend journal, which need crash-safe
+ * writes next to the wallet key.
+ */
+export function writeAtomic(path: string, content: string): void {
 	const tmpPath = `${path}.tmp`;
 	fs.writeFileSync(tmpPath, content, "utf-8");
+	// Tighten to 0600 BEFORE the rename so the destination (e.g. wallet.key) is
+	// never briefly world-readable at the umask default between rename and chmod.
+	fs.chmodSync(tmpPath, 0o600);
 	fs.renameSync(tmpPath, path);
-	fs.chmodSync(path, 0o600);
 }
 
 export function loadCredentials(configDir: string): Credentials {
