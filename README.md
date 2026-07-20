@@ -52,7 +52,8 @@ const decrypted = await decryptMessage(configDir, recipientAgentId, encrypted.en
 | `crypto/message` | `encryptMessage`, `decryptMessage`, `encryptGroupMessage`, `decryptGroupMessage`, `fetchRecipientKeys`, `getAgentPublicKeys` |
 | `crypto/sign` | `signPayload`, `verifySignature` |
 | `crypto/wallet` | `createWallet`, `getWalletAddress`, `loadWalletKey`, `walletKeyExists` (secp256k1 x402 payment key) |
-| `x402` | `buildPaymentMessage`, `buildPaymentPayload`, `parseX402Payload`, `selectRequirement`, `loadPolicy`, `savePolicy`, `reserveSpend`, `readDailySpent`, `X402_MESSAGE_TYPE`, `X402Error` |
+| `x402` | `buildPaymentMessage`, `buildPaymentPayload`, `buildReceiptMessage`, `parseX402Payload`, `selectRequirement`, `loadPolicy`, `savePolicy`, `reserveSpend`, `readDailySpent`, `X402_MESSAGE_TYPE`, `X402Error` |
+| `x402` (facilitator) | `verifyPayment`, `settlePayment`, `facilitatorRequestBody`, `FACILITATOR_PRESET` (`cdp` / `payai` / `x402-rs`), `X402FacilitatorError` — the single facilitator HTTP client (plain external HTTP; the TypeScript SDK delegates to it). |
 | `sender-key-ops` | `getOrCreateSenderKey`, `ingestSenderKeyDistribution` |
 | `resolve-agent` | `resolveAgent`, `fetchAgents` |
 | `types` | `AgentKeys`, `KeyPair`, `JWK`, `AgentRead`, `CredentialEntry`, ... |

@@ -8,3 +8,4 @@ export * from "./spend-journal.js";
 export * from "./pay.js";
 export * from "./messages.js";
 export * from "./thread-state.js";
+export * from "./facilitator.js";
