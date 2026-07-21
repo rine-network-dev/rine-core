@@ -9,7 +9,7 @@
 // relay still HMAC-verifies (the secret never left the relay) and HPKE-seals
 // (`hpke-v1`, NO new encryption_version). Only the inbound bytes arrive as
 // plaintext over the mux instead of as raw TLS records (the broker decrypted them,
-// SPEC §8 amendment). Same `handleWebhookRequest`, same response strings (AUD-C3).
+// SPEC §8 amendment). Same `handleWebhookRequest`, same response strings.
 
 import type { LocalPipe } from "./mux-client.js";
 import type { Frame } from "./mux-codec.js";
@@ -36,7 +36,7 @@ export function makeEdgePipeFactory(
 /**
  * One mux conn as a plaintext pipe. `write` accumulates the broker-forwarded
  * request bytes into the SHARED framer (`parseHttpRequest`); the broker already
- * frames a COMPLETE request bounded by Content-Length (AUD-C2), so the framer
+ * frames a COMPLETE request bounded by Content-Length, so the framer
  * dispatches on that boundary and NEVER waits for EOF. On a complete request it
  * runs `onRequest` then pushes the synthesized 204/400/500 back as response bytes
  * and CLOSEs the conn (the relay has nothing else to send, so closing lets the

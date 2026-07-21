@@ -41,7 +41,7 @@ export function tagLeRateLimit<E extends Error>(err: E): E {
 
 /**
  * POST to the backend dns-challenge endpoint, honoring a 429 + Retry-After
- * (the server-side rate-limit backstop, REQ-CERT-07). The body carries ONLY
+ * (the server-side rate-limit backstop). The body carries ONLY
  * {action, value?} — never the FQDN, never key material.
  */
 export function makeDnsPost(
@@ -88,7 +88,7 @@ export function makeAcmeClientDeps(
 		acme: {
 			async newOrder({ handle }) {
 				// `handle` is the AGENT label; order the per-agent wildcard identifier
-				// `*.{agentLabel}.hook.rine.network` (REQ-CERT-40). DNS-01 is already
+				// `*.{agentLabel}.hook.rine.network`. DNS-01 is already
 				// the only solver and wildcards require it — no new solver code.
 				const fqdn = agentWildcardFqdn(handle);
 				try {
@@ -133,7 +133,7 @@ export function makeAcmeClientDeps(
 /**
  * Load (or mint + persist 0600) the ONE shared ACME account key for this relay,
  * then build an `acme-client` Client against the selected LE directory. One LE
- * account is reused across all of the relay's hooks (REQ-CERT-12), so repeated
+ * account is reused across all of the relay's hooks, so repeated
  * issuances don't churn accounts. The account key never leaves the box.
  */
 export async function buildAcmeClient(

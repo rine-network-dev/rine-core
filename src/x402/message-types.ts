@@ -1,10 +1,8 @@
 /**
- * The three first-party x402 rine message types (REQ-P01 final names) and their
+ * The three first-party x402 rine message types and their
  * static descriptors. Kept in one small module so the build, parse, and
  * thread-state layers all key off the same typed constants — never string
  * literals scattered across call sites.
- *
- * Binding contract: `phases/x402-payments/AGENT_OUT_protocol_draft.md` §1.
  */
 
 /** The three first-party x402 message types. */

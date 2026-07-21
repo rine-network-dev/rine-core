@@ -1,4 +1,4 @@
-// rine Funnel DNS-01 propagation poll (REQ-CERT-10). Before telling Let's
+// rine Funnel DNS-01 propagation poll. Before telling Let's
 // Encrypt to validate, the relay confirms the challenge TXT is live on the
 // AUTHORITATIVE nameservers of the `rine.network` zone (the TXT now lives
 // DIRECTLY at `_acme-challenge.<cert-domain>.hook.rine.network`, no CNAME /
@@ -7,9 +7,9 @@
 // answer LE's validators don't share. Both cases would burn a validation
 // attempt; polling the authoritative servers avoids it. The poll also matches the
 // record VALUE against this order's key-authorization, so a stale/partially-
-// converged TXT at the same name never satisfies the gate (REQ-CERT-10).
+// converged TXT at the same name never satisfies the gate.
 //
-// GRACE DELAY (REQ-CERT-33): the challenge name sits under the `*.hook` wildcard,
+// GRACE DELAY: the challenge name sits under the `*.hook` wildcard,
 // so a TXT query issued BEFORE the record propagates (~15-34s after the backend's
 // dns:set) returns NODATA carrying the zone SOA-minimum negative TTL. Hetzner's
 // external authoritative anycast nodes negative-cache that NODATA, masking the
@@ -21,12 +21,12 @@
 
 import { Resolver, resolve4, resolveNs } from "node:dns/promises";
 
-// Grace before the FIRST TXT query (REQ-CERT-33). Sized comfortably above the
+// Grace before the FIRST TXT query. Sized comfortably above the
 // observed worst-case backend propagation (~34s) so the first query never
 // precedes the live record — a query that does returns NODATA and Hetzner's
 // anycast nodes cache it for the SOA-min negative TTL, masking the record.
 const INITIAL_PROPAGATION_DELAY_MS = 45_000;
-const PROPAGATION_TIMEOUT_MS = 120_000; // bounded poll AFTER the grace delay (REQ-CERT-10)
+const PROPAGATION_TIMEOUT_MS = 120_000; // bounded poll AFTER the grace delay
 const PROPAGATION_INTERVAL_MS = 5_000;
 
 export function sleep(ms: number): Promise<void> {

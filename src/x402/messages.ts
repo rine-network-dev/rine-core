@@ -1,9 +1,6 @@
 /**
- * x402 message build layer (REQ-M01): assemble the three x402 rine message
- * types for the send path, attaching the optional cleartext status marker
- * (REQ-P02).
- *
- * Binding contract: `phases/x402-payments/AGENT_OUT_protocol_draft.md` §1–§3, §6.
+ * x402 message build layer: assemble the three x402 rine message types for the
+ * send path, attaching the optional cleartext status marker.
  *
  * The decrypted plaintext of each x402 message IS the verbatim x402 V2 object
  * (`PaymentRequired` / `PaymentPayload` / `SettlementResponse`) — this module
@@ -54,7 +51,7 @@ export interface BuiltX402Message {
 export interface BuildX402Options {
 	/**
 	 * Whether to emit the cleartext `metadata["rine.x402"]` status marker.
-	 * Sender-controlled (D3). Defaults to `true` — the marker carries only
+	 * Sender-controlled. Defaults to `true` — the marker carries only
 	 * coarse lifecycle state (never economic detail), so thread UIs and inbox
 	 * filters can key off it; pass `false` for a fully-sealed message.
 	 */

@@ -1,5 +1,5 @@
 import { X402Error, X402_ERROR } from "./errors.js";
-import type { PaymentRequirements } from "./types.js";
+import type { PaymentRequirements, X402TokenExtra } from "./types.js";
 
 /**
  * Canonical accounting precision. All v1.0 `exact`-scheme assets are 6-decimal
@@ -8,20 +8,23 @@ import type { PaymentRequirements } from "./types.js";
  */
 export const CANONICAL_DECIMALS = 6;
 
-/** Fallback decimals for an unrecognised `exact`-scheme stablecoin. Chosen as
- * the low end so an unknown asset is never treated as *more* valuable than it is
- * (an over-estimate of decimals would silently relax the caps). */
-export const DEFAULT_STABLECOIN_DECIMALS = 6;
-
 export interface KnownAsset {
 	symbol: string;
 	network: string; // CAIP-2
 	address: string; // lowercased 0x contract
 	decimals: number;
+	/**
+	 * EIP-712 domain (`name`/`version`) for the `exact`/EIP-3009 scheme. Used to
+	 * author an out-of-band expected-terms override WITHOUT trusting any
+	 * payer-supplied `extra`. Kept identical to how every rine surface
+	 * authors its own quotes (symbol name, version "2"); verify against the real
+	 * on-chain domain at the live-testnet proof gate before publish.
+	 */
+	domain: X402TokenExtra;
 }
 
 /**
- * Lane-C constant table of the featured v1.0 assets. Addresses are the canonical
+ * Constant table of the featured v1.0 assets. Addresses are the canonical
  * Circle deployments; verify at the live-testnet proof gate before publish.
  * Matching is by (network, address) — a wrong entry only prevents a symbol from
  * resolving (fail-closed), it can never redirect a payment.
@@ -33,12 +36,14 @@ export const KNOWN_ASSETS: readonly KnownAsset[] = [
 		network: "eip155:8453",
 		address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
 		decimals: 6,
+		domain: { name: "USDC", version: "2" },
 	},
 	{
 		symbol: "EURC",
 		network: "eip155:8453",
 		address: "0x60a3e35cc302bfa44cb288bc5a4f316fdb1adb42",
 		decimals: 6,
+		domain: { name: "EURC", version: "2" },
 	},
 	// Base Sepolia testnet (eip155:84532)
 	{
@@ -46,12 +51,14 @@ export const KNOWN_ASSETS: readonly KnownAsset[] = [
 		network: "eip155:84532",
 		address: "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
 		decimals: 6,
+		domain: { name: "USDC", version: "2" },
 	},
 	{
 		symbol: "EURC",
 		network: "eip155:84532",
 		address: "0x808456652fdb597867f38412077a9182bf77359f",
 		decimals: 6,
+		domain: { name: "EURC", version: "2" },
 	},
 ];
 
@@ -79,9 +86,49 @@ export function lookupAsset(
 	return KNOWN_ASSETS.find((a) => a.network === network && a.address === addr);
 }
 
-/** Decimals for an asset: registry hit, else the safe stablecoin default. */
+/**
+ * Decimals for an asset — FAIL CLOSED. A registry hit returns the known token
+ * precision; an asset absent from {@link KNOWN_ASSETS} is REJECTED with a typed
+ * {@link X402Error}, never priced with an assumed default.
+ *
+ * Assuming a 6-decimal default would misprice a sub-6-decimal token: its signed
+ * EIP-3009 `value` is atomic, so reading it at the wrong precision values it far
+ * below its true worth. Rather than price it wrong, unknown decimals deny at
+ * pricing time; a non-registry token must be added to the registry before it can
+ * transact under the `exact` scheme.
+ */
 export function resolveDecimals(network: string, address: string): number {
-	return lookupAsset(network, address)?.decimals ?? DEFAULT_STABLECOIN_DECIMALS;
+	const known = lookupAsset(network, address);
+	if (!known) {
+		throw new X402Error(
+			X402_ERROR.UNKNOWN_ASSET_DECIMALS,
+			`Cannot resolve decimals for asset ${address} on ${network}: not in the known-asset registry (refusing to assume a default — fail closed)`,
+			{ network, asset: address },
+		);
+	}
+	return known.decimals;
+}
+
+/**
+ * The EIP-712 domain (`extra`) for a known asset — operator-trusted, registry-
+ * derived. Lets a payee author an out-of-band expected-terms override without
+ * inheriting the payer-controlled `extra`. Unknown assets FAIL CLOSED,
+ * exactly like {@link resolveDecimals} (an override can only target a registry
+ * asset — `parseUnits`/`resolveDecimals` already reject a non-registry one).
+ */
+export function resolveTokenExtra(
+	network: string,
+	address: string,
+): X402TokenExtra {
+	const known = lookupAsset(network, address);
+	if (!known) {
+		throw new X402Error(
+			X402_ERROR.UNKNOWN_ASSET_DECIMALS,
+			`Cannot resolve the EIP-712 domain for asset ${address} on ${network}: not in the known-asset registry (fail closed)`,
+			{ network, asset: address },
+		);
+	}
+	return { ...known.domain };
 }
 
 /** Parse a decimal major-unit string into atomic units at `decimals` precision. */
@@ -130,17 +177,26 @@ export function requirementAmount(req: PaymentRequirements): string {
 	return raw;
 }
 
-/** Parse a requirement's atomic amount string into a bigint (typed guard). */
-export function parseAtomicAmount(req: PaymentRequirements): bigint {
-	const amount = requirementAmount(req);
-	if (!/^\d+$/.test(amount)) {
+/**
+ * Parse a raw atomic-units decimal string into a bigint (typed guard). Shared by
+ * {@link parseAtomicAmount} (a requirement's `amount`) and the payee-side signed-
+ * value defense (an EIP-3009 `authorization.value`), so both reject a non-integer
+ * value with the same typed {@link X402Error} instead of a silent `BigInt` throw.
+ */
+export function parseAtomicUnits(value: string, label = "Amount"): bigint {
+	if (!/^\d+$/.test(value)) {
 		throw new X402Error(
 			X402_ERROR.INVALID_REQUIREMENT,
-			`Requirement amount must be atomic integer units, got: ${amount}`,
-			{ amount },
+			`${label} must be atomic integer units, got: ${value}`,
+			{ value },
 		);
 	}
-	return BigInt(amount);
+	return BigInt(value);
+}
+
+/** Parse a requirement's atomic amount string into a bigint (typed guard). */
+export function parseAtomicAmount(req: PaymentRequirements): bigint {
+	return parseAtomicUnits(requirementAmount(req), "Requirement amount");
 }
 
 /** A requirement's value expressed in canonical (6-decimal) micro-units. */

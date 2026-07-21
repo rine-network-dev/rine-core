@@ -1,5 +1,5 @@
-// rine Funnel per-agent issuance lock + wipe-surviving attempt-ledger
-// (REQ-CERT-42, AUD-B2/SCALE-4). Because the per-agent wildcard collapses ALL of
+// rine Funnel per-agent issuance lock + wipe-surviving attempt-ledger.
+// Because the per-agent wildcard collapses ALL of
 // an agent's hook-relays onto ONE `funnel/{agentLabel}/` subtree and ONE
 // `*.{agentLabel}.hook.rine.network` cert, two hook-relays of the SAME agent that
 // cold-start together would otherwise fire TWO ACME orders for the IDENTICAL
@@ -97,7 +97,7 @@ function release(path: string): void {
 }
 
 /**
- * Run `fn` under the per-agent cross-process issuance lock (AUD-B2/SCALE-4). The
+ * Run `fn` under the per-agent cross-process issuance lock. The
  * lock is held for the WHOLE callback (newOrder->download) so two concurrent
  * hook-relays of the SAME agent cannot fire two ACME orders for the identical
  * `*.{agentLabel}.hook.rine.network`. If the lock is already held by a live

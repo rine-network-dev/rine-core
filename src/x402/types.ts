@@ -2,7 +2,6 @@
  * x402 v1.0 wire types — the verbatim x402 V2 objects carried as the E2EE payload
  * of the three rine message types, plus the client-side spend-policy shape.
  *
- * Binding contract: `phases/x402-payments/AGENT_OUT_protocol_draft.md` §1–§4.
  * The decrypted plaintext of each x402 message IS the x402 V2 object byte-for-byte
  * — no rine wrapper, no renamed fields. Unknown keys are preserved (`[k: string]`).
  */
@@ -10,8 +9,17 @@
 /** x402 protocol version carried in the objects. */
 export const X402_VERSION = 2;
 
-/** Cleartext-metadata key for the optional coarse status marker (REQ-P02). */
+/** Cleartext-metadata key for the optional coarse status marker. */
 export const X402_METADATA_KEY = "rine.x402";
+
+/**
+ * Extensions key: the payer stamps the answered quote's message id here, inside
+ * the SIGNED, E2EE `PaymentPayload`, so the payee binds the payment to the ONE
+ * `x402_payment_required` it authored — settling only against that single quote,
+ * never a conversation-wide union of quotes. A SINGLE exported constant shared by
+ * every payer/payee surface — never a bare string literal repeated across packages.
+ */
+export const X402_QUOTE_REF_KEY = "rine.quoteMessageId";
 
 /** Settlement-rail identifier for this rail. */
 export const X402_RAIL = "x402";
@@ -111,14 +119,14 @@ export interface SettlementResponse {
 	[k: string]: unknown;
 }
 
-/** The optional cleartext status marker (REQ-P02). Never carries economic detail. */
+/** The optional cleartext status marker. Never carries economic detail. */
 export interface X402Marker {
 	status: X402Status;
 	rail: string;
 }
 
 /**
- * Client-side spend policy (REQ-W02), enforced at signing. All cap fields are
+ * Client-side spend policy, enforced at signing. All cap fields are
  * decimal major-unit strings (e.g. "10.00") interpreted in canonical 6-decimal
  * stablecoin units; `allowedAssets` entries are symbols (e.g. "EURC") or 0x
  * contract addresses; `allowedNetworks` are CAIP-2 ids. Absence of a policy is

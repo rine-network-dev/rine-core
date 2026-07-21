@@ -1,14 +1,20 @@
 /**
- * x402 thread lifecycle (REQ-M01, thread-aware slice): reduce the ordered
+ * x402 thread lifecycle (thread-aware slice): reduce the ordered
  * messages of ONE conversation thread to the current coarse x402 status.
  *
  * The three x402 message types live in a single conversation thread
- * (`quote → pay → receipt`, `AGENT_OUT_protocol_draft.md` §6). The thread's
+ * (`quote → pay → receipt`). The thread's
  * current lifecycle state is the status of its LATEST x402 message. This reads
  * the cleartext marker when present (no decryption needed — works from the
  * server-visible plane) and falls back to the message `type` (plus the
  * decrypted receipt `success` flag, when the caller supplies it) for a
  * fully-sealed message with no marker.
+ *
+ * DISPLAY ONLY. The marker is sender-controlled cleartext and the receipt
+ * `success` flag is opened locally, so this status is UI sugar and MUST NEVER be
+ * treated as settlement proof. Real settlement is verified from the decrypted
+ * receipt payload / facilitator response, not from this reducer. It fails closed:
+ * a receipt whose `success` is unknown reads as failed, never completed.
  */
 
 import { readX402Marker } from "./marker.js";
@@ -34,9 +40,10 @@ export interface X402ThreadEntry {
 function derivedStatus(type: X402MessageType, success?: boolean): X402Status {
 	if (type === X402_MESSAGE_TYPE.PAYMENT_REQUIRED) return X402_STATUS.REQUIRED;
 	if (type === X402_MESSAGE_TYPE.PAYMENT) return X402_STATUS.SUBMITTED;
-	// Receipt: a terminal message. `success === false` ⇒ failed; otherwise the
-	// completed path (a receipt with success unknown is treated as completed).
-	return success === false ? X402_STATUS.FAILED : X402_STATUS.COMPLETED;
+	// Receipt: a terminal message. Fail closed — ONLY an explicit `success === true`
+	// reads as completed; `false` or unknown success is not-completed (a receipt with
+	// success unknown must never be mistaken for a settled payment).
+	return success === true ? X402_STATUS.COMPLETED : X402_STATUS.FAILED;
 }
 
 /**

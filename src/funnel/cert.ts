@@ -1,8 +1,8 @@
-// rine Funnel relay-side ACME DNS-01 cert client — orchestrator (REQ-CERT-01,
-// 09,10,11,12,13,14,15,16,32). The relay obtains a publicly-trusted TLS cert for
+// rine Funnel relay-side ACME DNS-01 cert client — orchestrator. The relay
+// obtains a publicly-trusted TLS cert for
 // `<handle>.hook.rine.network` with the private key born and kept on the user's
 // box; rine only brokers the DNS-01 TXT (it never holds the key, so it cannot
-// revoke — REQ-CERT-15). All external effects (the ACME order, the dns-challenge
+// revoke). All external effects (the ACME order, the dns-challenge
 // POST, the DNS propagation poll, the clock) are injected via IssueCertDeps so
 // this orchestrator is fully unit-testable without touching the network.
 //
@@ -73,19 +73,19 @@ export interface EnsureCertResult extends IssuedCert {
 }
 
 /**
- * Cold-start readiness gate (REQ-CERT-32) + cache reuse + persisted backoff
- * (REQ-CERT-13). A valid, fresh cached cert opens the gate immediately with NO
+ * Cold-start readiness gate + cache reuse + persisted backoff. A valid, fresh
+ * cached cert opens the gate immediately with NO
  * ACME round-trip. Otherwise issue, persist atomically, and reset the failure
  * counter on success. On failure the persisted `consecutive_failures` is bumped
  * (read from the wipe-surviving attempt-ledger so a crash-loop — even one that
  * wipes the cache — never resets it to zero) and the error re-thrown — a failed
  * cold start installs NOTHING (gate stays closed).
  *
- * `handle` is the AGENT label (REQ-CERT-42): one shared `*.{agentLabel}.hook`
+ * `handle` is the AGENT label: one shared `*.{agentLabel}.hook`
  * wildcard serves every hook of the agent. Two guards make the sharing safe:
- *  - REQ-CERT-48 (SAN-match): a cached cert whose single wildcard SAN no longer
+ *  - SAN-match: a cached cert whose single wildcard SAN no longer
  *    matches the current agent label is force-reissued, never served mismatched.
- *  - AUD-B2/SCALE-4 (issuance lock): the ACME order runs under a cross-process
+ *  - Issuance lock: the ACME order runs under a cross-process
  *    per-agent lock; if a sibling hook-relay holds it, this run reuses whatever
  *    the sibling installs instead of firing a duplicate order.
  */
@@ -130,7 +130,7 @@ export async function ensureCert(args: {
 		);
 		if (!locked.acquired) {
 			// A sibling hook-relay of the same agent is mid-issuance for the identical
-			// wildcard (AUD-B2/SCALE-4). Reuse whatever it installs rather than firing
+			// wildcard. Reuse whatever it installs rather than firing
 			// a duplicate ACME order. This is NOT an ACME failure — it must NOT bump
 			// the crash-loop ledger (that would wrongly penalize the agent's whole
 			// fleet), so it throws the SIBLING_IN_PROGRESS sentinel the catch skips. If
@@ -168,7 +168,7 @@ export async function ensureCert(args: {
 
 /**
  * Thrown when a sibling hook-relay of the same agent already holds the per-agent
- * issuance lock and the shared wildcard cert has not landed yet (AUD-B2). It is a
+ * issuance lock and the shared wildcard cert has not landed yet. It is a
  * RETRYABLE signal (the relay backs off and re-checks the cache), never an ACME
  * failure — so it does NOT bump the crash-loop backoff ledger.
  */
@@ -180,12 +180,12 @@ export class SiblingIssuanceInProgress extends Error {
 }
 
 /**
- * Graceful teardown (REQ-CERT-16): best-effort ACME revoke (relay-local — the
- * server holds no key and cannot revoke, REQ-CERT-15), then a SCOPED wipe of
+ * Graceful teardown: best-effort ACME revoke (relay-local — the
+ * server holds no key and cannot revoke), then a SCOPED wipe of
  * just this handle's cache dir. A revoke failure (offline) is swallowed; the
  * local wipe is the meaningful local effect and always runs.
  *
- * NOT wired into the relay's single-hook teardown path (REQ-CERT-44): the cert
+ * NOT wired into the relay's single-hook teardown path: the cert
  * is now the per-agent `*.{agentLabel}.hook` wildcard SHARED by every hook of the
  * agent, so revoking it on one hook's BIND-revoked would kill all the agent's
  * sibling hooks. The kill switch is server-side DNS+route teardown, not relay
@@ -208,7 +208,7 @@ export async function revokeAndWipeCache(args: {
 			});
 		} catch {
 			// best-effort: the user may be offline. The kill switch is server-side
-			// DNS+route teardown (REQ-CERT-15), not relay cooperation.
+			// DNS+route teardown, not relay cooperation.
 		}
 	}
 	wipeHandleCache(configDir, handle, options);
@@ -241,7 +241,7 @@ function describe(err: unknown): string {
 }
 
 /**
- * REQ-CERT-48 (AUD-D1, defence-in-depth): does the cached leaf's SAN set still
+ * Defence-in-depth: does the cached leaf's SAN set still
  * cover the current agent label's wildcard? The label is UUID-derived and
  * immutable so this can never legitimately drift — but if a future label-scheme
  * change ever desyncs the cached cert from the live hostname, force-reissue loud

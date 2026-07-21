@@ -1,5 +1,5 @@
-// rine Funnel ACME-storm backoff + renewal window + LE rate-limit classification
-// (REQ-CERT-13/14). The token-storm precedent: never re-mint per boot, back off
+// rine Funnel ACME-storm backoff + renewal window + LE rate-limit classification.
+// The token-storm precedent: never re-mint per boot, back off
 // exponentially with FULL jitter, and treat the LE duplicate-cert / failed-
 // validation ceilings as TERMINAL rather than hammering Let's Encrypt.
 
@@ -9,7 +9,7 @@ const BACKOFF_BASE_MS = 30_000; // 30s
 const BACKOFF_FACTOR = 2;
 const BACKOFF_CAP_MS = 3_600_000; // 1h
 const RENEWAL_WINDOW_MS = 30 * 86_400_000; // 30 days before not_after
-// PINNED (REQ-CERT-46/SCALE-2): the per-agent renewal trigger is spread across
+// PINNED: the per-agent renewal trigger is spread across
 // this window so a 1K-agent fleet whose certs were all minted in one migration
 // burst de-correlates instead of all firing at `not_after - 30d`. Capped well
 // under the 30-day window so `offset_max (20d) + worst-case backoff (1h) +
@@ -56,7 +56,7 @@ function stableHash(label: string): number {
 }
 
 /**
- * Per-agent jittered renewal trigger (REQ-CERT-46). Spreads the renewal firing
+ * Per-agent jittered renewal trigger. Spreads the renewal firing
  * deterministically across `RENEWAL_SPREAD_MS` (20d, PINNED) so a fleet whose
  * certs were all minted in one window does NOT storm Let's Encrypt at
  * `not_after - 30d`. Fires when `now >= not_after - 30d + offset(agentLabel)`,

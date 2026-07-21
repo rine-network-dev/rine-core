@@ -9,3 +9,8 @@ export * from "./pay.js";
 export * from "./messages.js";
 export * from "./thread-state.js";
 export * from "./facilitator.js";
+export * from "./facilitator-resolve.js";
+export * from "./reconcile.js";
+export * from "./quote-ref.js";
+export * from "./payee-settle.js";
+export * from "./payee-receipt.js";

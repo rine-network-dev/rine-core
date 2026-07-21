@@ -2,15 +2,28 @@ import { execSync } from "node:child_process";
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { fileURLToPath } from "node:url";
+import {
+	afterEach,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	vi,
+} from "vitest";
 import { X402Error, X402_ERROR } from "../../src/x402/errors.js";
 import {
 	readDailySpent,
 	recordSpend,
 	reserveSpend,
 } from "../../src/x402/spend-journal.js";
+import {
+	POLL_MS,
+	spendLockPath,
+	withSpendLock,
+} from "../../src/x402/spend-lock.js";
 import type {
 	PaymentPolicy,
 	PaymentRequirements,
@@ -89,7 +102,11 @@ describe("spend journal read/record", () => {
 		fs.mkdirSync(join(dir, "keys", AGENT_ID), { recursive: true });
 		fs.writeFileSync(
 			journalFile(dir),
-			JSON.stringify({ day: "2026-07-18", spentCanonical: "5", paidIds: ["m1"] }),
+			JSON.stringify({
+				day: "2026-07-18",
+				spentCanonical: "5",
+				paidIds: ["m1"],
+			}),
 		);
 		recordSpend(dir, AGENT_ID, 5n, DAY1);
 		expect(readPaidIds(dir)).toEqual(["m1"]);
@@ -120,7 +137,9 @@ describe("reserveSpend", () => {
 
 	it("denies_by_default_when_policy_is_null", async () => {
 		await expectCode(
-			reserveSpend(dir, AGENT_ID, null, makeRequirement(), { nowSeconds: DAY1 }),
+			reserveSpend(dir, AGENT_ID, null, makeRequirement(), {
+				nowSeconds: DAY1,
+			}),
 			X402_ERROR.NO_POLICY,
 		);
 		expect(readDailySpent(dir, AGENT_ID, DAY1)).toBe(0n);
@@ -210,6 +229,43 @@ describe("reserveSpend", () => {
 		});
 		expect(readPaidIds(dir)).toEqual([]);
 	});
+
+	it("computes_the_utc_day_bucket_inside_the_lock_not_before", async () => {
+		// Clobber variant: when a reserve waits on a contended lock and the wall clock
+		// crosses UTC midnight during the wait, the debit MUST land in the day observed
+		// AFTER acquisition. Computing `day` before the lock would write the pre-rollover
+		// day, clobbering the new day's independently-tracked total.
+		const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+		const preRollover = Date.parse("2026-07-18T23:59:59.000Z"); // DAY1, seconds to go
+		const postRollover = Date.parse("2026-07-19T00:00:01.000Z"); // DAY2, +2s (< budget)
+
+		// A sibling holds the lock so the reserve is forced to wait (real cross-async
+		// contention). The holder acquires under the real clock, before we freeze it.
+		let releaseHolder: () => void = () => {};
+		const gate = new Promise<void>((r) => {
+			releaseHolder = r;
+		});
+		const holder = withSpendLock(spendLockPath(dir, AGENT_ID), () => gate);
+		await sleep(10); // let the holder acquire
+
+		// Freeze the clock at DAY1; the reserve is created and starts polling here.
+		const clock = vi.spyOn(Date, "now").mockReturnValue(preRollover);
+		const reserving = reserveSpend(dir, AGENT_ID, POLICY, makeRequirement());
+		await sleep(POLL_MS * 2); // reserve is now blocked polling the held (fresh) lock
+
+		// Midnight passes while the reserve still waits; then the holder releases.
+		clock.mockReturnValue(postRollover);
+		releaseHolder();
+		const value = await reserving;
+		await holder;
+		clock.mockRestore();
+
+		expect(value).toBe(1_000_000n);
+		// The debit landed in the post-rollover DAY2 bucket, evaluated inside the lock.
+		const written = JSON.parse(fs.readFileSync(journalFile(dir), "utf-8"));
+		expect(written.day).toBe("2026-07-19");
+		expect(readDailySpent(dir, AGENT_ID, postRollover / 1000)).toBe(1_000_000n);
+	});
 });
 
 describe("reserveSpend cross-process contention", () => {
@@ -247,35 +303,31 @@ describe("reserveSpend cross-process contention", () => {
 		});
 	}
 
-	it(
-		"N_racing_reservers_never_exceed_the_daily_cap",
-		async () => {
-			// dailyCap 3.00 admits exactly 3 of 6 concurrent 1.00 reservations; a
-			// lost update would let >3 through and overshoot the cap.
-			const N = 6;
-			const req = JSON.stringify(makeRequirement());
-			const policy = JSON.stringify(POLICY);
-			const results = await Promise.all(
-				Array.from({ length: N }, (_, i) =>
-					runWorker([dir, AGENT_ID, policy, req, `m${i}`, String(DAY1)]),
-				),
-			);
-			// No worker crashed for a non-policy reason.
-			for (const r of results) {
-				expect(r.code === 0 || r.code === 3).toBe(true);
-			}
-			const ok = results.filter((r) => r.stdout.startsWith("OK "));
-			const refused = results.filter(
-				(r) => r.stdout === `ERR ${X402_ERROR.DAILY_CAP_EXCEEDED}`,
-			);
-			expect(ok.length).toBe(3);
-			expect(refused.length).toBe(3);
-			const sum = ok.reduce((s, r) => s + BigInt(r.stdout.slice(3)), 0n);
-			expect(sum).toBe(3_000_000n);
-			expect(sum <= 3_000_000n).toBe(true);
-			expect(readDailySpent(dir, AGENT_ID, DAY1)).toBe(3_000_000n);
-			expect(readPaidIds(dir).length).toBe(3); // exactly the 3 that reserved
-		},
-		30_000,
-	);
+	it("N_racing_reservers_never_exceed_the_daily_cap", async () => {
+		// dailyCap 3.00 admits exactly 3 of 6 concurrent 1.00 reservations; a
+		// lost update would let >3 through and overshoot the cap.
+		const N = 6;
+		const req = JSON.stringify(makeRequirement());
+		const policy = JSON.stringify(POLICY);
+		const results = await Promise.all(
+			Array.from({ length: N }, (_, i) =>
+				runWorker([dir, AGENT_ID, policy, req, `m${i}`, String(DAY1)]),
+			),
+		);
+		// No worker crashed for a non-policy reason.
+		for (const r of results) {
+			expect(r.code === 0 || r.code === 3).toBe(true);
+		}
+		const ok = results.filter((r) => r.stdout.startsWith("OK "));
+		const refused = results.filter(
+			(r) => r.stdout === `ERR ${X402_ERROR.DAILY_CAP_EXCEEDED}`,
+		);
+		expect(ok.length).toBe(3);
+		expect(refused.length).toBe(3);
+		const sum = ok.reduce((s, r) => s + BigInt(r.stdout.slice(3)), 0n);
+		expect(sum).toBe(3_000_000n);
+		expect(sum <= 3_000_000n).toBe(true);
+		expect(readDailySpent(dir, AGENT_ID, DAY1)).toBe(3_000_000n);
+		expect(readPaidIds(dir).length).toBe(3); // exactly the 3 that reserved
+	}, 30_000);
 });

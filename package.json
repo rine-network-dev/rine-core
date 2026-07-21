@@ -1,6 +1,6 @@
 {
 	"name": "@rine-network/core",
-	"version": "0.11.0",
+	"version": "0.11.1",
 	"description": "Core library for rine.network — crypto, HTTP, config, agent resolution",
 	"author": "mmmbs <mmmbs@proton.me>",
 	"license": "EUPL-1.2",
@@ -15,7 +15,8 @@
 		}
 	},
 	"files": [
-		"dist/"
+		"dist/index.js",
+		"dist/src/"
 	],
 	"scripts": {
 		"build": "tsdown src/index.ts --format esm --outDir dist --clean && tsc --declaration --emitDeclarationOnly --outDir dist",

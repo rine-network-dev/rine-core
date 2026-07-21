@@ -1,4 +1,4 @@
-// rine Funnel local keypair + CSR + ACME directory selection (REQ-CERT-09/11).
+// rine Funnel local keypair + CSR + ACME directory selection.
 //
 // FROZEN-CONTRACT: the cert private key is born here via node:crypto and stays
 // LOCAL. Only the CSR (which carries the PUBLIC key) is ever sent to Let's
@@ -16,8 +16,8 @@ const HOOK_ZONE = "hook.rine.network";
 const HOOK_ZONE_SUFFIX = `.${HOOK_ZONE}`;
 
 /**
- * The per-agent wildcard FQDN a zero-trust relay terminates TLS for
- * (REQ-CERT-40). ONE `*.{agentLabel}.hook.rine.network` cert covers EVERY hook
+ * The per-agent wildcard FQDN a zero-trust relay terminates TLS for.
+ * ONE `*.{agentLabel}.hook.rine.network` cert covers EVERY hook
  * of that agent — the cert win is the SAN cardinality dropping to one,
  * independent of how many hooks the agent owns.
  */
@@ -30,12 +30,12 @@ export function agentWildcardFqdn(agentLabel: string): string {
  * immediately before `.hook.rine.network` (the second-to-last label of
  * `{hook}.{agentLabel}.hook.rine.network`). It is an OPAQUE string read off the
  * server-authoritative hostname: the relay never sees the agent UUID and never
- * re-encodes it (the backend `funnel_naming.agent_label` is the SOLE encoder —
- * REQ-CERT-47). Keying the cert cache by this label collapses all of an agent's
- * hook-relays onto ONE shared wildcard (REQ-CERT-42/SCALE-6).
+ * re-encodes it (the backend `funnel_naming.agent_label` is the SOLE encoder).
+ * Keying the cert cache by this label collapses all of an agent's
+ * hook-relays onto ONE shared wildcard.
  *
  * Throws on a non-`.hook` hostname (e.g. a shared-edge `.edge` host) so a
- * mis-tiered host can never be fed into the zero-trust cert path (relay F-4).
+ * mis-tiered host can never be fed into the zero-trust cert path.
  */
 export function agentLabel(hostname: string): string {
 	if (!hostname.endsWith(HOOK_ZONE_SUFFIX)) {
@@ -64,7 +64,7 @@ export interface KeypairAndCsr {
 /**
  * Generate a fresh EC P-256 keypair (node:crypto) and a CSR for the per-agent
  * wildcard `*.{agentLabel}.hook.rine.network` whose CN and SINGLE SAN are that
- * wildcard (SAN cardinality == 1, independent of hook_name — REQ-CERT-40). The
+ * wildcard (SAN cardinality == 1, independent of hook_name). The
  * argument is the AGENT label (the relay never sees the UUID); one cert covers
  * every hook of the agent. A fresh, unique key is minted on every call — no key
  * reuse across issuances/renewals.

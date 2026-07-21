@@ -1,5 +1,5 @@
 /**
- * x402 message parsing (REQ-M01): turn the decrypted plaintext of an x402
+ * x402 message parsing: turn the decrypted plaintext of an x402
  * message back into its verbatim x402 V2 object. Discriminates on the message
  * `type`; validates only that the body is a JSON object with the type's
  * mandatory top-level key present — the object is otherwise returned UNCHANGED
@@ -21,6 +21,11 @@ import type {
 /** The verbatim x402 V2 object carried as the encrypted payload. */
 export type X402Payload = PaymentRequired | PaymentPayload | SettlementResponse;
 
+/** A non-null, non-array plain object — the shape every x402 sub-object must be. */
+function isObject(v: unknown): v is Record<string, unknown> {
+	return v != null && typeof v === "object" && !Array.isArray(v);
+}
+
 function requireObject(
 	type: X402MessageType,
 	plaintext: string,
@@ -34,13 +39,13 @@ function requireObject(
 			`${type} payload is not valid JSON`,
 		);
 	}
-	if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
+	if (!isObject(parsed)) {
 		throw new X402Error(
 			X402_ERROR.MALFORMED_PAYLOAD,
 			`${type} payload is not a JSON object`,
 		);
 	}
-	return parsed as Record<string, unknown>;
+	return parsed;
 }
 
 /**
@@ -66,10 +71,26 @@ export function parseX402Payload(type: string, plaintext: string): X402Payload {
 		return obj as unknown as PaymentRequired;
 	}
 	if (type === X402_MESSAGE_TYPE.PAYMENT) {
-		if (obj.payload == null || typeof obj.payload !== "object") {
+		// A payment must carry BOTH the accepted requirement (what the payee will
+		// reconcile against) AND a signed EIP-3009 authorization. Validating here
+		// turns a downstream `pp.accepted.network` / `payload.authorization.from`
+		// deref crash into a typed, catchable refusal.
+		if (!isObject(obj.accepted)) {
+			throw new X402Error(
+				X402_ERROR.MALFORMED_PAYLOAD,
+				"payment has no `accepted` requirement object",
+			);
+		}
+		if (!isObject(obj.payload)) {
 			throw new X402Error(
 				X402_ERROR.MALFORMED_PAYLOAD,
 				"payment has no signed payload",
+			);
+		}
+		if (!isObject(obj.payload.authorization)) {
+			throw new X402Error(
+				X402_ERROR.MALFORMED_PAYLOAD,
+				"payment payload has no `authorization` object",
 			);
 		}
 		return obj as unknown as PaymentPayload;

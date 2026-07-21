@@ -58,7 +58,7 @@ export async function startTlsListener(
 
 // The HTTP/1.1 response lines the relay writes back for the three outcomes.
 // Centralized so the loopback-TLS path here AND the plaintext edge-pipe path
-// (edge-pipe.ts, Phase B) synthesize byte-identical responses (AUD-C3).
+// (edge-pipe.ts, Phase B) synthesize byte-identical responses.
 export const HTTP_204 = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n";
 export const HTTP_400 = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
 export const HTTP_500 =

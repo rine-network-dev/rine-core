@@ -135,14 +135,13 @@ export interface WebhookDeliveryRead {
 // the wire (REQ-TIER-02). `zero_trust` → the relay terminates TLS (issues a
 // per-agent wildcard cert + runs a local listener); `shared_edge` → the broker
 // terminates (Phase B). The values are byte-identical to the Python enum and the
-// DB `VARCHAR(16)` CHECK; no other spelling of a tier appears anywhere
-// (REQ-CERT-47/TIER-01).
+// DB `VARCHAR(16)` CHECK; no other spelling of a tier appears anywhere.
 export type FunnelTier = "zero_trust" | "shared_edge";
 
 // The exhaustive tier value set. `FUNNEL_TIERS` is the runtime witness of the
 // `FunnelTier` union so a future third tier cannot silently drift across the
 // language boundary — the contract test asserts this array EXACTLY equals the
-// Python `FunnelTier` values (AUD-F7).
+// Python `FunnelTier` values.
 export const FUNNEL_TIERS = [
 	"zero_trust",
 	"shared_edge",

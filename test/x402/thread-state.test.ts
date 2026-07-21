@@ -115,9 +115,18 @@ describe("x402ThreadStatus", () => {
 		).toBe(X402_STATUS.FAILED);
 	});
 
-	it("threadState_sealedReceiptSuccessUnknown_defaultsCompleted", () => {
+	it("threadState_sealedReceiptSuccessUnknown_failsClosedNotCompleted", () => {
+		// Fail closed: a receipt whose decrypted `success` is unknown MUST NOT read as
+		// completed (the reducer is display-only and must never pass as settlement proof).
 		expect(x402ThreadStatus([{ type: X402_MESSAGE_TYPE.RECEIPT }])).toBe(
-			X402_STATUS.COMPLETED,
+			X402_STATUS.FAILED,
 		);
+	});
+
+	it("threadState_sealedReceiptSuccessTrue_isCompleted", () => {
+		// Only an explicit success === true reaches the completed state.
+		expect(
+			x402ThreadStatus([{ type: X402_MESSAGE_TYPE.RECEIPT, success: true }]),
+		).toBe(X402_STATUS.COMPLETED);
 	});
 });

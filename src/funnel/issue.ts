@@ -1,4 +1,4 @@
-// rine Funnel one-shot ACME DNS-01 issuance (REQ-CERT-09/10). The injectable
+// rine Funnel one-shot ACME DNS-01 issuance. The injectable
 // externals + the single-order issuance flow live here; the orchestrator
 // (cert.ts) layers cache reuse, persisted backoff, and the readiness gate on top.
 //
@@ -53,7 +53,7 @@ export interface IssueCertDeps {
 	now(): number;
 }
 
-/** The dns-challenge endpoint response (REQ-CERT-08): `set` echoes the `fqdn`. */
+/** The dns-challenge endpoint response: `set` echoes the `fqdn`. */
 export interface DnsChallengeResult {
 	status?: string;
 	fqdn?: string;
@@ -77,7 +77,7 @@ function certNotAfter(certPem: string, nowMs: number): string {
 }
 
 /**
- * Run one ACME DNS-01 issuance. Sequence (REQ-CERT-10):
+ * Run one ACME DNS-01 issuance. Sequence:
  *   newOrder -> dns:set -> waitForPropagation -> validate -> download -> dns:clear
  * The TXT is cleared in a `finally` so a FAILED order still cleans up its record
  * (no lingering challenge). Propagation is awaited BEFORE asking LE to validate

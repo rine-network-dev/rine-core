@@ -10,11 +10,12 @@ import {
 	type PaymentPolicy,
 	type PaymentRequired,
 	type PaymentRequirements,
+	X402_QUOTE_REF_KEY,
 	X402_VERSION,
 } from "./types.js";
 
 /**
- * Deterministic requirement selection (REQ-W03). Iterates `accepts[]` in the
+ * Deterministic requirement selection. Iterates `accepts[]` in the
  * payee's advertised order (their preference wins) and returns the FIRST entry
  * that satisfies the spend policy. Deny-by-default: a null policy makes every
  * candidate fail. Throws {@link X402Error} `no-acceptable-requirement` if none
@@ -68,10 +69,20 @@ export interface BuildPaymentOptions {
 	nonce?: Uint8Array;
 	/** Seconds of backdating applied to `validAfter` for clock skew (default 60). */
 	validAfterSkewSeconds?: number;
+	/**
+	 * The message id of the `rine.v1.x402_payment_required` quote this payment
+	 * answers. When present it is stamped into the SIGNED, E2EE
+	 * `extensions[X402_QUOTE_REF_KEY]` so the payee binds the payment to the ONE
+	 * quote it authored. Every rine payer surface passes it (it already holds the
+	 * quote's message id); the raw HTTP-402 fetch flow — which has no rine quote
+	 * message — omits it, and the payee then requires an explicit expected-terms
+	 * override to settle (fail closed).
+	 */
+	quoteMessageId?: string;
 }
 
 /**
- * Build and sign a `PaymentPayload` (REQ-W03) for a chosen requirement. The
+ * Build and sign a `PaymentPayload` for a chosen requirement. The
  * signer pins `to`/`value`/`asset`/`network` inside the EIP-712 signature, so a
  * relayer or facilitator cannot redirect funds. Echoes `resource`/`extensions`
  * and the chosen requirement (`accepted`) verbatim per the x402 contract.
@@ -111,11 +122,17 @@ export function buildPaymentPayload(
 	};
 	const digest = eip3009Digest(domain, authorization);
 	const signature = signDigest(walletPrivateKey, digest);
+	// Echo the quote's `extensions` verbatim, then stamp the answered-quote
+	// message id so the payee can bind this payment to the single quote it
+	// authored. The stamp rides inside the signed, E2EE payload — integrity
+	// protected and authored only by the payer.
+	const extensions: Record<string, unknown> = { ...(pr.extensions ?? {}) };
+	if (opts.quoteMessageId) extensions[X402_QUOTE_REF_KEY] = opts.quoteMessageId;
 	return {
 		x402Version: pr.x402Version ?? X402_VERSION,
 		resource: pr.resource,
 		accepted: requirement,
 		payload: { signature, authorization },
-		extensions: pr.extensions ?? {},
+		extensions,
 	};
 }

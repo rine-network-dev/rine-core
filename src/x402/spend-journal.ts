@@ -101,6 +101,8 @@ export interface ReserveSpendOptions {
 /**
  * Reserve a spend under the cross-process lock and return the reserved canonical
  * value (S2, O2′). This is the LAST local act before transmit: acquire the lock,
+ * compute the UTC-day bucket INSIDE the lock (a day computed before acquiring
+ * could roll over while a contended acquire waits, clobbering the new day's total),
  * re-read the journal fresh (day rollover applies), refuse a same-message re-pay
  * (`ALREADY_PAID` unless `force`), re-run the FULL policy against the fresh spent
  * total (deny-by-default on a null policy, drift-proof), commit `spent + value` and
@@ -114,9 +116,9 @@ export async function reserveSpend(
 	req: PaymentRequirements,
 	opts: ReserveSpendOptions = {},
 ): Promise<bigint> {
-	const day = utcDay(opts.nowSeconds ?? Date.now() / 1000);
 	const jpath = journalPath(configDir, agentId);
 	return withSpendLock(spendLockPath(configDir, agentId), async () => {
+		const day = utcDay(opts.nowSeconds ?? Date.now() / 1000);
 		const { spent, paidIds } = readJournal(jpath, day);
 		if (opts.messageId && !opts.force && paidIds.includes(opts.messageId)) {
 			throw new X402Error(

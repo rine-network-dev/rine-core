@@ -8,6 +8,7 @@
 // Constants MUST match the Python mirror (rine-sdk) exactly — a lock written by one
 // language is read for staleness by the other, so both sides share this TTL/timeout.
 
+import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import { dirname, join } from "node:path";
 import { validatePathId } from "../crypto/keys.js";
@@ -60,13 +61,17 @@ function lockState(path: string, nowMs: number): LockState {
  * success, `false` if it already exists (someone holds it). Content-atomic: a
  * plain `O_EXCL` create then a separate write leaves an EMPTY file for a moment,
  * and a racing acquirer would read that as unparseable → steal a LIVE holder →
- * two holders (a lost update). Writing the body to a per-pid temp first, then
- * `link()`-ing it into place, keeps the exclusive-create guarantee while making
- * the lock non-empty the instant it exists. Mirrors Python `_try_create`.
+ * two holders (a lost update). Writing the body to a random per-attempt temp
+ * first, then `link()`-ing it into place, keeps the exclusive-create guarantee
+ * while making the lock non-empty the instant it exists. The temp name uses
+ * `randomBytes` entropy (not `pid`, which is not unique across pid namespaces on
+ * a shared volume) so concurrent creators never collide on the transient name;
+ * that name is never read across languages, so it is not part of the interop
+ * contract. Mirrors Python `_try_create`.
  */
 function tryCreate(path: string, nowMs: number): boolean {
 	const body = `${JSON.stringify({ pid: process.pid, acquired_at: nowMs })}\n`;
-	const tmp = `${path}.${process.pid}.tmp`;
+	const tmp = `${path}.${randomBytes(8).toString("hex")}.tmp`;
 	const fd = fs.openSync(tmp, "w", 0o600); // w = O_CREAT|O_TRUNC|O_WRONLY
 	try {
 		fs.writeSync(fd, body);
@@ -87,12 +92,13 @@ function tryCreate(path: string, nowMs: number): boolean {
 /**
  * Rename-steal a stale/unparseable lock. `rename()` is atomic: with N concurrent
  * stealers exactly one succeeds and drops the renamed file; the losers get ENOENT
- * and fall back to the retry loop. The target is keyed on pid so distinct processes
- * never collide on the transient `.stale-*` name (that name is never read across
- * languages, so it is not part of the interop contract).
+ * and fall back to the retry loop. The target name uses `randomBytes` entropy (not
+ * `pid`, which is not unique across pid namespaces on a shared volume) so distinct
+ * processes never collide on the transient `.stale-*` name (that name is never read
+ * across languages, so it is not part of the interop contract).
  */
 function renameSteal(path: string): void {
-	const stalePath = `${path}.stale-${process.pid}`;
+	const stalePath = `${path}.stale-${randomBytes(8).toString("hex")}`;
 	try {
 		fs.renameSync(path, stalePath);
 		fs.rmSync(stalePath, { force: true });

@@ -114,6 +114,34 @@ describe("buildPaymentPayload", () => {
 		expect(payload.x402Version).toBe(2);
 	});
 
+	it("test_stamps_quote_message_id_into_signed_extensions", () => {
+		// R-1: the payer stamps the answered quote's message id so the payee can
+		// bind the payment to the ONE quote it authored — alongside (not replacing)
+		// the quote's own echoed extensions.
+		const built = buildPaymentPayload(pr, req, PRIV, {
+			now: NOW,
+			nonce: NONCE,
+			quoteMessageId: "quote-123",
+		});
+		expect(built.extensions?.["rine.quoteMessageId"]).toBe("quote-123");
+		expect(built.extensions?.foo).toBe("bar");
+	});
+
+	it("test_omits_quote_ref_when_no_id_supplied", () => {
+		// The raw HTTP-402 fetch flow has no rine quote message; the stamp is absent
+		// and the payee then requires an explicit expected-terms override.
+		expect(payload.extensions?.["rine.quoteMessageId"]).toBeUndefined();
+	});
+
+	it("test_stamp_does_not_mutate_the_source_quote_extensions", () => {
+		buildPaymentPayload(pr, req, PRIV, {
+			now: NOW,
+			nonce: NONCE,
+			quoteMessageId: "quote-xyz",
+		});
+		expect(pr.extensions).toEqual({ foo: "bar" });
+	});
+
 	it("builds_authorization_from_wallet_and_requirement", () => {
 		const a = payload.payload.authorization;
 		expect(a.from).toBe(WALLET);

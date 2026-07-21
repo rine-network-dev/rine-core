@@ -15,6 +15,15 @@ export const X402_ERROR = {
 	MALFORMED_PAYLOAD: "malformed-payload",
 	WALLET_BUSY: "wallet-busy",
 	ALREADY_PAID: "already-paid",
+	// The payment does not match any payee-issued quote (scheme/network/asset/
+	// payTo/amount) — the payee refuses to settle payer-authored terms.
+	REQUIREMENT_MISMATCH: "requirement-mismatch",
+	// No decryptable payee-issued quote (and no explicit expected terms) is
+	// available to reconcile the payment against — fail closed.
+	NO_QUOTE: "no-quote",
+	// The asset's decimals cannot be resolved from the registry (and none were
+	// explicitly declared) — refuse to price it rather than assume 6.
+	UNKNOWN_ASSET_DECIMALS: "unknown-asset-decimals",
 } as const;
 
 export type X402ErrorCode = (typeof X402_ERROR)[keyof typeof X402_ERROR];

@@ -1,11 +1,11 @@
-// rine Funnel cert cache (REQ-CERT-11/12): per-cert-key cert+key+meta under the
+// rine Funnel cert cache: per-cert-key cert+key+meta under the
 // config dir, with the SAME perm discipline as crypto/keys.ts — dirs 0700, files
 // 0600, atomic temp+rename writes. The cert private key is born here and never
 // leaves the box (FROZEN-CONTRACT). Staging and prod are segregated into distinct
 // subtrees so a staging cert is never presented in prod mode.
 //
-// The cache key (`certKey`) is now the AGENT label, not a per-hook label
-// (REQ-CERT-42): every hook of an agent shares ONE `funnel/{agentLabel}/` subtree
+// The cache key (`certKey`) is now the AGENT label, not a per-hook label:
+// every hook of an agent shares ONE `funnel/{agentLabel}/` subtree
 // and ONE `*.{agentLabel}.hook.rine.network` wildcard cert. The per-agent
 // issuance lock + the wipe-surviving attempt-ledger that this sharing requires
 // live in `cert-lock.ts` (kept out of the wiped subtree).
@@ -32,7 +32,7 @@ export function acmeDirectoryUrl(opts: AcmeOptions): string {
 
 /**
  * Order/renewal metadata persisted alongside the cert. `consecutive_failures`
- * is the persisted ACME-storm backoff counter (REQ-CERT-13) — it survives a
+ * is the persisted ACME-storm backoff counter — it survives a
  * crash-loop so a buggy relay can never reset its own backoff to zero on boot.
  */
 export interface CertMeta {
@@ -71,7 +71,7 @@ export function funnelCacheDir(configDir: string, opts: AcmeOptions): string {
 
 /**
  * The per-cert-key cache dir under the (staging-segregated) funnel root.
- * `certKey` is the AGENT label (REQ-CERT-42): all of an agent's hook-relays share
+ * `certKey` is the AGENT label: all of an agent's hook-relays share
  * this ONE dir, so it holds the single per-agent wildcard cert+key+meta.
  */
 export function handleCacheDir(
@@ -172,13 +172,13 @@ export function loadCachedCert(
 }
 
 /**
- * Scoped wipe of one cert key's cert+key+meta subtree (REQ-CERT-16). Other cert
+ * Scoped wipe of one cert key's cert+key+meta subtree. Other cert
  * keys are untouched. The per-agent issuance lock and the attempt-ledger live at
  * the funnel ROOT (cert-lock.ts), OUTSIDE this subtree, so a wipe does NOT reset
- * the crash-loop backoff and never strands a held lock (SCALE-4). Because the
+ * the crash-loop backoff and never strands a held lock. Because the
  * cache key is now the agent label, a relay MUST NOT call this on a single hook's
  * teardown while sibling hooks of the same agent are still live — it would wipe
- * the shared wildcard. The wildcard teardown-revoke is dropped (REQ-CERT-44); the
+ * the shared wildcard. The wildcard teardown-revoke is dropped; the
  * kill switch is server-side DNS+route teardown.
  */
 export function wipeHandleCache(

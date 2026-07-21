@@ -1,10 +1,8 @@
 /**
- * x402 cleartext status marker (REQ-P02): the ONLY rine-added, server-visible
+ * x402 cleartext status marker: the ONLY rine-added, server-visible
  * plane on an x402 message. It carries coarse lifecycle state and nothing else —
  * never amounts, assets, addresses, tx hashes, or any economic detail (those
  * live only in the encrypted payload). Sender-controlled and opt-in.
- *
- * Binding contract: `phases/x402-payments/AGENT_OUT_protocol_draft.md` §3.
  */
 
 import {
