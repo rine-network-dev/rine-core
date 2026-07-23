@@ -16,7 +16,7 @@ import type { CredentialEntry } from "./types.js";
  * backoff), retrying up to {@link TOKEN_RETRY_MAX_ATTEMPTS} times with a cumulative
  * wait capped at {@link MAX_RETRY_WAIT_MS} — so a co-located multi-agent host's
  * synchronized refresh no longer hard-fails on a transient limit, while a genuinely
- * down server still fails fast (rate-limit-resilience REQ-TS-01, D-3). Non-429
+ * down server still fails fast. Non-429
  * failures throw immediately, exactly as before. `rng` is injectable for tests.
  */
 export async function fetchOAuthToken(
@@ -69,7 +69,7 @@ export async function fetchOAuthToken(
  * 1. opts.envToken — used directly, no cache/refresh
  * 2. Token cache — returned while more than `opts.refreshMargin` seconds remain
  *    (default 60; callers pass a per-instance jittered margin — see
- *    {@link jitteredRefreshMargin} — so co-located clients desynchronize, D-4)
+ *    {@link jitteredRefreshMargin} — so co-located clients desynchronize)
  * 3. POST /oauth/token — fetches fresh token and caches it
  */
 export async function getOrRefreshToken(

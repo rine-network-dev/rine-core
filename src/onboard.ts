@@ -338,7 +338,7 @@ export async function performAgentCreation(
 		}
 	}
 
-	// SPIFFE identity verification (REQ-SPF-10): run when explicitly requested, when a
+	// SPIFFE identity verification: run when explicitly requested, when a
 	// SPIFFE Workload API endpoint is present, or when the caller supplied an explicit
 	// `--svid` (passing an SVID without `--verify-identity` must NOT silently discard it).
 	// The agent already exists, so a verification FAILURE must not undo creation nor

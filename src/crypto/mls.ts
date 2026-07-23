@@ -1,247 +1,170 @@
-import { ed25519 } from "@noble/curves/ed25519.js";
+/**
+ * rine's MLS layer, as a thin adapter over the native core `@rine-network/mls`.
+ *
+ * Everything cryptographic — RFC 9420, the X-Wing post-quantum ciphersuite, the
+ * local group store, the KeyPackage pool and the sender self-read cache — lives
+ * in the native core and is shared byte-for-byte with the Python SDK. This file
+ * owns only what is rine-specific in TypeScript: where an agent's store lives,
+ * how a rine group UUID becomes an MLS group id, and how a native error is
+ * recognised.
+ *
+ * `encryption_version` is still `mls-v1`; the ciphersuite inside it is now
+ * post-quantum by default. New groups and the old ts-mls groups do NOT
+ * interoperate — the store root is deliberately a different
+ * directory so no stale blob is ever read.
+ */
+import { join } from "node:path";
 import {
-	createGroup, createCommit, joinGroup, joinGroupExternal, createApplicationMessage,
-	processPrivateMessage, processMessage, generateKeyPackageWithKey,
-	makeKeyPackageRef, createGroupInfoWithExternalPubAndRatchetTree,
-	encode, decode,
-	clientStateEncoder, clientStateDecoder,
-	mlsMessageEncoder, mlsMessageDecoder,
-	keyPackageEncoder, keyPackageDecoder,
-	privateKeyPackageEncoder, privateKeyPackageDecoder,
-	defaultCredentialTypes, acceptAll, zeroOutUint8Array,
-	protocolVersions, wireformats, MlsError,
-	type ClientState, type MlsWelcomeMessage, type MlsGroupInfo,
-	type CiphersuiteImpl,
-} from "ts-mls";
-import { getMlsCipherSuite, getMlsContext } from "./mls-init.js";
+  APP_MESSAGE_TAG,
+  CIPHER_SUITE_CLASSICAL,
+  CIPHER_SUITE_DEFAULT,
+  CIPHER_SUITE_XWING,
+  MlsClient,
+  type MlsGroup,
+} from "@rine-network/mls";
+import { loadAgentKeys, validatePathId } from "./keys.js";
+import {
+  MLS_ERR_PROTOCOL,
+  MLS_ERR_SELF_MESSAGE_NOT_CACHED,
+  isUnprocessableCommit,
+  mlsErrorCode,
+} from "./mls-errors.js";
+import { uuidToBytes } from "./sender-keys-helpers.js";
 
-export const VERSION_MLS = 0x04;
+export type { MlsGroup };
 
-export interface MlsGroupState {
-	groupId: string;
-	epoch: number;
-	cipherSuite: number;
+/** The `0x04` version byte an `mls-v1` `encrypted_payload` carries. */
+export const VERSION_MLS = APP_MESSAGE_TAG;
+
+/**
+ * Suite ids exactly as the server persists them in `mls_cipher_suite`, read off
+ * the native core rather than restated — the default is decided once, in the
+ * core, so the TypeScript and Python stacks cannot drift into creating groups
+ * of different suites.
+ */
+export const MLS_CIPHER_SUITE_DEFAULT = CIPHER_SUITE_DEFAULT;
+/** X-Wing (X25519 + ML-KEM-768) — what a new rine group gets. */
+export const MLS_CIPHER_SUITE_XWING = CIPHER_SUITE_XWING;
+/** RFC 9420 suite 0x0001, still reachable for a group that must be classical. */
+export const MLS_CIPHER_SUITE_CLASSICAL = CIPHER_SUITE_CLASSICAL;
+
+/**
+ * This agent's private MLS store.
+ *
+ * `mls2`, not `mls`: this is a hard cutover, so the ts-mls-era blobs under
+ * `mls/` are unreadable by this core. They are left where they are and never
+ * read, rather than migrated into a format that cannot represent them.
+ */
+export function mlsStoreRoot(configDir: string, agentId: string): string {
+  validatePathId(agentId, "agent ID");
+  return join(configDir, "keys", agentId, "mls2");
 }
 
-function encState(s: ClientState): Uint8Array { return encode(clientStateEncoder, s); }
-
-function decState(b: Uint8Array): ClientState {
-	const s = decode(clientStateDecoder, b);
-	if (!s) throw new Error("Failed to decode MLS client state");
-	return s;
+/** The raw 16 bytes MLS keys a group by — the rine group UUID, never the server's `mls_group_id` latch. */
+export function mlsGroupIdBytes(groupId: string): Uint8Array {
+  validatePathId(groupId, "group ID");
+  return uuidToBytes(groupId);
 }
 
-function zeroConsumed(consumed: Uint8Array[]): void {
-	for (const c of consumed) zeroOutUint8Array(c);
-}
+const EPOCH_RETENTION_ENV = "RINE_MLS_EPOCH_RETENTION";
 
-function basicCred(publicKey: Uint8Array) {
-	return { credentialType: defaultCredentialTypes.basic, identity: publicKey };
+/**
+ * Unset is rine's shipped policy: keep the full epoch backlog, so
+ * anything the server's undelivered queue can still be holding stays
+ * decryptable — the queue never drops an undelivered message, so a member
+ * returning after any number of commits can still read what it missed.
+ *
+ * Setting it to a positive integer trades that reach for a narrower
+ * forward-secrecy window: old epoch secrets stop sitting on disk sooner, and a
+ * member absent for more than that many commits can no longer read its backlog.
+ */
+function epochRetentionLimit(): number | undefined {
+  const raw = process.env[EPOCH_RETENTION_ENV];
+  if (raw === undefined || raw === "") return undefined;
+  const limit = Number(raw);
+  if (!Number.isInteger(limit) || limit < 1) {
+    throw new Error(
+      `${EPOCH_RETENTION_ENV} must be a positive integer of epochs to retain, got '${raw}'`,
+    );
+  }
+  return limit;
 }
 
 /**
- * Build a fresh, current-epoch GroupInfo blob (with external_pub + ratchet_tree)
- * so a subsequent external joiner can self-join against this group's latest
- * epoch. Single-use per epoch (RFC 9420 §12.4.3.2) — every commit must publish
- * a fresh one or the next external join targets a stale epoch and is rejected.
+ * Open this agent's MLS client.
+ *
+ * One client per store root at a time: the native store takes no lock, so two
+ * live clients on one agent both ratchet the same group and the loser's commit
+ * is refused by the server's epoch CAS. Callers open a client for one operation
+ * and let it go.
  */
-async function freshGroupInfoBlob(state: ClientState, cs: CiphersuiteImpl): Promise<Uint8Array> {
-	const gi = await createGroupInfoWithExternalPubAndRatchetTree(state, [], cs);
-	const giMsg: MlsGroupInfo = {
-		wireformat: wireformats.mls_group_info, groupInfo: gi, version: protocolVersions.mls10,
-	};
-	return encode(mlsMessageEncoder, giMsg);
-}
-
-export async function generateMlsKeyPackage(signingKey: Uint8Array): Promise<{
-	publicBlob: Uint8Array; privateBlob: Uint8Array; keyPackageRef: Uint8Array;
-}> {
-	const cs = await getMlsCipherSuite();
-	const publicKey = ed25519.getPublicKey(signingKey);
-	const { publicPackage, privatePackage } = await generateKeyPackageWithKey({
-		credential: basicCred(publicKey), signatureKeyPair: { signKey: signingKey, publicKey }, cipherSuite: cs,
-	});
-	return {
-		publicBlob: encode(keyPackageEncoder, publicPackage),
-		privateBlob: encode(privateKeyPackageEncoder, privatePackage),
-		keyPackageRef: await makeKeyPackageRef(publicPackage, cs.hash),
-	};
-}
-
-export async function createMlsGroup(signingKey: Uint8Array, _cipherSuite?: number): Promise<{
-	stateBlob: Uint8Array; groupInfo: Uint8Array; commitBlob: Uint8Array; epoch: number;
-}> {
-	const cs = await getMlsCipherSuite();
-	const ctx = await getMlsContext();
-	const publicKey = ed25519.getPublicKey(signingKey);
-	const { publicPackage, privatePackage } = await generateKeyPackageWithKey({
-		credential: basicCred(publicKey), signatureKeyPair: { signKey: signingKey, publicKey }, cipherSuite: cs,
-	});
-	const state = await createGroup({
-		context: ctx, groupId: crypto.getRandomValues(new Uint8Array(16)),
-		keyPackage: publicPackage, privateKeyPackage: privatePackage,
-	});
-	const { newState, commit, consumed } = await createCommit({ context: ctx, state });
-	zeroConsumed(consumed);
-	return {
-		stateBlob: encState(newState),
-		groupInfo: await freshGroupInfoBlob(newState, cs),
-		commitBlob: encode(mlsMessageEncoder, commit),
-		epoch: Number(newState.groupContext.epoch),
-	};
-}
-
-export async function addMemberToMlsGroup(
-	stateBlob: Uint8Array, keyPackageBlob: Uint8Array,
-): Promise<{ commitBlob: Uint8Array; welcomeBlob: Uint8Array; updatedState: Uint8Array; groupInfo: Uint8Array; epoch: number }> {
-	const cs = await getMlsCipherSuite();
-	const ctx = await getMlsContext();
-	const kp = decode(keyPackageDecoder, keyPackageBlob);
-	if (!kp) throw new Error("Failed to decode key package");
-	const { newState, welcome, commit, consumed } = await createCommit({
-		context: ctx, state: decState(stateBlob),
-		extraProposals: [{ proposalType: 1 as const, add: { keyPackage: kp } }],
-		ratchetTreeExtension: true,
-	});
-	zeroConsumed(consumed);
-	if (!welcome) throw new Error("createCommit produced no welcome for add");
-	return {
-		commitBlob: encode(mlsMessageEncoder, commit),
-		welcomeBlob: encode(mlsMessageEncoder, welcome),
-		updatedState: encState(newState),
-		groupInfo: await freshGroupInfoBlob(newState, cs),
-		epoch: Number(newState.groupContext.epoch),
-	};
-}
-
-export async function removeMemberFromMlsGroup(
-	stateBlob: Uint8Array, leafIndex: number,
-): Promise<{ commitBlob: Uint8Array; updatedState: Uint8Array; groupInfo: Uint8Array; epoch: number }> {
-	const cs = await getMlsCipherSuite();
-	const ctx = await getMlsContext();
-	const { newState, commit, consumed } = await createCommit({
-		context: ctx, state: decState(stateBlob),
-		extraProposals: [{ proposalType: 3 as const, remove: { removed: leafIndex } }],
-	});
-	zeroConsumed(consumed);
-	return {
-		commitBlob: encode(mlsMessageEncoder, commit),
-		updatedState: encState(newState),
-		groupInfo: await freshGroupInfoBlob(newState, cs),
-		epoch: Number(newState.groupContext.epoch),
-	};
-}
-
-export async function processMlsWelcome(
-	welcomeBlob: Uint8Array, keyPackageBlob: Uint8Array, privateKeyBlob: Uint8Array,
-): Promise<{ stateBlob: Uint8Array; groupId: string; epoch: number; cipherSuite: number }> {
-	const ctx = await getMlsContext();
-	const msg = decode(mlsMessageDecoder, welcomeBlob);
-	if (!msg || msg.wireformat !== wireformats.mls_welcome)
-		throw new Error("Failed to decode MLS welcome message");
-	const kp = decode(keyPackageDecoder, keyPackageBlob);
-	if (!kp) throw new Error("Failed to decode key package for welcome");
-	const pkp = decode(privateKeyPackageDecoder, privateKeyBlob);
-	if (!pkp) throw new Error("Failed to decode private key package for welcome");
-	const state = await joinGroup({
-		context: ctx, welcome: (msg as MlsWelcomeMessage).welcome,
-		keyPackage: kp, privateKeys: pkp,
-	});
-	return {
-		stateBlob: encState(state),
-		groupId: new TextDecoder().decode(state.groupContext.groupId),
-		epoch: Number(state.groupContext.epoch),
-		cipherSuite: state.groupContext.cipherSuite,
-	};
-}
-
-export async function processMlsCommit(
-	stateBlob: Uint8Array, commitBlob: Uint8Array,
-): Promise<{ updatedState: Uint8Array; epoch: number }> {
-	// H4: every "I cannot process this commit" failure throws a ts-mls MlsError
-	// (not a bare Error) so syncMlsGroup can distinguish an un-processable commit
-	// (→ NACK + save nothing) from a transport error (→ emit neither, rethrow).
-	// processMessage itself throws MlsError on crypto failures; the decode/usage
-	// guards below are normalized to MlsError for the same instanceof check.
-	const ctx = await getMlsContext();
-	const msg = decode(mlsMessageDecoder, commitBlob);
-	if (!msg) throw new MlsError("Failed to decode MLS commit message");
-	if (msg.wireformat !== wireformats.mls_private_message
-		&& msg.wireformat !== wireformats.mls_public_message)
-		throw new MlsError(`Unexpected wireformat for commit: ${msg.wireformat}`);
-	const result = await processMessage({ context: ctx, state: decState(stateBlob), message: msg, callback: acceptAll });
-	if (result.kind !== "newState") throw new MlsError("Expected commit to produce newState");
-	zeroConsumed(result.consumed);
-	return {
-		updatedState: encState(result.newState),
-		epoch: Number(result.newState.groupContext.epoch),
-	};
+export function openMlsClient(
+  configDir: string,
+  agentId: string,
+  cipherSuite: number = MLS_CIPHER_SUITE_DEFAULT,
+): MlsClient {
+  const keys = loadAgentKeys(configDir, agentId);
+  return MlsClient.open(
+    mlsStoreRoot(configDir, agentId),
+    keys.signing.privateKey,
+    cipherSuite,
+    { epochRetentionLimit: epochRetentionLimit() },
+  );
 }
 
 /**
- * Self-join an MLS group via an RFC 9420 external commit (no Welcome required).
- * The joiner mints a fresh KeyPackage with its own Ed25519 signing key, derives
- * a fresh init_secret against the published GroupInfo's external_pub, and emits
- * a public External Commit that existing members process to advance the epoch.
- * Returns the public commit (to broadcast), the joiner's new state, a fresh
- * GroupInfo (so the NEXT external joiner has a current-epoch token), and the new
- * epoch. `resync: false` — the joiner is a brand-new member, not in the tree.
+ * The message every surface's MLS recovery path matches on. Pinned, and
+ * defined once: rine-cli, rine-mcp and the TS SDK all branch on this prefix to
+ * decide that a send should install pending Welcomes and retry.
  */
-export async function externalJoinMlsGroup(
-	signingKey: Uint8Array, groupInfoBlob: Uint8Array,
-): Promise<{ commitBlob: Uint8Array; stateBlob: Uint8Array; groupInfo: Uint8Array; epoch: number }> {
-	const cs = await getMlsCipherSuite();
-	const ctx = await getMlsContext();
-	const msg = decode(mlsMessageDecoder, groupInfoBlob);
-	if (!msg || msg.wireformat !== wireformats.mls_group_info)
-		throw new Error("Failed to decode MLS GroupInfo for external join");
-	const groupInfo = (msg as MlsGroupInfo).groupInfo;
+const NO_MLS_STATE_PREFIX = "No MLS state for group";
 
-	const publicKey = ed25519.getPublicKey(signingKey);
-	const { publicPackage, privatePackage } = await generateKeyPackageWithKey({
-		credential: basicCred(publicKey), signatureKeyPair: { signKey: signingKey, publicKey }, cipherSuite: cs,
-	});
-
-	const { publicMessage, newState } = await joinGroupExternal({
-		context: ctx, groupInfo, keyPackage: publicPackage,
-		privateKeys: privatePackage, resync: false,
-	});
-
-	const commitBlob = encode(mlsMessageEncoder, {
-		wireformat: wireformats.mls_public_message, publicMessage, version: protocolVersions.mls10,
-	});
-	return {
-		commitBlob,
-		stateBlob: encState(newState),
-		groupInfo: await freshGroupInfoBlob(newState, cs),
-		epoch: Number(newState.groupContext.epoch),
-	};
+export function noMlsStateError(groupId: string): Error {
+  return new Error(`${NO_MLS_STATE_PREFIX} ${groupId}`);
 }
 
-export async function encryptMlsAppMessage(
-	stateBlob: Uint8Array, plaintext: Uint8Array,
-): Promise<{ ciphertext: Uint8Array; updatedState: Uint8Array }> {
-	const ctx = await getMlsContext();
-	const { newState, message, consumed } = await createApplicationMessage({
-		context: ctx, state: decState(stateBlob), message: plaintext,
-	});
-	zeroConsumed(consumed);
-	return { ciphertext: encode(mlsMessageEncoder, message), updatedState: encState(newState) };
+/** This agent holds no local state for the group the caller asked about. */
+export function isNoMlsStateError(err: unknown): boolean {
+  return err instanceof Error && err.message.startsWith(NO_MLS_STATE_PREFIX);
 }
 
-export async function decryptMlsAppMessage(
-	stateBlob: Uint8Array, ciphertext: Uint8Array,
-): Promise<{ plaintext: Uint8Array; updatedState: Uint8Array }> {
-	const ctx = await getMlsContext();
-	const msg = decode(mlsMessageDecoder, ciphertext);
-	if (!msg || msg.wireformat !== wireformats.mls_private_message)
-		throw new Error("Failed to decode MLS private message");
-	const result = await processPrivateMessage({
-		context: ctx, state: decState(stateBlob),
-		privateMessage: msg.privateMessage, callback: acceptAll,
-	});
-	if (result.kind !== "applicationMessage")
-		throw new Error("Expected application message, got commit/proposal");
-	zeroConsumed(result.consumed);
-	return { plaintext: result.message, updatedState: encState(result.newState) };
+/**
+ * True when a failed group read might succeed after installing pending Welcomes
+ * and syncing commits.
+ *
+ * Two failures are deliberately NOT recoverable. A message this member sent
+ * whose plaintext has aged out of the self-read cache will never decrypt —
+ * forward secrecy consumed the sender's ratchet step and no peer can re-send
+ * it. And a local store failure is not something a sync can fix.
+ */
+export function isRecoverableMlsRead(err: unknown): boolean {
+  const code = mlsErrorCode(err);
+  if (code === null) return isNoMlsStateError(err);
+  return isUnprocessableCommit(err) && code !== MLS_ERR_SELF_MESSAGE_NOT_CACHED;
+}
+
+/** Load a group from the local store, or null when this agent holds no state for it. */
+export function loadMlsGroup(
+  client: MlsClient,
+  groupId: string,
+): MlsGroup | null {
+  try {
+    return client.loadGroup(mlsGroupIdBytes(groupId));
+  } catch (err) {
+    // Absent or unreadable state is RINE_MLS_PROTOCOL; a store I/O failure is
+    // RINE_MLS_STORE and must never masquerade as "this agent never joined".
+    if (mlsErrorCode(err) === MLS_ERR_PROTOCOL) return null;
+    throw err;
+  }
+}
+
+/** Load a group the caller requires, failing with {@link noMlsStateError} when it is absent. */
+export function openMlsGroup(
+  configDir: string,
+  agentId: string,
+  groupId: string,
+): MlsGroup {
+  const group = loadMlsGroup(openMlsClient(configDir, agentId), groupId);
+  if (!group) throw noMlsStateError(groupId);
+  return group;
 }

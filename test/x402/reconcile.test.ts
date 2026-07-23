@@ -1,10 +1,10 @@
 /**
- * F-1 / R-1 reconciliation — behavioural tests through the public reconcile
- * interface. Every mismatch axis the audit's poc-f1 exercised (payTo redirect,
+ * Reconciliation — behavioural tests through the public reconcile
+ * interface. Every mismatch axis (payTo redirect,
  * underpay, wrong asset/network/scheme, worthless token) must REFUSE; the payer's
- * NAMED tier is returned for a multi-tier same-asset quote (#3); the SIGNED
+ * NAMED tier is returned for a multi-tier same-asset quote; the SIGNED
  * authorization value — not the echoed `accepted.amount` — is what must cover the
- * quote (#4); exact/overpay pass.
+ * quote; exact/overpay pass.
  */
 
 import { describe, expect, it } from "vitest";
@@ -101,7 +101,7 @@ describe("reconcilePayment — happy path", () => {
 	});
 });
 
-describe("reconcilePayment — #3 multi-tier same-asset quote binds the NAMED tier", () => {
+describe("reconcilePayment — multi-tier same-asset quote binds the NAMED tier", () => {
 	it("test_five_dollar_payer_gets_the_five_dollar_tier_not_the_first", () => {
 		const tier1 = quote({ amount: "1000000" }); // 1.00
 		const tier5 = quote({ amount: "5000000" }); // 5.00, same asset/network/payTo
@@ -137,7 +137,7 @@ describe("reconcilePayment — #3 multi-tier same-asset quote binds the NAMED ti
 	});
 });
 
-describe("reconcilePayment — #4 signed authorization value is the underpayment guard", () => {
+describe("reconcilePayment — signed authorization value is the underpayment guard", () => {
 	it("test_signed_value_below_named_tier_is_refused_locally", () => {
 		const q = quote(); // 1.00 tier
 		// Payer echoes the full 1.00 in `accepted` (names the tier) but SIGNS only

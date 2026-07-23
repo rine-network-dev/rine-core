@@ -8,8 +8,8 @@
 // FROZEN-CONTRACT: the trust boundary is UNCHANGED from zero-trust at REST — the
 // relay still HMAC-verifies (the secret never left the relay) and HPKE-seals
 // (`hpke-v1`, NO new encryption_version). Only the inbound bytes arrive as
-// plaintext over the mux instead of as raw TLS records (the broker decrypted them,
-// SPEC §8 amendment). Same `handleWebhookRequest`, same response strings.
+// plaintext over the mux instead of as raw TLS records (the broker decrypted
+// them). Same `handleWebhookRequest`, same response strings.
 
 import type { LocalPipe } from "./mux-client.js";
 import type { Frame } from "./mux-codec.js";

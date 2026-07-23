@@ -132,7 +132,7 @@ export interface WebhookDeliveryRead {
 
 // Funnel TLS-termination tier — the TS mirror of the Python `FunnelTier` StrEnum
 // (funnel_naming.py) and the single source of truth for the tier on this side of
-// the wire (REQ-TIER-02). `zero_trust` → the relay terminates TLS (issues a
+// the wire. `zero_trust` → the relay terminates TLS (issues a
 // per-agent wildcard cert + runs a local listener); `shared_edge` → the broker
 // terminates (Phase B). The values are byte-identical to the Python enum and the
 // DB `VARCHAR(16)` CHECK; no other spelling of a tier appears anywhere.
@@ -147,14 +147,14 @@ export const FUNNEL_TIERS = [
 	"shared_edge",
 ] as const satisfies readonly FunnelTier[];
 
-// rine Funnel hook rows (funnel_schemas.py). NEVER carry a secret (D5/D6) — the
+// rine Funnel hook rows (funnel_schemas.py). NEVER carry a secret — the
 // HMAC secret is generated + stored client-side and never crosses the wire.
 // `control_ws_url` is the broker control-WS endpoint (e.g.
 // "wss://funnel.rine.network/_funnel/v1") returned by BOTH create and list — the
 // relay uses it VERBATIM and NEVER reconstructs it from the API base (the API
 // base resolves to the primary IP / Caddy, which has no funnel route).
 // `termination` tells the relay whether IT terminates TLS (zero_trust) or the
-// broker does (shared_edge) — it branches once at startup on this (REQ-TIER-03).
+// broker does (shared_edge) — it branches once at startup on this.
 export interface HookRead {
 	hook_name: string;
 	hostname: string;

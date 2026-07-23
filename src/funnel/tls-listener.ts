@@ -1,7 +1,7 @@
-// rine Funnel local TLS-terminating listener (REQ-CLI-07 step 3). The broker
+// rine Funnel local TLS-terminating listener. The broker
 // shovels the GitHub→edge TLS records raw down the mux (passthrough, E2EE
 // invariant); the relay terminates that TLS HERE on loopback using the cert whose
-// private key never left the box (D4). Each terminated request's RAW body is
+// private key never left the box. Each terminated request's RAW body is
 // handed to the relay adapter (HMAC-verify → encrypt → self-send).
 //
 // `openLocalPipe(frame)` returns the mux-client's LocalPipe for one conn: it

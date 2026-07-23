@@ -2,467 +2,344 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { VERSION_MLS } from "../../src/crypto/mls.js";
 import {
-	generateMlsKeyPackage,
-	createMlsGroup,
-	addMemberToMlsGroup,
-	removeMemberFromMlsGroup,
-	processMlsWelcome,
-	processMlsCommit,
-	encryptMlsAppMessage,
-	decryptMlsAppMessage,
-} from "../../src/crypto/mls.js";
-import {
-	uploadKeyPackages,
-	claimKeyPackages,
-	mlsInit,
-	mlsCommit,
-	fetchHandshakes,
-	fetchWelcomes,
-	fetchGroupInfo,
-	submitProposal,
-} from "../../src/crypto/mls-api.js";
-import {
-	externalJoinMlsGroup,
-} from "../../src/crypto/mls.js";
-import {
-	saveMlsState,
-	loadMlsState,
-	deleteMlsState,
-	savePrivateKeyPackages,
-	loadPrivateKeyPackage,
-	deletePrivateKeyPackage,
-	listPrivateKeyPackages,
-} from "../../src/crypto/mls-state.js";
+	fromBase64Url,
+	generateAgentKeys,
+	saveAgentKeys,
+	signingPublicKeyToJWK,
+} from "../../src/crypto/keys.js";
 import {
 	decryptGroupMessage,
 	encryptMlsGroupMessage,
 } from "../../src/crypto/message.js";
 import {
-	generateAgentKeys,
-	generateSigningKeyPair,
-	saveAgentKeys,
-	signingPublicKeyToJWK,
-	toBase64Url,
-	fromBase64Url,
-} from "../../src/crypto/keys.js";
+	isMlsError,
+	isUnprocessableCommit,
+	mlsErrorCode,
+} from "../../src/crypto/mls-errors.js";
+import { deleteMlsState, loadMlsState } from "../../src/crypto/mls-state.js";
+import {
+	MLS_CIPHER_SUITE_CLASSICAL,
+	MLS_CIPHER_SUITE_DEFAULT,
+	MLS_CIPHER_SUITE_XWING,
+	VERSION_MLS,
+	isNoMlsStateError,
+	isRecoverableMlsRead,
+	loadMlsGroup,
+	mlsGroupIdBytes,
+	mlsStoreRoot,
+	openMlsClient,
+	openMlsGroup,
+} from "../../src/crypto/mls.js";
+import { MLS_KEY_PACKAGE_MAX_BATCH } from "../../src/mls-keypackages.js";
 
-// ── VERSION_MLS ──────────────────────────────────────────────────────────────
+const CREATOR_ID = "11111111-1111-4111-8111-111111111111";
+const JOINER_ID = "22222222-2222-4222-8222-222222222222";
+const GROUP_ID = "33333333-3333-4333-8333-333333333333";
 
-describe("VERSION_MLS", () => {
-	it("equals 0x04", () => {
+let tmpDir: string;
+
+beforeEach(() => {
+	tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rine-mls-"));
+	delete process.env["RINE_MLS_EPOCH_RETENTION"];
+});
+
+afterEach(() => {
+	fs.rmSync(tmpDir, { recursive: true, force: true });
+	delete process.env["RINE_MLS_EPOCH_RETENTION"];
+});
+
+function agent(agentId: string) {
+	const keys = generateAgentKeys();
+	saveAgentKeys(tmpDir, agentId, keys);
+	return keys;
+}
+
+/** A client that answers the signing-key lookup `verifyEnvelopeSender` makes. */
+function keyServer(signingPublicKey: Uint8Array) {
+	return {
+		get: vi.fn().mockResolvedValue({
+			signing_public_key: signingPublicKeyToJWK(signingPublicKey),
+		}),
+		post: vi.fn(),
+	};
+}
+
+// ── wire constants ───────────────────────────────────────────────────────────
+
+describe("MLS wire constants", () => {
+	it("tags an mls-v1 payload with 0x04", () => {
 		expect(VERSION_MLS).toBe(0x04);
 	});
-});
 
-// ── MLS crypto real implementations ─────────────────────────────────────────
+	it("defaults new groups to the post-quantum X-Wing suite", () => {
+		expect(MLS_CIPHER_SUITE_DEFAULT).toBe(MLS_CIPHER_SUITE_XWING);
+		expect(MLS_CIPHER_SUITE_XWING).toBe(0xf057);
+	});
 
-describe("MLS crypto — generateMlsKeyPackage", () => {
-	it("produces publicBlob, privateBlob, and keyPackageRef", async () => {
-		const { privateKey } = generateSigningKeyPair();
-		const result = await generateMlsKeyPackage(privateKey);
-		expect(result.publicBlob).toBeInstanceOf(Uint8Array);
-		expect(result.publicBlob.length).toBeGreaterThan(0);
-		expect(result.privateBlob).toBeInstanceOf(Uint8Array);
-		expect(result.privateBlob.length).toBeGreaterThan(0);
-		expect(result.keyPackageRef).toBeInstanceOf(Uint8Array);
-		expect(result.keyPackageRef.length).toBeGreaterThan(0);
+	it("keeps the classical RFC 9420 suite reachable", () => {
+		expect(MLS_CIPHER_SUITE_CLASSICAL).toBe(0x0001);
 	});
 });
 
-describe("MLS crypto — createMlsGroup", () => {
-	it("creates a group with stateBlob, groupInfo, commitBlob", async () => {
-		const { privateKey } = generateSigningKeyPair();
-		const result = await createMlsGroup(privateKey);
-		expect(result.stateBlob).toBeInstanceOf(Uint8Array);
-		expect(result.stateBlob.length).toBeGreaterThan(0);
-		expect(result.groupInfo).toBeInstanceOf(Uint8Array);
-		expect(result.commitBlob).toBeInstanceOf(Uint8Array);
-		// createGroup(0) + self-commit advances the creator to epoch 1.
-		expect(result.epoch).toBe(1);
+// ── store layout ─────────────────────────────────────────────────────────────
+
+describe("mlsStoreRoot", () => {
+	it("keeps the native store out of the ts-mls-era directory", () => {
+		const root = mlsStoreRoot("/cfg", CREATOR_ID);
+		expect(root).toBe(path.join("/cfg", "keys", CREATOR_ID, "mls2"));
+	});
+
+	it("rejects an agent id that is not a UUID", () => {
+		expect(() => mlsStoreRoot("/cfg", "../escape")).toThrow("must be a UUID");
 	});
 });
 
-describe("MLS crypto — add + welcome round-trip", () => {
-	it("adds a member and processes the welcome", async () => {
-		const creator = generateSigningKeyPair();
-		const joiner = generateSigningKeyPair();
+describe("mlsGroupIdBytes", () => {
+	it("is the rine group UUID's raw 16 bytes", () => {
+		const bytes = mlsGroupIdBytes(GROUP_ID);
+		expect(bytes).toHaveLength(16);
+		expect(Buffer.from(bytes).toString("hex")).toBe(GROUP_ID.replace(/-/g, ""));
+	});
 
-		const group = await createMlsGroup(creator.privateKey);
-		const joinerKp = await generateMlsKeyPackage(joiner.privateKey);
+	it("rejects a group id that is not a UUID", () => {
+		expect(() => mlsGroupIdBytes("not-a-uuid")).toThrow("must be a UUID");
+	});
+});
 
-		const addResult = await addMemberToMlsGroup(group.stateBlob, joinerKp.publicBlob);
-		expect(addResult.welcomeBlob.length).toBeGreaterThan(0);
-		expect(addResult.commitBlob.length).toBeGreaterThan(0);
-		// A fresh, current-epoch GroupInfo is returned so callers can publish it
-		// for the next external joiner.
-		expect(addResult.groupInfo.length).toBeGreaterThan(0);
-		// The add commit advances the group from epoch 1 to epoch 2.
-		expect(addResult.epoch).toBe(2);
+// ── client and epoch retention (SPEC DEC-8) ──────────────────────────────────
 
-		const welcomeResult = await processMlsWelcome(
-			addResult.welcomeBlob,
-			joinerKp.publicBlob,
-			joinerKp.privateBlob,
+describe("openMlsClient", () => {
+	it("mints with the post-quantum default suite", () => {
+		agent(CREATOR_ID);
+		expect(openMlsClient(tmpDir, CREATOR_ID).cipherSuite()).toBe(
+			MLS_CIPHER_SUITE_DEFAULT,
 		);
-		expect(welcomeResult.groupId.length).toBeGreaterThan(0);
-		expect(welcomeResult.epoch).toBeGreaterThanOrEqual(0);
-		expect(welcomeResult.cipherSuite).toBe(1);
-		expect(welcomeResult.stateBlob.length).toBeGreaterThan(0);
 	});
-});
 
-describe("MLS crypto — removeMemberFromMlsGroup", () => {
-	it("returns a commit + fresh GroupInfo and advances the epoch by one", async () => {
-		const creator = generateSigningKeyPair();
-		const joiner = generateSigningKeyPair();
-
-		const group = await createMlsGroup(creator.privateKey); // epoch 1
-		const joinerKp = await generateMlsKeyPackage(joiner.privateKey);
-		const add = await addMemberToMlsGroup(group.stateBlob, joinerKp.publicBlob); // epoch 2
-
-		// Remove the joiner (leaf index 1) — advances to epoch 3.
-		const removed = await removeMemberFromMlsGroup(add.updatedState, 1);
-		expect(removed.commitBlob.length).toBeGreaterThan(0);
-		expect(removed.groupInfo.length).toBeGreaterThan(0);
-		expect(removed.epoch).toBe(3);
-	});
-});
-
-describe("MLS crypto — encrypt/decrypt round-trip", () => {
-	it("encrypts and decrypts an application message", async () => {
-		const creator = generateSigningKeyPair();
-		const joiner = generateSigningKeyPair();
-
-		const group = await createMlsGroup(creator.privateKey);
-		const joinerKp = await generateMlsKeyPackage(joiner.privateKey);
-		const addResult = await addMemberToMlsGroup(group.stateBlob, joinerKp.publicBlob);
-
-		// Creator encrypts
-		const plaintext = new TextEncoder().encode("hello MLS");
-		const enc = await encryptMlsAppMessage(addResult.updatedState, plaintext);
-		expect(enc.ciphertext.length).toBeGreaterThan(0);
-
-		// Joiner decrypts
-		const welcomeResult = await processMlsWelcome(
-			addResult.welcomeBlob,
-			joinerKp.publicBlob,
-			joinerKp.privateBlob,
+	it("mints with the classical suite when one is asked for", () => {
+		agent(CREATOR_ID);
+		const client = openMlsClient(
+			tmpDir,
+			CREATOR_ID,
+			MLS_CIPHER_SUITE_CLASSICAL,
 		);
-		const dec = await decryptMlsAppMessage(welcomeResult.stateBlob, enc.ciphertext);
-		expect(new TextDecoder().decode(dec.plaintext)).toBe("hello MLS");
+		expect(client.cipherSuite()).toBe(MLS_CIPHER_SUITE_CLASSICAL);
+	});
+
+	it("keeps the full epoch backlog when the retention knob is unset", () => {
+		agent(CREATOR_ID);
+		expect(() => openMlsClient(tmpDir, CREATOR_ID)).not.toThrow();
+	});
+
+	it("accepts a positive epoch retention limit", () => {
+		agent(CREATOR_ID);
+		process.env["RINE_MLS_EPOCH_RETENTION"] = "2";
+		expect(() => openMlsClient(tmpDir, CREATOR_ID)).not.toThrow();
+	});
+
+	it("refuses a retention limit that would break the group", () => {
+		agent(CREATOR_ID);
+		process.env["RINE_MLS_EPOCH_RETENTION"] = "0";
+		expect(() => openMlsClient(tmpDir, CREATOR_ID)).toThrow(
+			"positive integer of epochs",
+		);
+	});
+
+	it("refuses a retention limit that is not a number", () => {
+		agent(CREATOR_ID);
+		process.env["RINE_MLS_EPOCH_RETENTION"] = "lots";
+		expect(() => openMlsClient(tmpDir, CREATOR_ID)).toThrow(
+			"positive integer of epochs",
+		);
 	});
 });
 
-describe("MLS crypto — external-commit self-join round-trip", () => {
-	it("joiner self-joins via GroupInfo (no Welcome); both can exchange app messages", async () => {
-		const creator = generateSigningKeyPair();
-		const joiner = generateSigningKeyPair();
+// ── key package pool ─────────────────────────────────────────────────────────
 
-		// Creator makes the group; its GroupInfo (with external_pub + ratchet_tree)
-		// is the only thing the joiner needs — no member mints a Welcome.
-		const group = await createMlsGroup(creator.privateKey);
-
-		const joined = await externalJoinMlsGroup(joiner.privateKey, group.groupInfo);
-		expect(joined.commitBlob.length).toBeGreaterThan(0);
-		expect(joined.stateBlob.length).toBeGreaterThan(0);
-		expect(joined.groupInfo.length).toBeGreaterThan(0); // fresh GroupInfo for the NEXT joiner
-		// External join advances the epoch (group was at epoch 1 after init commit).
-		expect(joined.epoch).toBeGreaterThan(1);
-
-		// Existing member processes the public external commit -> advances epoch.
-		const advanced = await processMlsCommit(group.stateBlob, joined.commitBlob);
-		expect(advanced.epoch).toBe(joined.epoch);
-
-		// Joiner sends an app message; the member decrypts it.
-		const msg = new TextEncoder().encode("hello from external joiner");
-		const enc = await encryptMlsAppMessage(joined.stateBlob, msg);
-		const dec = await decryptMlsAppMessage(advanced.updatedState, enc.ciphertext);
-		expect(new TextDecoder().decode(dec.plaintext)).toBe("hello from external joiner");
+describe("key package pool", () => {
+	it("mints the batch it was asked for and holds every private half", () => {
+		agent(CREATOR_ID);
+		const client = openMlsClient(tmpDir, CREATOR_ID);
+		expect(client.keyPackageCount()).toBe(0);
+		expect(client.generateKeyPackages(4)).toHaveLength(4);
+		expect(client.keyPackageCount()).toBe(4);
 	});
 
-	it("rejects a non-GroupInfo blob", async () => {
-		const joiner = generateSigningKeyPair();
-		const creator = generateSigningKeyPair();
-		const group = await createMlsGroup(creator.privateKey);
-		// commitBlob is an mls_public_message, not an mls_group_info.
-		await expect(
-			externalJoinMlsGroup(joiner.privateKey, group.commitBlob),
-		).rejects.toThrow("Failed to decode MLS GroupInfo");
+	it("refuses a batch over the cap outright rather than truncating it", () => {
+		agent(CREATOR_ID);
+		const client = openMlsClient(tmpDir, CREATOR_ID);
+		let raised: unknown;
+		try {
+			client.generateKeyPackages(MLS_KEY_PACKAGE_MAX_BATCH + 1);
+		} catch (err) {
+			raised = err;
+		}
+		expect(mlsErrorCode(raised)).toBe("RINE_MLS_KEY_PACKAGE_BATCH_TOO_LARGE");
+		expect(client.keyPackageCount()).toBe(0);
 	});
 });
 
-// ── MLS API client ───────────────────────────────────────────────────────────
+// ── error vocabulary ─────────────────────────────────────────────────────────
 
-describe("MLS API client", () => {
-	function makeMockClient() {
-		return {
-			get: vi.fn().mockResolvedValue({}),
-			post: vi.fn().mockResolvedValue({}),
-		};
+describe("MLS error classification", () => {
+	const nativeErr = (code: string) =>
+		Object.assign(new Error("boom"), { code });
+
+	it("recognises a native failure by its code, not its message", () => {
+		expect(mlsErrorCode(nativeErr("RINE_MLS_PROTOCOL"))).toBe(
+			"RINE_MLS_PROTOCOL",
+		);
+		expect(isMlsError(nativeErr("RINE_MLS_PROTOCOL"))).toBe(true);
+		expect(isMlsError(new Error("RINE_MLS_PROTOCOL"))).toBe(false);
+		expect(mlsErrorCode(undefined)).toBeNull();
+	});
+
+	it("NACKs an unusable commit but never our own store failure", () => {
+		expect(isUnprocessableCommit(nativeErr("RINE_MLS_PROTOCOL"))).toBe(true);
+		expect(isUnprocessableCommit(nativeErr("RINE_MLS_EPOCH_CONFLICT"))).toBe(
+			true,
+		);
+		expect(isUnprocessableCommit(nativeErr("RINE_MLS_STORE"))).toBe(false);
+		expect(isUnprocessableCommit(nativeErr("RINE_MLS_PANIC"))).toBe(false);
+		expect(isUnprocessableCommit(nativeErr("RINE_MLS_POISONED"))).toBe(false);
+		expect(isUnprocessableCommit(new Error("transport"))).toBe(false);
+	});
+
+	it("treats a missing-state failure as recoverable and an aged-out self-read as not", () => {
+		expect(isNoMlsStateError(new Error("No MLS state for group x"))).toBe(true);
+		expect(isRecoverableMlsRead(new Error("No MLS state for group x"))).toBe(
+			true,
+		);
+		expect(isRecoverableMlsRead(nativeErr("RINE_MLS_PROTOCOL"))).toBe(true);
+		expect(
+			isRecoverableMlsRead(nativeErr("RINE_MLS_SELF_MESSAGE_NOT_CACHED")),
+		).toBe(false);
+		expect(isRecoverableMlsRead(nativeErr("RINE_MLS_STORE"))).toBe(false);
+		expect(isRecoverableMlsRead(new Error("transport"))).toBe(false);
+	});
+});
+
+// ── local state lifecycle ────────────────────────────────────────────────────
+
+describe("MLS local state", () => {
+	it("reports no state before a group is founded", () => {
+		agent(CREATOR_ID);
+		expect(loadMlsState(tmpDir, CREATOR_ID, GROUP_ID)).toBeNull();
+		expect(
+			loadMlsGroup(openMlsClient(tmpDir, CREATOR_ID), GROUP_ID),
+		).toBeNull();
+	});
+
+	it("reports the group's epoch, suite and membership once founded", () => {
+		agent(CREATOR_ID);
+		const client = openMlsClient(tmpDir, CREATOR_ID);
+		client.createGroup(mlsGroupIdBytes(GROUP_ID)).save();
+
+		expect(loadMlsState(tmpDir, CREATOR_ID, GROUP_ID)).toEqual({
+			groupId: GROUP_ID,
+			epoch: 1,
+			cipherSuite: MLS_CIPHER_SUITE_DEFAULT,
+		});
+	});
+
+	it("retires a group's state, and retiring one that was never there is not an error", () => {
+		agent(CREATOR_ID);
+		openMlsClient(tmpDir, CREATOR_ID)
+			.createGroup(mlsGroupIdBytes(GROUP_ID))
+			.save();
+		expect(loadMlsState(tmpDir, CREATOR_ID, GROUP_ID)).not.toBeNull();
+
+		deleteMlsState(tmpDir, CREATOR_ID, GROUP_ID);
+		expect(loadMlsState(tmpDir, CREATOR_ID, GROUP_ID)).toBeNull();
+		expect(() => deleteMlsState(tmpDir, CREATOR_ID, GROUP_ID)).not.toThrow();
+	});
+
+	it("fails a required group with the message every surface's recovery path matches", () => {
+		agent(CREATOR_ID);
+		expect(() => openMlsGroup(tmpDir, CREATOR_ID, GROUP_ID)).toThrow(
+			`No MLS state for group ${GROUP_ID}`,
+		);
+	});
+});
+
+// ── group message round trip ─────────────────────────────────────────────────
+
+describe("MLS group messages", () => {
+	function foundGroupWithJoiner() {
+		const creatorKeys = agent(CREATOR_ID);
+		agent(JOINER_ID);
+
+		const joinerClient = openMlsClient(tmpDir, JOINER_ID);
+		const keyPackage = joinerClient.generateKeyPackage();
+
+		const creatorClient = openMlsClient(tmpDir, CREATOR_ID);
+		const group = creatorClient.createGroupWithMembers(
+			mlsGroupIdBytes(GROUP_ID),
+			[keyPackage],
+		);
+		const bundle = group.lastCommit();
+		if (!bundle) throw new Error("founding commit missing");
+		group.save();
+
+		joinerClient.joinFromWelcome(bundle.welcomes[0]!).save();
+		return creatorKeys;
 	}
 
-	it("uploadKeyPackages POSTs to correct path with packages", async () => {
-		const client = makeMockClient();
-		client.post.mockResolvedValue({ stored: 5 });
-		const result = await uploadKeyPackages(
-			client as never,
-			"agent-123",
-			["pkg1", "pkg2"],
+	it("round-trips a signed envelope from the founder to a welcomed member", async () => {
+		const creatorKeys = foundGroupWithJoiner();
+
+		const enc = await encryptMlsGroupMessage(tmpDir, CREATOR_ID, GROUP_ID, {
+			hello: "world",
+		});
+		expect(enc.encryption_version).toBe("mls-v1");
+		expect(enc.sender_signing_kid).toBe(`rine:${CREATOR_ID}`);
+		expect(fromBase64Url(enc.encrypted_payload)[0]).toBe(VERSION_MLS);
+
+		const dec = await decryptGroupMessage(
+			tmpDir,
+			JOINER_ID,
+			GROUP_ID,
+			enc.encrypted_payload,
+			keyServer(creatorKeys.signing.publicKey) as never,
 		);
-		expect(result).toEqual({ stored: 5 });
-		expect(client.post).toHaveBeenCalledWith(
-			"/agents/agent-123/mls/key-packages",
-			{ packages: ["pkg1", "pkg2"] },
+		expect(JSON.parse(dec.plaintext)).toEqual({ hello: "world" });
+		expect(dec.verified).toBe(true);
+		expect(dec.verificationStatus).toBe("verified");
+	});
+
+	it("lets the sender read its own message back, which MLS forward secrecy alone would not", async () => {
+		const creatorKeys = foundGroupWithJoiner();
+
+		const enc = await encryptMlsGroupMessage(tmpDir, CREATOR_ID, GROUP_ID, {
+			mine: true,
+		});
+		const dec = await decryptGroupMessage(
+			tmpDir,
+			CREATOR_ID,
+			GROUP_ID,
+			enc.encrypted_payload,
+			keyServer(creatorKeys.signing.publicKey) as never,
 		);
+		expect(JSON.parse(dec.plaintext)).toEqual({ mine: true });
+		expect(dec.senderKid).toBe(`rine:${CREATOR_ID}`);
 	});
 
-	it("claimKeyPackages GETs correct path with count param", async () => {
-		const resp = { packages: ["p1"], agent_id: "agent-123" };
-		const client = makeMockClient();
-		client.get.mockResolvedValue(resp);
-		const result = await claimKeyPackages(client as never, "agent-123", 3);
-		expect(result).toEqual(resp);
-		expect(client.get).toHaveBeenCalledWith(
-			"/agents/agent-123/mls/key-packages",
-			{ count: "3" },
-		);
+	it("refuses to encrypt for a group this agent has no state for", async () => {
+		agent(CREATOR_ID);
+		await expect(
+			encryptMlsGroupMessage(tmpDir, CREATOR_ID, GROUP_ID, { x: 1 }),
+		).rejects.toThrow("No MLS state for group");
 	});
 
-	it("mlsInit POSTs to correct path", async () => {
-		const resp = { mls_pending: true, members: [] };
-		const client = makeMockClient();
-		client.post.mockResolvedValue(resp);
-		const result = await mlsInit(client as never, "group-456");
-		expect(result).toEqual(resp);
-		expect(client.post).toHaveBeenCalledWith(
-			"/groups/group-456/mls/init",
-			{},
-			undefined,
-		);
-	});
+	it("attempts recovery, then surfaces the failure, for an MLS payload it cannot place", async () => {
+		agent(CREATOR_ID);
+		const payload = Buffer.from(
+			new Uint8Array([VERSION_MLS, 0xde, 0xad, 0xbe, 0xef]),
+		).toString("base64url");
 
-	it("mlsCommit POSTs to correct path with body", async () => {
-		const body = { commit: "base64commit", welcomes: [], group_info: "gi" };
-		const resp = { epoch: 1, delivered_to: 2 };
-		const client = makeMockClient();
-		client.post.mockResolvedValue(resp);
-		const result = await mlsCommit(client as never, "group-456", body);
-		expect(result).toEqual(resp);
-		expect(client.post).toHaveBeenCalledWith(
-			"/groups/group-456/mls/commit",
-			body,
-			undefined,
-		);
-	});
-
-	it("fetchHandshakes GETs correct path with optional since_epoch", async () => {
-		const resp = { handshakes: [] };
-		const client = makeMockClient();
-		client.get.mockResolvedValue(resp);
-		const result = await fetchHandshakes(client as never, "group-456", 5);
-		expect(result).toEqual(resp);
-		expect(client.get).toHaveBeenCalledWith(
-			"/groups/group-456/mls/handshakes",
-			{ since_epoch: "5" },
-			undefined,
-		);
-	});
-
-	it("fetchHandshakes GETs with empty params when no since_epoch", async () => {
-		const client = makeMockClient();
-		client.get.mockResolvedValue({ handshakes: [] });
-		await fetchHandshakes(client as never, "group-456");
-		expect(client.get).toHaveBeenCalledWith(
-			"/groups/group-456/mls/handshakes",
-			{},
-			undefined,
-		);
-	});
-
-	it("fetchWelcomes GETs correct path", async () => {
-		const resp = { welcomes: [] };
-		const client = makeMockClient();
-		client.get.mockResolvedValue(resp);
-		const result = await fetchWelcomes(client as never, "agent-789");
-		expect(result).toEqual(resp);
-		expect(client.get).toHaveBeenCalledWith(
-			"/agents/agent-789/mls/welcomes",
-		);
-	});
-
-	it("fetchGroupInfo GETs the group-info path", async () => {
-		const resp = { group_info: "base64gi", epoch: 3 };
-		const client = makeMockClient();
-		client.get.mockResolvedValue(resp);
-		const result = await fetchGroupInfo(client as never, "group-456");
-		expect(result).toEqual(resp);
-		expect(client.get).toHaveBeenCalledWith(
-			"/groups/group-456/mls/group-info",
-			undefined,
-			undefined,
-		);
-	});
-
-	it("submitProposal POSTs to correct path with proposal", async () => {
-		const resp = { id: "prop-1", delivered_to: 3 };
-		const client = makeMockClient();
-		client.post.mockResolvedValue(resp);
-		const result = await submitProposal(
-			client as never,
-			"group-456",
-			"base64proposal",
-		);
-		expect(result).toEqual(resp);
-		expect(client.post).toHaveBeenCalledWith(
-			"/groups/group-456/mls/proposals",
-			{ proposal: "base64proposal" },
-			undefined,
-		);
-	});
-});
-
-// ── MLS state persistence ────────────────────────────────────────────────────
-
-describe("MLS state persistence", () => {
-	let tmpDir: string;
-	const agentId = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
-	const groupId = "d4e5f6a7-b8c9-0123-defa-234567890123";
-
-	beforeEach(() => {
-		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rine-mls-state-"));
-	});
-
-	afterEach(() => {
-		fs.rmSync(tmpDir, { recursive: true, force: true });
-	});
-
-	it("saveMlsState + loadMlsState round-trips state and metadata", () => {
-		const stateBlob = new Uint8Array([10, 20, 30, 40, 50]);
-		const metadata = { groupId, epoch: 3, cipherSuite: 1 };
-		saveMlsState(tmpDir, agentId, groupId, stateBlob, metadata);
-
-		const loaded = loadMlsState(tmpDir, agentId, groupId);
-		expect(loaded).not.toBeNull();
-		expect(Buffer.from(loaded!.stateBlob).equals(Buffer.from(stateBlob))).toBe(true);
-		expect(loaded!.metadata.groupId).toBe(groupId);
-		expect(loaded!.metadata.epoch).toBe(3);
-		expect(loaded!.metadata.cipherSuite).toBe(1);
-	});
-
-	it("loadMlsState returns null for non-existent path", () => {
-		const result = loadMlsState(tmpDir, agentId, "ffffffff-ffff-ffff-ffff-ffffffffffff");
-		expect(result).toBeNull();
-	});
-
-	it("deleteMlsState removes state", () => {
-		const stateBlob = new Uint8Array([1, 2, 3]);
-		const metadata = { groupId, epoch: 0, cipherSuite: 1 };
-		saveMlsState(tmpDir, agentId, groupId, stateBlob, metadata);
-
-		expect(loadMlsState(tmpDir, agentId, groupId)).not.toBeNull();
-		deleteMlsState(tmpDir, agentId, groupId);
-		expect(loadMlsState(tmpDir, agentId, groupId)).toBeNull();
-	});
-
-	it("sets restrictive file permissions (0o600) on state.bin", () => {
-		const stateBlob = new Uint8Array([99]);
-		const metadata = { groupId, epoch: 0, cipherSuite: 1 };
-		saveMlsState(tmpDir, agentId, groupId, stateBlob, metadata);
-
-		const statePath = path.join(
-			tmpDir, "keys", agentId, "mls", groupId, "state.bin",
-		);
-		const stat = fs.statSync(statePath);
-		expect(stat.mode & 0o777).toBe(0o600);
-	});
-});
-
-// ── Private Key Package storage ────────────────────────────────────────────
-
-describe("Private Key Package storage", () => {
-	let tmpDir: string;
-	const agentId = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
-
-	beforeEach(() => {
-		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rine-mls-pkp-"));
-	});
-
-	afterEach(() => {
-		fs.rmSync(tmpDir, { recursive: true, force: true });
-	});
-
-	it("save + load round-trips private key packages", () => {
-		const ref = new Uint8Array([0xab, 0xcd, 0xef]);
-		const publicBlob = new Uint8Array([1, 2, 3]);
-		const privateBlob = new Uint8Array([4, 5, 6]);
-		savePrivateKeyPackages(tmpDir, agentId, [{ ref, publicBlob, privateBlob }]);
-
-		const loaded = loadPrivateKeyPackage(tmpDir, agentId, ref);
-		expect(loaded).not.toBeNull();
-		expect(Buffer.from(loaded!.publicBlob)).toEqual(Buffer.from(publicBlob));
-		expect(Buffer.from(loaded!.privateBlob)).toEqual(Buffer.from(privateBlob));
-	});
-
-	it("loadPrivateKeyPackage returns null for non-existent ref", () => {
-		const result = loadPrivateKeyPackage(tmpDir, agentId, new Uint8Array([0xff]));
-		expect(result).toBeNull();
-	});
-
-	it("deletePrivateKeyPackage removes a stored package", () => {
-		const ref = new Uint8Array([0x01, 0x02]);
-		savePrivateKeyPackages(tmpDir, agentId, [
-			{ ref, publicBlob: new Uint8Array([1]), privateBlob: new Uint8Array([2]) },
-		]);
-		expect(loadPrivateKeyPackage(tmpDir, agentId, ref)).not.toBeNull();
-		deletePrivateKeyPackage(tmpDir, agentId, ref);
-		expect(loadPrivateKeyPackage(tmpDir, agentId, ref)).toBeNull();
-	});
-
-	it("listPrivateKeyPackages returns all stored packages", () => {
-		const ref1 = new Uint8Array([0xaa]);
-		const ref2 = new Uint8Array([0xbb]);
-		savePrivateKeyPackages(tmpDir, agentId, [
-			{ ref: ref1, publicBlob: new Uint8Array([1]), privateBlob: new Uint8Array([10]) },
-			{ ref: ref2, publicBlob: new Uint8Array([2]), privateBlob: new Uint8Array([20]) },
-		]);
-		const list = listPrivateKeyPackages(tmpDir, agentId);
-		expect(list).toHaveLength(2);
-		const refs = list.map((p) => p.ref).sort();
-		expect(refs).toEqual(["aa", "bb"]);
-	});
-
-	it("listPrivateKeyPackages returns empty for non-existent dir", () => {
-		const list = listPrivateKeyPackages(tmpDir, agentId);
-		expect(list).toEqual([]);
-	});
-});
-
-// ── decryptGroupMessage MLS dispatch ─────────────────────────────────────────
-
-describe("decryptGroupMessage MLS dispatch", () => {
-	let tmpDir: string;
-	const agentId = "b2c3d4e5-f6a7-8901-bcde-f12345678901";
-
-	beforeEach(() => {
-		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rine-mls-dispatch-"));
-	});
-
-	afterEach(() => {
-		fs.rmSync(tmpDir, { recursive: true, force: true });
-	});
-
-	it("throws when MLS payload has no stored state and recovery fails", async () => {
-		const keys = generateAgentKeys();
-		saveAgentKeys(tmpDir, agentId, keys);
-
-		const payload = new Uint8Array([0x04, 0xde, 0xad, 0xbe, 0xef, 0x01, 0x02]);
-		const encoded = toBase64Url(payload);
-
-		// Mock handles the recovery path: processMlsWelcomes (empty), then
-		// externalJoinMlsGroup (no GroupInfo → fails), then syncMlsGroup.
-		const mockClient = {
+		// Recovery: no welcomes, no published GroupInfo to self-join against.
+		const client = {
 			get: vi.fn().mockResolvedValue({ welcomes: [], handshakes: [] }),
 			post: vi.fn(),
 		};
@@ -470,93 +347,11 @@ describe("decryptGroupMessage MLS dispatch", () => {
 		await expect(
 			decryptGroupMessage(
 				tmpDir,
-				agentId,
-				"c3d4e5f6-a7b8-9012-cdef-123456789012",
-				encoded,
-				mockClient as never,
+				CREATOR_ID,
+				GROUP_ID,
+				payload,
+				client as never,
 			),
 		).rejects.toThrow("Cannot self-join MLS group");
-	});
-});
-
-// ── encryptMlsGroupMessage → decryptGroupMessage (Phase 5 group send) ─────────
-
-describe("encryptMlsGroupMessage end-to-end", () => {
-	let tmpDir: string;
-	const creatorId = "11111111-1111-4111-8111-111111111111";
-	const joinerId = "22222222-2222-4222-8222-222222222222";
-	const groupId = "33333333-3333-4333-8333-333333333333"; // rine group UUID
-
-	beforeEach(() => {
-		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rine-mls-e2e-"));
-	});
-
-	afterEach(() => {
-		fs.rmSync(tmpDir, { recursive: true, force: true });
-	});
-
-	it("creator encrypts (mls-v1, 0x04 tag) and joiner decrypts + verifies", async () => {
-		const creatorKeys = generateAgentKeys();
-		const joinerKeys = generateAgentKeys();
-		saveAgentKeys(tmpDir, creatorId, creatorKeys);
-		saveAgentKeys(tmpDir, joinerId, joinerKeys);
-
-		// Creator builds the MLS group around its own Ed25519 signing key and
-		// adds the joiner; both persist state under the SAME rine group UUID.
-		const group = await createMlsGroup(creatorKeys.signing.privateKey);
-		const joinerKp = await generateMlsKeyPackage(joinerKeys.signing.privateKey);
-		const add = await addMemberToMlsGroup(group.stateBlob, joinerKp.publicBlob);
-		saveMlsState(tmpDir, creatorId, groupId, add.updatedState, {
-			groupId,
-			epoch: 1,
-			cipherSuite: 1,
-		});
-		const welcome = await processMlsWelcome(
-			add.welcomeBlob,
-			joinerKp.publicBlob,
-			joinerKp.privateBlob,
-		);
-		saveMlsState(tmpDir, joinerId, groupId, welcome.stateBlob, {
-			groupId,
-			epoch: welcome.epoch,
-			cipherSuite: welcome.cipherSuite,
-		});
-
-		// Creator encrypts a group message via the high-level Phase 5 helper.
-		const enc = await encryptMlsGroupMessage(tmpDir, creatorId, groupId, {
-			hello: "world",
-		});
-		expect(enc.encryption_version).toBe("mls-v1");
-		expect(enc.sender_signing_kid).toBe(`rine:${creatorId}`);
-		// Wire format: version-byte 0x04 prefix on the MLS ciphertext.
-		expect(fromBase64Url(enc.encrypted_payload)[0]).toBe(VERSION_MLS);
-
-		// verifyEnvelopeSender fetches the sender's signing key.
-		const client = {
-			get: vi.fn().mockResolvedValue({
-				signing_public_key: signingPublicKeyToJWK(creatorKeys.signing.publicKey),
-			}),
-			post: vi.fn(),
-		};
-
-		// Joiner decrypts via the version-byte dispatch in decryptGroupMessage.
-		const dec = await decryptGroupMessage(
-			tmpDir,
-			joinerId,
-			groupId,
-			enc.encrypted_payload,
-			client as never,
-		);
-		expect(JSON.parse(dec.plaintext)).toEqual({ hello: "world" });
-		expect(dec.verified).toBe(true);
-		expect(dec.verificationStatus).toBe("verified");
-	});
-
-	it("throws a clear error when no MLS state exists for the group", async () => {
-		const keys = generateAgentKeys();
-		saveAgentKeys(tmpDir, creatorId, keys);
-		await expect(
-			encryptMlsGroupMessage(tmpDir, creatorId, groupId, { x: 1 }),
-		).rejects.toThrow("No MLS state for group");
 	});
 });

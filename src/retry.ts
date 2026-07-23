@@ -1,5 +1,5 @@
-// Shared rate-limit / retry primitives for the token and request paths
-// (rate-limit-resilience REQ-TS-01/02/03, D-3/D-4). The Retry-After parser was
+// Shared rate-limit / retry primitives for the token and request paths.
+// The Retry-After parser was
 // previously duplicated in funnel/acme.ts and ts-sdk; this is the single canonical
 // copy. Full-jitter backoff mirrors funnel/backoff.ts's formula but with
 // token-appropriate constants (small base, bounded total wait) rather than the
@@ -42,7 +42,7 @@ export function fullJitterBackoffMs(
 
 /**
  * Per-client-instance token refresh margin (seconds): `60 + uniform(0, 120)`,
- * drawn ONCE at client construction (D-4). Co-located clients that started
+ * drawn ONCE at client construction. Co-located clients that started
  * together then desynchronize permanently instead of clustering their refreshes
  * into the same minute. `rng` is injectable for deterministic tests.
  */

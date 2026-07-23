@@ -1,4 +1,4 @@
-// REQ-FSH-07 — hook names become the leading DNS label of the funnel hostname,
+// Hook names become the leading DNS label of the funnel hostname,
 // and the relay appends a `--` separator to form the cert subject. A name that
 // is un-certifiable (too short → `--` lands in the R-LDH-reserved positions 3–4,
 // or charset/hyphen violations) must be rejected at create time, not cold at
@@ -12,7 +12,7 @@ import {
 	isValidHookName,
 } from "../../src/funnel/secret-store.js";
 
-describe("REQ-FSH-07 — hook name validation", () => {
+describe("hook name validation", () => {
 	describe("accepts certifiable names", () => {
 		const valid = [
 			"abc", // minimum length boundary (3)

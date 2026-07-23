@@ -1,123 +1,33 @@
 import {
-	processMlsCommit,
-	processMlsWelcome,
-	removeMemberFromMlsGroup,
-} from "./crypto/mls.js";
-import {
 	fetchGroupInfo,
 	fetchHandshakes,
-	fetchWelcomes,
 	mlsAck,
-	mlsCommit,
 	mlsFromBase64,
 	mlsNack,
-	mlsToBase64,
 } from "./crypto/mls-api.js";
-import {
-	loadMlsState,
-	saveMlsState,
-	listPrivateKeyPackages,
-	deletePrivateKeyPackage,
-} from "./crypto/mls-state.js";
-import { externalJoinMlsGroup } from "./mls-ops-join.js";
+import { isUnprocessableCommit } from "./crypto/mls-errors.js";
+import { openMlsGroup } from "./crypto/mls.js";
 import type { HttpClient } from "./http.js";
-import { decode, MlsError, mlsMessageDecoder, wireformats, type MlsWelcomeMessage } from "ts-mls";
+import { externalJoinMlsGroup } from "./mls-ops-join.js";
 
-/**
- * Fetch all pending MLS welcomes for an agent and process them, establishing
- * local group state for each group the agent has been added to.
- */
-export async function processMlsWelcomes(
-	configDir: string,
-	agentId: string,
-	client: HttpClient,
-): Promise<{ processed: number; groupIds: string[] }> {
-	const { welcomes } = await fetchWelcomes(client, agentId);
-	const storedPkgs = listPrivateKeyPackages(configDir, agentId);
-	const pkgByRef = new Map(storedPkgs.map((p) => [p.ref, p]));
-	const groupIds: string[] = [];
-
-	for (const welcome of welcomes) {
-		// State must be keyed by the rine group UUID (carried on the welcome
-		// delivery), not the MLS-internal group id — that is the identifier
-		// `decryptGroupMessage`/`encryptMlsGroupMessage` and the MLS API routes
-		// use. Skip welcomes the server couldn't associate with a group.
-		const rineGroupId = welcome.group_id;
-		if (!rineGroupId) continue;
-		const welcomeBlob = mlsFromBase64(welcome.blob);
-		// Decode welcome to find the matching key package ref
-		const msg = decode(mlsMessageDecoder, welcomeBlob);
-		if (!msg || msg.wireformat !== wireformats.mls_welcome) {
-			throw new Error("Failed to decode welcome message");
-		}
-		const welcomeData = (msg as MlsWelcomeMessage).welcome;
-
-		let matched: { publicBlob: Uint8Array; privateBlob: Uint8Array; refHex: string } | null = null;
-		for (const secret of welcomeData.secrets) {
-			const refHex = Buffer.from(secret.newMember).toString("hex");
-			const pkg = pkgByRef.get(refHex);
-			if (pkg) {
-				matched = { publicBlob: pkg.publicBlob, privateBlob: pkg.privateBlob, refHex };
-				break;
-			}
-		}
-		if (!matched) {
-			throw new Error("No matching private key package found for welcome");
-		}
-
-		const { stateBlob, epoch, cipherSuite } = await processMlsWelcome(
-			welcomeBlob,
-			matched.publicBlob,
-			matched.privateBlob,
-		);
-		saveMlsState(configDir, agentId, rineGroupId, stateBlob, {
-			groupId: rineGroupId,
-			epoch,
-			cipherSuite,
-		});
-		deletePrivateKeyPackage(configDir, agentId, Buffer.from(matched.refHex, "hex"));
-		groupIds.push(rineGroupId);
-	}
-
-	return { processed: groupIds.length, groupIds };
+export interface MlsSyncResult {
+	epoch: number;
+	processed: number;
+	/**
+	 * True when a commit applied by THIS sync evicted the member. Eviction is the
+	 * correct outcome of a valid commit, not an error: the group keeps decrypting
+	 * the backlog it already holds secrets for, but can no longer send or commit.
+	 *
+	 * In-session only — the native core does not persist eviction, so a later
+	 * process reloads the group as active and learns otherwise from the first
+	 * operation that refuses.
+	 */
+	evicted: boolean;
 }
 
 /**
- * Remove a member from an MLS group by leaf index and post the remove commit.
- */
-export async function removeMlsGroupMember(
-	configDir: string,
-	agentId: string,
-	groupId: string,
-	leafIndex: number,
-	client: HttpClient,
-	extraHeaders?: Record<string, string>,
-): Promise<{ epoch: number }> {
-	const stored = loadMlsState(configDir, agentId, groupId);
-	if (!stored) throw new Error(`No MLS state for group ${groupId}`);
-
-	const { commitBlob, updatedState, groupInfo, epoch: commitEpoch } =
-		await removeMemberFromMlsGroup(stored.stateBlob, leafIndex);
-
-	const commitResp = await mlsCommit(
-		client,
-		groupId,
-		{ commit: mlsToBase64(commitBlob), group_info: mlsToBase64(groupInfo), epoch: commitEpoch },
-		extraHeaders,
-	);
-
-	const epoch = commitResp.epoch ?? commitEpoch;
-	saveMlsState(configDir, agentId, groupId, updatedState, {
-		...stored.metadata,
-		epoch,
-	});
-
-	return { epoch };
-}
-
-/**
- * Sync local MLS group state by fetching and applying all commits posted
- * since the current epoch.
+ * Sync local MLS group state by fetching and applying every commit posted since
+ * the group's current epoch.
  */
 export async function syncMlsGroup(
 	configDir: string,
@@ -125,85 +35,72 @@ export async function syncMlsGroup(
 	groupId: string,
 	client: HttpClient,
 	extraHeaders?: Record<string, string>,
-): Promise<{ epoch: number; processed: number }> {
-	const stored = loadMlsState(configDir, agentId, groupId);
-	if (!stored) throw new Error(`No MLS state for group ${groupId}`);
-
-	const currentEpoch = stored.metadata.epoch;
+): Promise<MlsSyncResult> {
+	const group = openMlsGroup(configDir, agentId, groupId);
 	const { handshakes } = await fetchHandshakes(
 		client,
 		groupId,
-		currentEpoch,
+		group.epoch(),
 		extraHeaders,
 	);
 
-	let currentState = stored.stateBlob;
-	let epoch = currentEpoch;
+	let epoch = group.epoch();
 	let processed = 0;
 
 	for (const handshake of handshakes) {
-		const commitBlob = mlsFromBase64(handshake.blob);
-		let result: { updatedState: Uint8Array; epoch: number };
 		try {
-			result = await processMlsCommit(currentState, commitBlob);
+			epoch = group.applyCommit(mlsFromBase64(handshake.blob));
 		} catch (err) {
-			if (err instanceof MlsError) {
-				// H4 (MEDIUM-1): a processMlsCommit failure has TWO causes that must
-				// be told apart. (1) The commit is genuinely garbage → NACK so the
-				// server rolls it back. (2) Our OWN local state is orphaned: our
-				// tentative self-join was NACK'd/timed-out and the server rolled the
-				// epoch back below our local epoch, so a fresh peer commit can never
-				// apply to our stale branch. NACK-looping case (2) is a permanent
-				// per-member denial-of-participation (the quorum=1 exploit). Detect
-				// the orphaned state via the server's confirmed-epoch signal and
-				// re-bootstrap instead of NACKing.
-				const reconciled = await reconcileIfOrphaned(
-					configDir, agentId, groupId, epoch, client, extraHeaders,
-				);
-				if (reconciled !== null) {
-					// Orphaned: re-bootstrapped via external join (fresh state saved
-					// only on server acceptance). Stop this sync; the next starts from
-					// the fresh epoch.
-					return { epoch: reconciled, processed };
-				}
-				// Genuinely garbage → exactly one NACK, then abort (save nothing).
-				// The server lazily rolls the tentative commit back.
-				await emitNack(client, groupId, handshake, err, extraHeaders);
-				break;
+			// A failure here has THREE causes that must be told apart. A local
+			// failure (store I/O, a retired handle) is not the commit's fault →
+			// rethrow so the next sync retries. Our OWN state may be orphaned: our
+			// tentative self-join was NACK'd or timed out and the server rolled the
+			// epoch back below ours, so no peer commit can ever apply to our stale
+			// branch — NACK-looping that is a permanent per-member denial of
+			// participation, so re-bootstrap instead. Only what is left is a
+			// genuinely un-processable commit, which earns exactly one NACK.
+			if (!isUnprocessableCommit(err)) throw err;
+			const reconciled = await reconcileIfOrphaned(
+				configDir,
+				agentId,
+				groupId,
+				epoch,
+				client,
+				extraHeaders,
+			);
+			if (reconciled !== null) {
+				// Re-bootstrapped via external join (fresh state saved only on server
+				// acceptance). Stop here; the next sync starts from the fresh epoch.
+				return { epoch: reconciled, processed, evicted: false };
 			}
-			// Transport/other error → emit neither; rethrow so the next sync retries.
-			throw err;
+			await emitNack(client, groupId, handshake, err, extraHeaders);
+			break;
 		}
-		currentState = result.updatedState;
-		epoch = result.epoch;
 		processed += 1;
 		// Persist the advance BEFORE ACKing so a crash mid-ACK never confirms an
 		// epoch we did not save locally.
-		saveMlsState(configDir, agentId, groupId, currentState, {
-			...stored.metadata,
-			epoch,
-		});
+		group.save();
 		await emitAck(client, groupId, handshake, extraHeaders);
+		if (!group.isActive()) return { epoch, processed, evicted: true };
 	}
 
-	return { epoch, processed };
+	return { epoch, processed, evicted: !group.isActive() };
 }
 
 /**
- * H4 (MEDIUM-1) reconcile: detect whether a processMlsCommit failure is caused
- * by our OWN local state being orphaned (ahead of the server's confirmed epoch)
- * rather than by a genuinely un-processable commit.
+ * Detect whether an un-processable commit is caused by our OWN local state
+ * being orphaned (ahead of the server's confirmed epoch) rather than by the
+ * commit itself.
  *
  * The orphan signal: the server's confirmed GroupInfo epoch is BELOW our local
  * epoch. That can only happen if our own tentative commit was rolled back — the
  * server cannot serve a confirmed token as high as the epoch we locally hold. In
- * that case we re-bootstrap via an external self-join from mls_confirmed_epoch
- * (no un-processing of honestly-confirmed state — the B1 win); the re-join only
- * overwrites the stale local state once the server accepts the commit, so a
- * mid-flight re-join failure leaves the stale state intact for the next sync to
- * retry rather than stranding the agent stateless. Returns the re-bootstrapped
- * epoch on reconcile, or null when the state is NOT orphaned (caller should NACK
- * the garbage commit).
+ * that case we re-bootstrap via an external self-join from the confirmed epoch;
+ * the re-join only overwrites the stale local state once the server accepts the
+ * commit, so a mid-flight failure leaves the stale state intact for the next
+ * sync to retry rather than stranding the agent stateless. Returns the
+ * re-bootstrapped epoch, or null when the state is NOT orphaned (the caller
+ * should NACK the commit).
  */
 async function reconcileIfOrphaned(
 	configDir: string,
@@ -225,15 +122,12 @@ async function reconcileIfOrphaned(
 	// so our state is on the canonical branch and the failing commit is garbage.
 	if (confirmedEpoch === null || confirmedEpoch >= localEpoch) return null;
 
-	// Orphaned: re-bootstrap from the confirmed epoch. externalJoinMlsGroup fetches
-	// the confirmed GroupInfo, re-joins, and (only on server acceptance) saveMlsState
-	// recreates the state dir + overwrites the stale branch. We deliberately do NOT
-	// delete the stale state first: if the re-join throws (no published GroupInfo,
-	// transport failure, exhausted epoch-conflict retry) the stale state survives so
-	// the next syncMlsGroup re-enters this path and retries — deleting first would
-	// strand the agent permanently stateless on a mid-flight failure.
 	const { epoch } = await externalJoinMlsGroup(
-		configDir, agentId, groupId, client, extraHeaders,
+		configDir,
+		agentId,
+		groupId,
+		client,
+		extraHeaders,
 	);
 	return epoch;
 }
@@ -257,14 +151,19 @@ async function emitNack(
 	client: HttpClient,
 	groupId: string,
 	handshake: { id: string; epoch: number | null },
-	err: MlsError,
+	err: unknown,
 	extraHeaders?: Record<string, string>,
 ): Promise<void> {
+	const reason = err instanceof Error ? err.message : String(err);
 	try {
 		await mlsNack(
 			client,
 			groupId,
-			{ object_id: handshake.id, epoch: handshake.epoch ?? 0, reason: err.message.slice(0, 256) },
+			{
+				object_id: handshake.id,
+				epoch: handshake.epoch ?? 0,
+				reason: reason.slice(0, 256),
+			},
 			extraHeaders,
 		);
 	} catch {

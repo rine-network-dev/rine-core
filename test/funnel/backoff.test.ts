@@ -1,5 +1,4 @@
-// B11 — REQ-CERT-46 / REQ-CERT-13 / SCALE-2: per-agent renewal JITTER + full-
-// jitter failure backoff.
+// Per-agent renewal JITTER + full-jitter failure backoff.
 //
 // `backoff.ts` had no dedicated test file (it was only exercised through
 // cert.test.ts). The per-agent wildcard renews ONCE per agent, but a fleet of N
@@ -8,7 +7,7 @@
 // `renewalDueWithJitter` spreads each agent's renewal instant DETERMINISTICALLY
 // (a stable hash of the agent label) across `RENEWAL_SPREAD_MS` (20d), capped so
 // the renewal instant stays `<= not_after - 10d` — leaving head-room for the 1h
-// failure backoff + the 45s propagation grace before expiry (SCALE-2). The
+// failure backoff + the 45s propagation grace before expiry. The
 // existing full-jitter failure backoff (`nextBackoffDelayMs`) is unchanged.
 //
 // No network, no clock dependency, no filesystem — these are pure functions.
@@ -59,7 +58,7 @@ function renewalInstantMs(label: string, notAfterMs: number): number {
 	return hi;
 }
 
-describe("nextBackoffDelayMs — full-jitter failure backoff is UNCHANGED (REQ-CERT-13)", () => {
+describe("nextBackoffDelayMs — full-jitter failure backoff is UNCHANGED", () => {
 	it("n=1 yields a delay within full-jitter of base 30s [0, 30000]", () => {
 		for (let i = 0; i < 50; i++) {
 			const d = nextBackoffDelayMs(1);
@@ -83,7 +82,7 @@ describe("nextBackoffDelayMs — full-jitter failure backoff is UNCHANGED (REQ-C
 	});
 });
 
-describe("renewalDueWithJitter — spreads a fleet's renewal instants (REQ-CERT-46, SCALE-2)", () => {
+describe("renewalDueWithJitter — spreads a fleet's renewal instants", () => {
 	// 64 distinct agent labels (base32-shaped) standing in for a migration-burst
 	// fleet that shares one not_after.
 	const labels = Array.from(

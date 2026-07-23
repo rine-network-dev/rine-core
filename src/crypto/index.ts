@@ -10,6 +10,6 @@ export * from "./message.js";
 export * from "./thread.js";
 export * from "./ingest.js";
 export * from "./mls.js";
-export * from "./mls-init.js";
+export * from "./mls-errors.js";
 export * from "./mls-api.js";
 export * from "./mls-state.js";

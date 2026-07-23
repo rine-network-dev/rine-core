@@ -1,4 +1,4 @@
-// REQ-TUN-05/06/07/13/14 (relay/client side) — the mux WebSocket client living
+// The mux WebSocket client living
 // in rine-core `src/funnel/tunnel.ts`. The relay is the mux CLIENT; the Rust
 // broker is the server. The wire codec MUST match the broker byte-for-byte:
 // the test vectors below are the SAME vectors as broker/tests/mux_codec.rs.
@@ -44,9 +44,9 @@ function wire(
 	return out;
 }
 
-// ── REQ-TUN-05: wire codec, byte-for-byte vs the broker ─────────────────────
+// ── Wire codec, byte-for-byte vs the broker ─────────────────────
 
-describe("mux codec — wire layout (REQ-TUN-05, matches broker/tests/mux_codec.rs)", () => {
+describe("mux codec — wire layout (matches broker/tests/mux_codec.rs)", () => {
 	it("fixed header is nine bytes", () => {
 		expect(HEADER_LEN).toBe(9);
 	});
@@ -125,7 +125,7 @@ describe("mux codec — wire layout (REQ-TUN-05, matches broker/tests/mux_codec.
 	});
 });
 
-describe("mux codec — decode rejections (REQ-TUN-05)", () => {
+describe("mux codec — decode rejections", () => {
 	it("rejects an unknown type byte", () => {
 		expect(() =>
 			decodeFrame(wire(0x99, 1, 0, new Uint8Array(0)), MAX_FRAME),
@@ -183,9 +183,9 @@ describe("mux codec — decode rejections (REQ-TUN-05)", () => {
 	});
 });
 
-// ── REQ-TUN-06: control-frame JSON payloads (BIND / BIND_ACK / BIND_NAK) ────
+// ── Control-frame JSON payloads (BIND / BIND_ACK / BIND_NAK) ────
 
-describe("mux control payloads — BIND/BIND_ACK/BIND_NAK (REQ-TUN-06)", () => {
+describe("mux control payloads — BIND/BIND_ACK/BIND_NAK", () => {
 	it("encodes a BIND frame whose JSON payload is {v,agent_id,hostname}", () => {
 		const bind = {
 			frameType: FrameType.BIND,
@@ -236,9 +236,9 @@ describe("mux control payloads — BIND/BIND_ACK/BIND_NAK (REQ-TUN-06)", () => {
 	});
 });
 
-// ── REQ-TUN-13/14: client driver (OPEN→pipe→DATA→teardown, reconnect) ───────
+// ── Client driver (OPEN→pipe→DATA→teardown, reconnect) ───────
 
-describe("mux client driver — connection multiplexing (REQ-TUN-13)", () => {
+describe("mux client driver — connection multiplexing", () => {
 	function makeFakeWs() {
 		const sent: Uint8Array[] = [];
 		let onMessage: ((data: Uint8Array) => void) | undefined;
@@ -422,7 +422,7 @@ describe("mux client driver — connection multiplexing (REQ-TUN-13)", () => {
 	});
 });
 
-describe("mux client driver — reconnect loop (REQ-TUN-14, modeled on stream.ts)", () => {
+describe("mux client driver — reconnect loop (modeled on stream.ts)", () => {
 	it("computes jittered backoff capped at 30s with the same min(backoff*2,30) progression", async () => {
 		const { nextReconnectBackoffSeconds, jitteredDelayMs } = await import(
 			"../../src/funnel/tunnel.js"

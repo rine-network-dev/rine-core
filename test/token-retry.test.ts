@@ -37,7 +37,7 @@ const TOKEN_OK: FakeResponseSpec = {
 	body: { access_token: "fresh", expires_in: 3600 },
 };
 
-describe("fetchOAuthToken 429 retry (REQ-TS-01)", () => {
+describe("fetchOAuthToken 429 retry", () => {
 	afterEach(() => {
 		vi.useRealTimers();
 		vi.restoreAllMocks();
@@ -132,7 +132,7 @@ describe("fetchOAuthToken 429 retry (REQ-TS-01)", () => {
 	});
 });
 
-describe("HttpClient.request 429 retry (REQ-TS-03)", () => {
+describe("HttpClient.request 429 retry", () => {
 	afterEach(() => {
 		vi.useRealTimers();
 		vi.restoreAllMocks();
@@ -174,7 +174,7 @@ describe("HttpClient.request 429 retry (REQ-TS-03)", () => {
 	});
 });
 
-describe("getOrRefreshToken jittered margin (REQ-TS-02, herd desync)", () => {
+describe("getOrRefreshToken jittered margin (herd desync)", () => {
 	let dir: string;
 	beforeEach(() => {
 		dir = fs.mkdtempSync(join(tmpdir(), "rine-margin-test-"));

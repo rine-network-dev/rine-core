@@ -1,11 +1,10 @@
-// REQ-CERT-10 / REQ-CERT-33 — the relay's DNS-01 propagation poll. Covers the
+// The relay's DNS-01 propagation poll. Covers the
 // grace delay (never query the `*.hook`-wildcard challenge name before it has
 // propagated, which would poison Hetzner's authoritative negative cache), the
 // authoritative NS-walk (poll the authoritative servers, not the host recursive
 // resolver), and value-matching (confirm THIS order's key-authorization is live,
 // not merely that some TXT exists). All seams are injected so tests assert
-// behavior without touching the network or waiting the real 45s. (Root cause +
-// fix: phases/prod-deploy-hardening.)
+// behavior without touching the network or waiting the real 45s.
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -49,7 +48,7 @@ function harness(txtAnswers: Array<string[][] | null>) {
 	return { events, opts };
 }
 
-describe("waitForTxtPropagation grace delay (REQ-CERT-33)", () => {
+describe("waitForTxtPropagation grace delay", () => {
 	it("holds the grace delay BEFORE the first TXT query", async () => {
 		const { events, opts } = harness([[["challenge-token"]]]);
 		await waitForTxtPropagation({ fqdn: FQDN }, opts);
@@ -98,7 +97,7 @@ describe("waitForTxtPropagation grace delay (REQ-CERT-33)", () => {
 		expect(events.filter((e) => e.startsWith("resolver:"))).toHaveLength(1);
 	});
 
-	it("throws a bounded timeout AND actually polled before giving up (TQ-3)", async () => {
+	it("throws a bounded timeout AND actually polled before giving up", async () => {
 		// Real timers, tiny budget. Spy the resolver so we prove the poll body ran
 		// (a miscomputed deadline would throw the same error with ZERO queries).
 		const resolveTxt = vi.fn(async () => {
@@ -121,7 +120,7 @@ describe("waitForTxtPropagation grace delay (REQ-CERT-33)", () => {
 	});
 });
 
-describe("waitForTxtPropagation value-matching (REQ-CERT-10, PROP-1)", () => {
+describe("waitForTxtPropagation value-matching", () => {
 	it("returns only when a record carries the expected key-authorization", async () => {
 		// First poll returns a STALE/different value; second returns the expected one.
 		const answers: string[][][] = [[["stale-value"]], [["the-token"]]];
@@ -164,7 +163,7 @@ describe("waitForTxtPropagation value-matching (REQ-CERT-10, PROP-1)", () => {
 		expect(q).toBeGreaterThan(0);
 	});
 
-	it("does NOT return on an empty TXT answer (NODATA-as-[]) (TQ-2)", async () => {
+	it("does NOT return on an empty TXT answer (NODATA-as-[])", async () => {
 		// node:dns can surface a present name with no TXT rrset as `[]`; the gate
 		// must keep polling, not tell LE to validate an absent record.
 		const answers: string[][][] = [[], [], [["token"]]];
@@ -186,7 +185,7 @@ describe("waitForTxtPropagation value-matching (REQ-CERT-10, PROP-1)", () => {
 	});
 });
 
-describe("nsHostsForZoneOf authoritative NS-walk (REQ-CERT-33, TQ-1)", () => {
+describe("nsHostsForZoneOf authoritative NS-walk", () => {
 	it("climbs label-by-label until a parent answers NS", async () => {
 		const calls: string[] = [];
 		const nsResolve = vi.fn(async (name: string) => {
@@ -216,7 +215,7 @@ describe("nsHostsForZoneOf authoritative NS-walk (REQ-CERT-33, TQ-1)", () => {
 	});
 });
 
-describe("authoritativeResolver (REQ-CERT-33, PROP-2)", () => {
+describe("authoritativeResolver", () => {
 	const apexNs = async (name: string) =>
 		name === "rine.network"
 			? ["good.ns.example.", "bad.ns.example."]

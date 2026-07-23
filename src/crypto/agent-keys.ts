@@ -20,7 +20,7 @@ export interface RecipientKeys {
  * client's optional per-agent {@link HttpClient.keyCache}. Both the recipient-keys
  * (send) and sender-keys (inbound verify) paths hit this one endpoint, so a cached
  * entry primed by a send is reused by a later verify for the same peer — this is
- * what collapses the per-key request volume on a multi-agent host (REQ-TS-04, D-5).
+ * what collapses the per-key request volume on a multi-agent host.
  * `bypassCache` forces a fresh fetch (and overwrites the cached entry) — used for
  * the verify-failure rotation refetch.
  */
@@ -59,8 +59,8 @@ export async function fetchRecipientKeys(
 /**
  * Verify an envelope's Ed25519 signature against the sender's published signing key.
  * If a CACHED key yields a verification failure, the sender may have rotated keys
- * mid-TTL: refetch once bypassing the cache and re-verify before surfacing "invalid"
- * (D-5). A genuinely fresh fetch that fails is not re-fetched. Any network/lookup
+ * mid-TTL: refetch once bypassing the cache and re-verify before surfacing "invalid".
+ * A genuinely fresh fetch that fails is not re-fetched. Any network/lookup
  * error still yields "unverifiable".
  */
 export async function verifyEnvelopeSender(

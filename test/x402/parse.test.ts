@@ -1,5 +1,5 @@
 /**
- * F-4 — a malformed payment payload must yield a typed MALFORMED_PAYLOAD refusal
+ * A malformed payment payload must yield a typed MALFORMED_PAYLOAD refusal
  * at parse time, never a downstream `pp.accepted.network` / `authorization.from`
  * deref crash. Valid payloads still round-trip unchanged.
  */
@@ -44,7 +44,7 @@ const validPayment = JSON.stringify({
 	},
 });
 
-describe("parseX402Payload — PAYMENT structural validation (F-4)", () => {
+describe("parseX402Payload — PAYMENT structural validation", () => {
 	it("test_valid_payment_parses_unchanged", () => {
 		const parsed = parseX402Payload(PAYMENT, validPayment) as Record<
 			string,

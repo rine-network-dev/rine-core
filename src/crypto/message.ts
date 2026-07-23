@@ -1,13 +1,10 @@
 import type { HttpClient } from "../http.js";
+import { externalJoinMlsGroup, processMlsWelcomes } from "../mls-ops-join.js";
+import { syncMlsGroup } from "../mls-ops-sync.js";
 import { verifyEnvelopeSender } from "./agent-keys.js";
 import { decodeEnvelope, encodeEnvelope } from "./envelope.js";
 import { open, seal } from "./hpke.js";
 import { VERSION_HYBRID, openHybrid, sealHybrid } from "./hybrid.js";
-import { MlsError } from "ts-mls";
-import { VERSION_MLS, decryptMlsAppMessage, encryptMlsAppMessage } from "./mls.js";
-import { loadMlsState, saveMlsState, cacheMlsSelfRead, lookupMlsSelfRead } from "./mls-state.js";
-import { processMlsWelcomes, syncMlsGroup } from "../mls-ops-sync.js";
-import { externalJoinMlsGroup } from "../mls-ops-join.js";
 import {
 	type AgentKeys,
 	type PqJWK,
@@ -17,6 +14,8 @@ import {
 	signingPublicKeyToJWK,
 	toBase64Url,
 } from "./keys.js";
+import { loadMlsState } from "./mls-state.js";
+import { VERSION_MLS, isRecoverableMlsRead, openMlsGroup } from "./mls.js";
 import {
 	loadSenderKeyStates,
 	saveSenderKeyState,
@@ -227,8 +226,7 @@ export async function encryptMlsGroupMessage(
 	groupId: string,
 	payload: unknown,
 ): Promise<EncryptResult> {
-	const stored = loadMlsState(configDir, senderAgentId, groupId);
-	if (!stored) throw new Error(`No MLS state for group ${groupId}`);
+	const group = openMlsGroup(configDir, senderAgentId, groupId);
 
 	const keys = loadAgentKeys(configDir, senderAgentId);
 	const plaintext = new TextEncoder().encode(JSON.stringify(payload));
@@ -236,25 +234,14 @@ export async function encryptMlsGroupMessage(
 	const signature = signPayload(keys.signing.privateKey, plaintext);
 	const envelope = encodeEnvelope(kid, signature, plaintext);
 
-	const { ciphertext, updatedState } = await encryptMlsAppMessage(
-		stored.stateBlob,
-		envelope,
-	);
-	saveMlsState(configDir, senderAgentId, groupId, updatedState, stored.metadata);
-
-	// Prefix the version byte so decryptGroupMessage dispatches to the MLS branch.
-	const tagged = new Uint8Array(1 + ciphertext.length);
-	tagged[0] = VERSION_MLS;
-	tagged.set(ciphertext, 1);
-
-	const encrypted_payload = toBase64Url(tagged);
-	// MLS forward secrecy prevents self-read (sender ratchet advances past the
-	// generation used for encryption). Cache the envelope so the sender can
-	// decrypt their own message via cache lookup instead of MLS decrypt.
-	cacheMlsSelfRead(configDir, senderAgentId, groupId, encrypted_payload, envelope);
+	// The native core frames the payload with VERSION_MLS itself and records the
+	// envelope in its own self-read cache, so the sender can read back a message
+	// its ratchet has already advanced past.
+	const ciphertext = group.encryptApplicationMessage(envelope);
+	group.save();
 
 	return {
-		encrypted_payload,
+		encrypted_payload: toBase64Url(ciphertext),
 		encryption_version: "mls-v1",
 		sender_signing_kid: kid,
 	};
@@ -264,22 +251,31 @@ async function decryptMlsMessage(
 	configDir: string,
 	recipientAgentId: string,
 	groupId: string,
-	mlsCiphertext: Uint8Array,
+	payload: Uint8Array,
 	client: HttpClient,
 ): Promise<DecryptResult> {
-	const stored = loadMlsState(configDir, recipientAgentId, groupId);
-	if (!stored) throw new Error(`No MLS state for group ${groupId}`);
-	const { plaintext: mlsPlain, updatedState } = await decryptMlsAppMessage(
-		stored.stateBlob, mlsCiphertext,
+	const group = openMlsGroup(configDir, recipientAgentId, groupId);
+	// A message this member sent comes back from the core's self-read cache; the
+	// payload carries its own version tag, so it is passed through whole.
+	const { envelope } = group.decryptApplicationMessage(payload);
+	group.save();
+	const mlsEnvelope = decodeEnvelope(envelope);
+	const mlsText = new TextDecoder("utf-8", { fatal: true }).decode(
+		mlsEnvelope.payload,
 	);
-	saveMlsState(configDir, recipientAgentId, groupId, updatedState, stored.metadata);
-	const mlsEnvelope = decodeEnvelope(mlsPlain);
-	const mlsText = new TextDecoder("utf-8", { fatal: true }).decode(mlsEnvelope.payload);
-	const { verified, verificationStatus } = await verifyEnvelopeSender(mlsEnvelope, client);
+	const { verified, verificationStatus } = await verifyEnvelopeSender(
+		mlsEnvelope,
+		client,
+	);
 	if (verificationStatus === "invalid") {
 		throw new Error("Sender signature verification failed");
 	}
-	return { plaintext: mlsText, senderKid: mlsEnvelope.kid, verified, verificationStatus };
+	return {
+		plaintext: mlsText,
+		senderKid: mlsEnvelope.kid,
+		verified,
+		verificationStatus,
+	};
 }
 
 export async function decryptGroupMessage(
@@ -295,28 +291,19 @@ export async function decryptGroupMessage(
 
 	const encrypted = fromBase64Url(encryptedPayloadB64);
 	if (encrypted[0] === VERSION_MLS) {
-		// Self-read fast path: the sender's ratchet has advanced past the
-		// generation used for encryption, so MLS decrypt fails.  Check the
-		// local cache first (populated by encryptMlsGroupMessage).
-		const cached = lookupMlsSelfRead(configDir, recipientAgentId, groupId, encryptedPayloadB64);
-		if (cached) {
-			const env = decodeEnvelope(cached);
-			const text = new TextDecoder("utf-8", { fatal: true }).decode(env.payload);
-			const { verified, verificationStatus } = await verifyEnvelopeSender(env, client);
-			if (verificationStatus === "invalid") throw new Error("Sender signature verification failed");
-			return { plaintext: text, senderKid: env.kid, verified, verificationStatus };
-		}
-
-		const mlsCiphertext = encrypted.slice(1);
 		try {
-			return await decryptMlsMessage(configDir, recipientAgentId, groupId, mlsCiphertext, client);
+			return await decryptMlsMessage(
+				configDir,
+				recipientAgentId,
+				groupId,
+				encrypted,
+				client,
+			);
 		} catch (err) {
-			// Sync-then-retry for any MLS or "No MLS state" error.  The recovery
-			// path handles both "behind" (epoch sync) and "no state" (external
-			// join) cases.
-			const isRecoverable = err instanceof MlsError ||
-				(err instanceof Error && err.message.startsWith("No MLS state for group"));
-			if (!isRecoverable) throw err;
+			// Sync-then-retry covers both "behind" (epoch sync) and "no state"
+			// (external join). A self-read miss and a local store failure are not
+			// recoverable this way and surface as themselves.
+			if (!isRecoverableMlsRead(err)) throw err;
 		}
 		// One-shot recovery: install pending Welcomes (establishes state for
 		// newly-joined groups) then sync pending commits (advances epoch).
@@ -328,7 +315,13 @@ export async function decryptGroupMessage(
 			await externalJoinMlsGroup(configDir, recipientAgentId, groupId, client);
 		}
 		await syncMlsGroup(configDir, recipientAgentId, groupId, client);
-		return await decryptMlsMessage(configDir, recipientAgentId, groupId, mlsCiphertext, client);
+		return await decryptMlsMessage(
+			configDir,
+			recipientAgentId,
+			groupId,
+			encrypted,
+			client,
+		);
 	}
 	const { innerEnvelope, updatedState, messageIndex } = await openGroup(
 		stateMap,

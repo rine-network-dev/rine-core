@@ -115,7 +115,7 @@ describe("buildPaymentPayload", () => {
 	});
 
 	it("test_stamps_quote_message_id_into_signed_extensions", () => {
-		// R-1: the payer stamps the answered quote's message id so the payee can
+		// The payer stamps the answered quote's message id so the payee can
 		// bind the payment to the ONE quote it authored — alongside (not replacing)
 		// the quote's own echoed extensions.
 		const built = buildPaymentPayload(pr, req, PRIV, {

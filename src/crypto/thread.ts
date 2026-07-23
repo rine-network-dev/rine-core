@@ -7,7 +7,7 @@
  * `resources/thread.ts:renderRow` contract byte-for-byte so every surface renders
  * the same transcript.
  *
- * For each row returned by `GET /conversations/{id}/messages` (REQ-SRV-04) we pick
+ * For each row returned by `GET /conversations/{id}/messages` we pick
  * the ciphertext the caller can actually open with its OWN keys:
  *
  *   - `direction === "sent"`     → `self_encrypted_payload` (sealed to self)
@@ -127,7 +127,7 @@ function entry(
 /**
  * Render a decrypted plaintext string to the human-readable body, mirroring the
  * ts-sdk `decryptEnvelope`→`autoParsePlaintext` + `renderText` chain byte-for-byte
- * so every surface renders the same transcript (REQ-TOOL-01).
+ * so every surface renders the same transcript.
  *
  * Parsing is content-type-gated, exactly like the SDK: only an
  * `application/json` body (the default when `content_type` is null/undefined) is

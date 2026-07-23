@@ -1,4 +1,4 @@
-// rine Funnel SHARED-EDGE relay pipe (Phase B, B6 / REQ-TUN-22, REQ-TIER-03).
+// rine Funnel SHARED-EDGE relay pipe.
 //
 // The sibling of tls-listener.test.ts, for the tier where the BROKER terminates
 // TLS and forwards the DECRYPTED request down the mux as plaintext. The relay's
@@ -8,7 +8,7 @@
 // the tunnel — then signals completion (`onClose`) so the broker shuts its
 // terminated TLS stream promptly.
 //
-// Contract note (AUD-C2): the broker frames EXACTLY one request by Content-Length
+// Contract note: the broker frames EXACTLY one request by Content-Length
 // and holds the conn open for the response WITHOUT half-closing, so `edge-pipe`
 // feeds the framer `eof:false` always. The reachable outcomes are therefore a
 // COMPLETE request (→204, or →500 if the adapter throws) or `"pending"` while a
@@ -55,7 +55,7 @@ function drive(onRequest: (req: WebhookRequest) => Promise<void>): {
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 
-describe("funnel shared-edge edge-pipe (B6)", () => {
+describe("funnel shared-edge edge-pipe", () => {
 	it("dispatches a Content-Length request, runs the adapter, replies 204, and closes", async () => {
 		let received: WebhookRequest | undefined;
 		const h = drive(async (req) => {

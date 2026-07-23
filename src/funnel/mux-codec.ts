@@ -1,4 +1,4 @@
-// Binary MUX wire codec for the control WebSocket (REQ-TUN-05/06/07), the relay
+// Binary MUX wire codec for the control WebSocket, the relay
 // (client) side of the Rust broker's codec. It MUST match broker/src/mux.rs
 // byte-for-byte — the test vectors here are the same vectors as
 // broker/tests/mux_codec.rs.
@@ -77,7 +77,7 @@ export function encodeFrame(frame: Frame, maxFrameBytes: number): Uint8Array {
 }
 
 /**
- * Decode one WS-binary message body into a Frame, enforcing every REQ-TUN-05
+ * Decode one WS-binary message body into a Frame, enforcing every framing
  * rule: unknown/reserved type (incl. WINDOW 0x07), short header, declared-len
  * mismatch, conn_id=0 on a data frame, non-zero conn_id on a control frame, and
  * an over-`maxFrameBytes` payload.

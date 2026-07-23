@@ -1,4 +1,4 @@
-// rine Funnel control WebSocket + mux tunnel (REQ-TUN). This is the relay-facing
+// rine Funnel control WebSocket + mux tunnel. This is the relay-facing
 // barrel: it re-exports the wire codec (mux-codec.ts) and the mux client driver
 // (mux-client.ts) so callers and the test suite import one module, and adds
 // `connectTunnel` — the production WS connect + BIND handshake + driver wiring.
@@ -36,7 +36,7 @@ export interface TunnelCaps {
 /**
  * Why the control WS closed. `clean` (WS close 1000/1001 or a bare TCP drop with
  * no abnormal code) maps to an orderly broker close — the relay reconnects
- * immediately (REQ-TUN-14). Any other / abnormal code (1002/1009/1011/…) is an
+ * immediately. Any other / abnormal code (1002/1009/1011/…) is an
  * error and gets the jittered backoff.
  */
 export interface TunnelClose {

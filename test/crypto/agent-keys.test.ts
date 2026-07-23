@@ -29,7 +29,7 @@ function keysResponse(agentId: string, keys: AgentKeys): AgentKeysResponse {
 	};
 }
 
-describe("per-client key cache (REQ-TS-04, D-5)", () => {
+describe("per-client key cache", () => {
 	let dir: string;
 	let recipientKeys: AgentKeys;
 	let senderKeys: AgentKeys;

@@ -22,7 +22,7 @@ import { X402_QUOTE_REF_KEY } from "../../src/x402/types.js";
 const EURC_BASE = "0x60a3e35cc302bfa44cb288bc5a4f316fdb1adb42";
 const MERCHANT = "0x000000000000000000000000000000000000dEaD";
 
-/** The payee-owned requirement callers reconcile against and forward (F-1). */
+/** The payee-owned requirement callers reconcile against and forward. */
 function requirement(
 	over: Partial<PaymentRequirements> = {},
 ): PaymentRequirements {
@@ -70,7 +70,7 @@ describe("facilitatorRequestBody", () => {
 	it("test_body_forwards_the_payee_owned_requirement_not_the_payer_accepted", () => {
 		const pp = paymentPayload();
 		// The payee reconciled to its OWN terms (payTo/amount authored by payee);
-		// the body must send THAT, never `pp.accepted` (F-1).
+		// the body must send THAT, never `pp.accepted`.
 		const payeeReq = requirement({ payTo: MERCHANT, amount: "100000" });
 		const body = facilitatorRequestBody(pp, payeeReq);
 		expect(body.x402Version).toBe(2);
@@ -80,7 +80,7 @@ describe("facilitatorRequestBody", () => {
 	});
 
 	it("test_body_strips_extensions_and_unknown_keys_from_the_forwarded_payload", () => {
-		// The R-1 quote-ref stamp is rine-payee-internal (read from the payee's own
+		// The quote-ref stamp is rine-payee-internal (read from the payee's own
 		// decrypted payment, never the facilitator round-trip) and facilitators
 		// schema-validate `extensions` (PayAI 403s non-object values) — so nothing
 		// outside the standard whitelist may reach a facilitator.
@@ -271,7 +271,7 @@ describe("X402FacilitatorError", () => {
 	});
 });
 
-describe("F-5 transport enforcement", () => {
+describe("transport enforcement", () => {
 	it("test_rejects_cleartext_http_with_credentials_to_non_loopback", async () => {
 		vi.stubGlobal("fetch", okFetch({ isValid: true }));
 		await expect(
@@ -297,7 +297,7 @@ describe("F-5 transport enforcement", () => {
 	});
 
 	it("test_rejects_http_non_loopback_even_without_credentials", async () => {
-		// F-5 (tightened): a facilitator call carries payment terms; cleartext http
+		// Tightened: a facilitator call carries payment terms; cleartext http
 		// to a remote host is refused regardless of whether headers are present.
 		vi.stubGlobal("fetch", okFetch({ isValid: true }));
 		await expect(
@@ -378,7 +378,7 @@ describe("facilitator path validation", () => {
 	});
 });
 
-describe("F-6 request timeout", () => {
+describe("request timeout", () => {
 	it("test_default_timeout_signal_is_wired_when_caller_supplies_none", async () => {
 		const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
 			// A default AbortSignal.timeout is composed even without a caller signal.

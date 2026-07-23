@@ -1,5 +1,5 @@
 /**
- * Shared payee receipt-plane helpers (#10 dedup). `matchedQuoteToWire` is the ONE
+ * Shared payee receipt-plane helpers. `matchedQuoteToWire` is the ONE
  * snake_case projection CLI and MCP now import instead of each rebuilding the
  * `matched_quote` literal; tested here through the public interface. (`sendReceipt`
  * is the relocated, behaviour-identical CLI/MCP receipt reply — its message-plane

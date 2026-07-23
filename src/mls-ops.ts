@@ -1,48 +1,59 @@
-import {
-	addMemberToMlsGroup,
-	createMlsGroup,
-	generateMlsKeyPackage,
-} from "./crypto/mls.js";
-import {
-	claimKeyPackages,
-	mlsCommit,
-	mlsFromBase64,
-	mlsInit,
-	mlsToBase64,
-	uploadKeyPackages,
-} from "./crypto/mls-api.js";
-import { loadMlsState, saveMlsState, savePrivateKeyPackages } from "./crypto/mls-state.js";
-import { loadAgentKeys } from "./crypto/keys.js";
+import type { CommitBundle, MlsGroup } from "@rine-network/mls";
+import { claimKeyPackages, mlsFromBase64, mlsInit } from "./crypto/mls-api.js";
+import { mlsGroupIdBytes, openMlsClient, openMlsGroup } from "./crypto/mls.js";
 import type { HttpClient } from "./http.js";
+import { type Joiner, postMlsCommit } from "./mls-commit.js";
+import { replenishMlsKeyPackages } from "./mls-keypackages.js";
 
-export { processMlsWelcomes, removeMlsGroupMember, syncMlsGroup } from "./mls-ops-sync.js";
-export { externalJoinMlsGroup } from "./mls-ops-join.js";
+export { syncMlsGroup } from "./mls-ops-sync.js";
+export type { MlsSyncResult } from "./mls-ops-sync.js";
+export { externalJoinMlsGroup, processMlsWelcomes } from "./mls-ops-join.js";
+export {
+	ensureMlsKeyPackages,
+	publishMlsKeyPackages,
+	replenishMlsKeyPackages,
+	MLS_KEY_PACKAGE_LOW_WATER,
+	MLS_KEY_PACKAGE_MAX_BATCH,
+	MLS_KEY_PACKAGE_TARGET,
+} from "./mls-keypackages.js";
+export type { MlsKeyPackageStatus } from "./mls-keypackages.js";
+export {
+	cutoverMlsKeyPackages,
+	drainAndRepublishMlsKeyPackages,
+	needsMlsKeyPackageCutover,
+} from "./mls-cutover.js";
+export type { MlsCutoverResult } from "./mls-cutover.js";
 
 /**
- * Generate and upload MLS key packages for an agent, enabling other agents
- * to add them to MLS groups.
+ * Founding members admitted per commit.
+ *
+ * The native core admits every founding member in a single commit, so this is
+ * not about epochs — it is about the request body. One `POST /mls/commit`
+ * carries the commit plus one Welcome per member, and neither the server nor
+ * the proxy in front of it declares a body limit. Measured on the post-quantum
+ * suite, a 17-member founding commit is ~57 kB base64 with a ~33 kB Welcome
+ * each, so the body grows roughly with the square of the batch. 16 keeps a
+ * founding POST under ~600 kB; a larger group is founded across several commits
+ * rather than in one body nobody has sized.
  */
-export async function publishMlsKeyPackages(
-	configDir: string,
-	agentId: string,
-	client: HttpClient,
-	count = 10,
-): Promise<{ stored: number }> {
-	const keys = loadAgentKeys(configDir, agentId);
-	const packages: string[] = [];
-	const privatePackages: Array<{ ref: Uint8Array; publicBlob: Uint8Array; privateBlob: Uint8Array }> = [];
-	for (let i = 0; i < count; i++) {
-		const kp = await generateMlsKeyPackage(keys.signing.privateKey);
-		packages.push(mlsToBase64(kp.publicBlob));
-		privatePackages.push({ ref: kp.keyPackageRef, publicBlob: kp.publicBlob, privateBlob: kp.privateBlob });
+const MLS_FOUNDING_MEMBERS_PER_COMMIT = 16;
+
+function commitBatches(joiners: Joiner[]): Joiner[][] {
+	if (joiners.length === 0) return [[]];
+	const batches: Joiner[][] = [];
+	for (let i = 0; i < joiners.length; i += MLS_FOUNDING_MEMBERS_PER_COMMIT) {
+		batches.push(joiners.slice(i, i + MLS_FOUNDING_MEMBERS_PER_COMMIT));
 	}
-	savePrivateKeyPackages(configDir, agentId, privatePackages);
-	return uploadKeyPackages(client, agentId, packages);
+	return batches;
 }
 
 /**
- * Initialize an MLS group: create the group state, add all members who have
- * uploaded key packages, and post the initial commit + welcomes to the server.
+ * Initialize an MLS group: create the group with every member who has published
+ * a key package admitted in the founding commit, and post that commit plus its
+ * welcomes to the server.
+ *
+ * Local state is saved only after the server accepts a commit, so a rejected
+ * commit leaves no forked state behind.
  */
 export async function initMlsGroup(
 	configDir: string,
@@ -51,68 +62,58 @@ export async function initMlsGroup(
 	client: HttpClient,
 	extraHeaders?: Record<string, string>,
 ): Promise<{ epoch: number; membersAdded: number }> {
+	// Every MLS operation doubles as the heartbeat that keeps this agent's own
+	// key package inventory above its low-water mark, so the agent never becomes
+	// un-addable to a future group.
+	await replenishMlsKeyPackages(configDir, agentId, client);
 	const initResp = await mlsInit(client, groupId, extraHeaders);
-	const keys = loadAgentKeys(configDir, agentId);
-
-	const { stateBlob, groupInfo, commitBlob, epoch: createEpoch } = await createMlsGroup(
-		keys.signing.privateKey,
-	);
 
 	const agentIdLower = agentId.toLowerCase();
-	const eligibleMembers = initResp.members.filter(
-		(m) =>
-			m.has_key_package && m.agent_id.toLowerCase() !== agentIdLower,
-	);
-
-	let currentState = stateBlob;
-	let currentCommit = commitBlob;
-	// Track the GroupInfo for the group's CURRENT epoch. Each add advances the
-	// epoch, so we must publish the LATEST GroupInfo (single-use per epoch,
-	// RFC 9420 §12.4.3.2) so the next external joiner targets the right epoch.
-	let currentGroupInfo = groupInfo;
-	// The epoch is owned by the crypto state: createMlsGroup leaves us at epoch 1,
-	// and each add advances it by exactly 1. We send the committed epoch so the
-	// server can compare-and-swap its authoritative per-group epoch.
-	let currentEpoch = createEpoch;
-	const welcomes: { agent_id: string; welcome: string }[] = [];
-
-	for (const member of eligibleMembers) {
+	const joiners: Joiner[] = [];
+	for (const member of initResp.members) {
+		if (!member.has_key_package) continue;
+		if (member.agent_id.toLowerCase() === agentIdLower) continue;
 		const claimed = await claimKeyPackages(client, member.agent_id);
-		const firstPackage = claimed.packages[0];
-		if (!firstPackage) continue;
-		const kpBlob = mlsFromBase64(firstPackage);
-		const result = await addMemberToMlsGroup(currentState, kpBlob);
-		welcomes.push({
-			agent_id: member.agent_id,
-			welcome: mlsToBase64(result.welcomeBlob),
+		const first = claimed.packages[0];
+		if (!first) continue;
+		joiners.push({
+			agentId: member.agent_id,
+			keyPackage: mlsFromBase64(first),
 		});
-		currentState = result.updatedState;
-		currentCommit = result.commitBlob;
-		currentGroupInfo = result.groupInfo;
-		currentEpoch = result.epoch;
 	}
 
-	const commitResp = await mlsCommit(
-		client,
-		groupId,
-		{
-			commit: mlsToBase64(currentCommit),
-			welcomes,
-			group_info: mlsToBase64(currentGroupInfo),
-			cipher_suite: 0x0001,
-			epoch: currentEpoch,
-		},
-		extraHeaders,
-	);
+	const mls = openMlsClient(configDir, agentId);
+	let group: MlsGroup | null = null;
+	let epoch = 0;
+	let membersAdded = 0;
+	for (const batch of commitBatches(joiners)) {
+		const keyPackages = batch.map((j) => j.keyPackage);
+		let bundle: CommitBundle;
+		if (group === null) {
+			group = mls.createGroupWithMembers(mlsGroupIdBytes(groupId), keyPackages);
+			const init = group.lastCommit();
+			if (!init) {
+				throw new Error(
+					`MLS group ${groupId} was created without an init commit`,
+				);
+			}
+			bundle = init;
+		} else {
+			bundle = group.addMembers(keyPackages);
+		}
+		epoch = await postMlsCommit(
+			client,
+			groupId,
+			group,
+			bundle,
+			batch,
+			extraHeaders,
+		);
+		group.save();
+		membersAdded += batch.length;
+	}
 
-	const epoch = commitResp.epoch ?? currentEpoch;
-	saveMlsState(configDir, agentId, groupId, currentState, {
-		groupId,
-		epoch,
-		cipherSuite: 0x0001,
-	});
-
-	return { epoch, membersAdded: welcomes.length };
+	return { epoch, membersAdded };
 }
 
 /**
@@ -127,37 +128,58 @@ export async function addMlsGroupMember(
 	client: HttpClient,
 	extraHeaders?: Record<string, string>,
 ): Promise<{ epoch: number }> {
-	const stored = loadMlsState(configDir, agentId, groupId);
-	if (!stored) throw new Error(`No MLS state for group ${groupId}`);
+	const group = openMlsGroup(configDir, agentId, groupId);
 
+	// Heartbeat replenishment of OUR inventory (see initMlsGroup). The member's
+	// own inventory is theirs to replenish — a client can only publish key
+	// packages for an agent whose signing key it holds.
+	await replenishMlsKeyPackages(configDir, agentId, client);
 	const claimed = await claimKeyPackages(client, memberAgentId);
-	const firstPackage = claimed.packages[0];
-	if (!firstPackage) {
+	const first = claimed.packages[0];
+	if (!first) {
 		throw new Error(`No key packages available for ${memberAgentId}`);
 	}
-	const kpBlob = mlsFromBase64(firstPackage);
 
-	const { commitBlob, welcomeBlob, updatedState, groupInfo, epoch: commitEpoch } =
-		await addMemberToMlsGroup(stored.stateBlob, kpBlob);
-
-	const commitResp = await mlsCommit(
+	const joiner: Joiner = {
+		agentId: memberAgentId,
+		keyPackage: mlsFromBase64(first),
+	};
+	const bundle = group.addMember(joiner.keyPackage);
+	const epoch = await postMlsCommit(
 		client,
 		groupId,
-		{
-			commit: mlsToBase64(commitBlob),
-			welcomes: [{ agent_id: memberAgentId, welcome: mlsToBase64(welcomeBlob) }],
-			group_info: mlsToBase64(groupInfo),
-			epoch: commitEpoch,
-		},
+		group,
+		bundle,
+		[joiner],
 		extraHeaders,
 	);
-
-	const epoch = commitResp.epoch ?? commitEpoch;
-	saveMlsState(configDir, agentId, groupId, updatedState, {
-		...stored.metadata,
-		epoch,
-	});
+	group.save();
 
 	return { epoch };
 }
 
+/**
+ * Remove a member from an MLS group by leaf index and post the remove commit.
+ * The evicted member reads no message committed after this epoch.
+ */
+export async function removeMlsGroupMember(
+	configDir: string,
+	agentId: string,
+	groupId: string,
+	leafIndex: number,
+	client: HttpClient,
+	extraHeaders?: Record<string, string>,
+): Promise<{ epoch: number }> {
+	const group = openMlsGroup(configDir, agentId, groupId);
+	const bundle = group.removeMember(leafIndex);
+	const epoch = await postMlsCommit(
+		client,
+		groupId,
+		group,
+		bundle,
+		[],
+		extraHeaders,
+	);
+	group.save();
+	return { epoch };
+}

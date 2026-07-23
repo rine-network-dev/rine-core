@@ -1,5 +1,5 @@
 /**
- * Shared facilitator-spec resolution (#10 dedup) — the promoted core helpers CLI
+ * Shared facilitator-spec resolution — the promoted core helpers CLI
  * and MCP now import instead of each hand-rolling a byte-identical resolver.
  * Tested through the public interface: preset keys, explicit URLs, header parsing.
  */

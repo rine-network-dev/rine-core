@@ -1,4 +1,4 @@
-// rine Funnel per-request relay adapter (REQ-CLI-08/09 + REQ-SEC-15/16). Given
+// rine Funnel per-request relay adapter. Given
 // the plaintext HTTP request the local TLS listener produced from one mux conn,
 // it (a) HMAC-verifies the RAW body, (b) on success runs the EXISTING client send
 // path — fetchRecipientKeys → encryptMessage (hpke-v1) → self-send POST /messages
@@ -184,7 +184,7 @@ export async function handleWebhookRequest(
 		return { verified: true, relayed: true, duplicate: false };
 	} catch {
 		// Key-fetch / encrypt / post failure: drop this conn, keep the tunnel up.
-		// The error is intentionally not logged with any request detail (REQ-SEC-15).
+		// The error is intentionally not logged with any request detail.
 		emitLifecycle?.({
 			event: "lifecycle",
 			data: { state: "relay_error", hook_name: hookName },

@@ -1,4 +1,4 @@
-// rine Funnel local HMAC-secret store (REQ-CLI-04). The secret is generated
+// rine Funnel local HMAC-secret store. The secret is generated
 // CLIENT-SIDE (randomBytes(32) hex) and NEVER sent to rine; it lives under the
 // resolved config dir as a sibling of the identity-key layout, with the same
 // restrictive perms (file 0600, dir 0700) and atomic temp+rename write.
@@ -21,7 +21,7 @@ const HOOK_NAME_RE = /^[a-z0-9](-?[a-z0-9]){0,31}$/;
  * funnel hostname, and the relay appends a `--` separator to build the cert
  * subject. A name shorter than 3 chars pushes that `--` into label positions
  * 3–4 — the R-LDH reserved slot (the `xn--` ACE-prefix form) — which Let's
- * Encrypt refuses to certify, so the relay never gets a cert (REQ-FSH-07).
+ * Encrypt refuses to certify, so the relay never gets a cert.
  */
 export const HOOK_NAME_MIN_LENGTH = 3;
 

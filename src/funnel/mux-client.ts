@@ -1,4 +1,4 @@
-// rine Funnel mux CLIENT driver (REQ-TUN-13/14), the relay side of the broker's
+// rine Funnel mux CLIENT driver, the relay side of the broker's
 // multiplexer. It demultiplexes the single control WebSocket into per-conn local
 // pipes: OPEN → open a local pipe, broker DATA → write into it, local response →
 // relay→broker DATA on the same conn_id, broker CLOSE/RESET → tear the pipe down.

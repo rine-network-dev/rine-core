@@ -30,7 +30,7 @@ export interface HttpClientOptions {
 	 * fetchRecipientKeys and verifyEnvelopeSender. Attach it to a PERSISTENT client
 	 * (or, in the SDK, to a single instance threaded into every short-lived core
 	 * client) so a multi-agent host stops re-fetching the same keys on every send
-	 * and inbound-verify (D-5). Absent ⇒ no caching.
+	 * and inbound-verify. Absent ⇒ no caching.
 	 */
 	keyCache?: TtlCache<AgentKeysResponse>;
 }
@@ -114,7 +114,7 @@ export class HttpClient {
 			res = await doFetch(true);
 		}
 		// Single 429 retry honoring Retry-After (capped), mirroring the Python SDK's
-		// normal-call behavior (REQ-TS-03, D-6). Read the header off `res` — never the
+		// normal-call behavior. Read the header off `res` — never the
 		// body — so the retried response is the one parseError consumes on failure.
 		if (res.status === 429) {
 			await sleep(Math.min(retryAfterMsFromResponse(res), MAX_RETRY_WAIT_MS));

@@ -1,5 +1,5 @@
-// B13 (TS half) — REQ-CERT-47 / REQ-TIER-02 / AUD-F7: the FunnelTier values are a
-// SHARED CONTRACT that MUST be byte-identical across the language boundary.
+// The FunnelTier values are a SHARED CONTRACT that MUST be byte-identical across
+// the language boundary.
 //
 // The TS `api-types.ts` `termination` field is typed `FunnelTier`
 // ("zero_trust" | "shared_edge"), with `FUNNEL_TIERS` as its exhaustive runtime
@@ -56,7 +56,7 @@ function pythonFunnelTierValues(): string[] {
 	return values;
 }
 
-describe("B13 — FunnelTier contract lockstep across the TS/Python boundary (AUD-F7)", () => {
+describe("FunnelTier contract lockstep across the TS/Python boundary", () => {
 	it("the TS FUNNEL_TIERS witness EXACTLY equals the Python FunnelTier enum values (same set, same order)", () => {
 		const pyValues = pythonFunnelTierValues();
 		expect(pyValues.length).toBeGreaterThan(0);

@@ -58,7 +58,7 @@ describe("withSpendLock", () => {
 	});
 
 	it("creates_the_lock_content_atomically_via_link_never_empty", async () => {
-		// Regression (S2): a plain O_EXCL create then a SEPARATE write leaves an EMPTY
+		// Regression: a plain O_EXCL create then a SEPARATE write leaves an EMPTY
 		// lock for a moment that a racing acquirer (TS or Py) reads as unparseable and
 		// rename-steals from a LIVE holder → two holders, a lost journal update. The
 		// create must link a fully-written temp into place, so the lock is never empty.

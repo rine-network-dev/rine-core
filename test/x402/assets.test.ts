@@ -1,8 +1,8 @@
 /**
- * F-2 — unknown-decimal assets must FAIL CLOSED. The old `?? 6` default valued a
- * sub-6-decimal token 10^n too low, bypassing every spend cap while the signed
- * EIP-3009 `value` was the full atomic amount. A non-registry asset is now denied
- * at pricing time; a registry asset still prices correctly.
+ * Unknown-decimal assets must FAIL CLOSED. Assuming a default decimal count would
+ * misprice a sub-6-decimal token relative to the signed EIP-3009 `value`, so a
+ * non-registry asset is denied at pricing time; a registry asset still prices
+ * correctly.
  */
 
 import { describe, expect, it } from "vitest";
@@ -59,7 +59,7 @@ describe("resolveDecimals (fail closed)", () => {
 	});
 });
 
-describe("requirementCanonicalAmount (F-2)", () => {
+describe("requirementCanonicalAmount", () => {
 	it("test_registry_6_decimal_asset_prices_correctly", () => {
 		expect(requirementCanonicalAmount(req({ amount: "1000000" }))).toBe(
 			1_000_000n,

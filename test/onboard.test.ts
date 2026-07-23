@@ -452,7 +452,7 @@ describe("performAgentCreation", () => {
 	});
 
 	// -----------------------------------------------------------------------
-	// SPIFFE identity verification wiring (REQ-SPF-10): performAgentCreation
+	// SPIFFE identity verification wiring: performAgentCreation
 	// runs verifyIdentitySpiffe after POST /agents when --verify-identity is set
 	// or SPIFFE_ENDPOINT_SOCKET is present.
 	// -----------------------------------------------------------------------

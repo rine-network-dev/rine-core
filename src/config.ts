@@ -108,7 +108,7 @@ export function cacheToken(
 	// Token cache is a disposable best-effort optimisation. A write failure (e.g.
 	// read-only or foreign-owned token_cache.json) must NOT crash an otherwise-
 	// successful auth flow — the caller already holds the fresh token in memory.
-	// See: token-storm diagnosis (phases/cc-plugin-token-storm-fix/SPEC.md).
+	// This is the token-storm-diagnosis fix: a cache write failure never crashes auth.
 	try {
 		saveTokenCache(configDir, cache);
 	} catch {

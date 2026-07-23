@@ -1,760 +1,667 @@
+/**
+ * The MLS orchestrators, driven against the REAL native core.
+ *
+ * Only the network is mocked: `crypto/mls-api.js` stands in for the server and
+ * relays the genuine commit / welcome / GroupInfo blobs the core produces
+ * between two real agents. Nothing about MLS itself is faked, so a test here
+ * fails when the adapter mis-pairs a welcome, saves state the server rejected,
+ * or loses an epoch.
+ */
 import * as fs from "node:fs";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-	generateAgentKeys,
-	saveAgentKeys,
-} from "../src/crypto/keys.js";
-import { saveMlsState } from "../src/crypto/mls-state.js";
-
-// ── Mock ts-mls decode (used by processMlsWelcomes) ────────────────────────
-
-const MOCK_KP_REF = new Uint8Array([7, 8, 9]);
-const MOCK_KP_REF_HEX = Buffer.from(MOCK_KP_REF).toString("hex");
-
-vi.mock("ts-mls", () => {
-	// Defined INSIDE the factory: vi.mock is hoisted above top-level declarations.
-	class MockMlsError extends Error {
-		constructor(message?: string) {
-			super(message);
-			this.name = "MlsError";
-		}
-	}
-	return {
-		decode: vi.fn(() => ({
-			wireformat: 3, // mls_welcome
-			welcome: {
-				cipherSuite: 1,
-				secrets: [{ newMember: MOCK_KP_REF }],
-				encryptedGroupInfo: new Uint8Array([0]),
-			},
-		})),
-		mlsMessageDecoder: {},
-		wireformats: { mls_welcome: 3 },
-		MlsError: MockMlsError,
-	};
-});
-
-// ── Mock mls-state (partial — keep real save/load, mock key package fns) ────
-
-vi.mock("../src/crypto/mls-state.js", async () => {
-	const actual = await vi.importActual("../src/crypto/mls-state.js");
-	return {
-		...actual,
-		listPrivateKeyPackages: vi.fn(() => [
-			{
-				ref: MOCK_KP_REF_HEX,
-				publicBlob: new Uint8Array([1, 2, 3]),
-				privateBlob: new Uint8Array([4, 5, 6]),
-			},
-		]),
-		deletePrivateKeyPackage: vi.fn(),
-		savePrivateKeyPackages: vi.fn(),
-	};
-});
-
-// ── Mock MLS crypto stubs ────────────────────────────────────────────────────
-
-vi.mock("../src/crypto/mls.js", () => ({
-	generateMlsKeyPackage: vi.fn(async () => ({
-		publicBlob: new Uint8Array([1, 2, 3]),
-		privateBlob: new Uint8Array([4, 5, 6]),
-		keyPackageRef: new Uint8Array([7, 8, 9]),
-	})),
-	createMlsGroup: vi.fn(async () => ({
-		stateBlob: new Uint8Array([10, 20]),
-		groupInfo: new Uint8Array([30, 40]),
-		commitBlob: new Uint8Array([50, 60]),
-		epoch: 1,
-	})),
-	addMemberToMlsGroup: vi.fn(async () => ({
-		commitBlob: new Uint8Array([70, 80]),
-		welcomeBlob: new Uint8Array([90, 100]),
-		updatedState: new Uint8Array([110, 120]),
-		groupInfo: new Uint8Array([130, 140]),
-		epoch: 2,
-	})),
-	// groupId here is the MLS-INTERNAL group id (decoded from the ratchet tree).
-	// It deliberately differs from the rine group UUID on the welcome delivery
-	// below — processMlsWelcomes must key state by the rine UUID, not this value.
-	processMlsWelcome: vi.fn(async () => ({
-		stateBlob: new Uint8Array([1, 2]),
-		groupId: "mls-internal-id-not-a-rine-uuid",
-		epoch: 0,
-		cipherSuite: 1,
-	})),
-	processMlsCommit: vi.fn(async () => ({
-		updatedState: new Uint8Array([3, 4]),
-		epoch: 1,
-	})),
-	removeMemberFromMlsGroup: vi.fn(async () => ({
-		commitBlob: new Uint8Array([5, 6]),
-		updatedState: new Uint8Array([7, 8]),
-		groupInfo: new Uint8Array([15, 16]),
-		epoch: 1,
-	})),
-	externalJoinMlsGroup: vi.fn(async () => ({
-		commitBlob: new Uint8Array([21, 22]),
-		stateBlob: new Uint8Array([23, 24]),
-		groupInfo: new Uint8Array([25, 26]),
-		epoch: 2,
-	})),
-	VERSION_MLS: 0x04,
-}));
-
-// ── Mock MLS API ─────────────────────────────────────────────────────────────
 
 vi.mock("../src/crypto/mls-api.js", async () => {
-	const actual = await vi.importActual("../src/crypto/mls-api.js");
+	const actual = await vi.importActual<
+		typeof import("../src/crypto/mls-api.js")
+	>("../src/crypto/mls-api.js");
 	return {
 		...actual,
-		uploadKeyPackages: vi.fn(async () => ({ stored: 10 })),
-		claimKeyPackages: vi.fn(async () => ({
-			packages: [Buffer.from(new Uint8Array([1, 2, 3])).toString("base64")],
-			agent_id: "member-uuid",
+		uploadKeyPackages: vi.fn(async (_c: unknown, _a: unknown, p: string[]) => ({
+			stored: p.length,
 		})),
-		mlsInit: vi.fn(async () => ({
-			mls_pending: true,
-			members: [
-				{ agent_id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890", has_key_package: true },
-				{ agent_id: "b2c3d4e5-f6a7-8901-bcde-f12345678901", has_key_package: true },
-			],
-		})),
-		mlsCommit: vi.fn(async () => ({ epoch: 0, delivered_to: 1 })),
+		claimKeyPackages: vi.fn(async () => ({ packages: [], agent_id: "" })),
+		mlsFromBase64: vi.fn(actual.mlsFromBase64),
+		mlsInit: vi.fn(async () => ({ mls_pending: true, members: [] })),
+		mlsCommit: vi.fn(async () => ({ epoch: null, delivered_to: 1 })),
 		mlsAck: vi.fn(async () => ({ confirmed: true, acks: 1, needed: 1 })),
 		mlsNack: vi.fn(async () => ({ quarantined: true })),
-		fetchHandshakes: vi.fn(async () => ({
-			handshakes: [
-				{
-					id: "h1",
-					epoch: 1,
-					blob: Buffer.from(new Uint8Array([1])).toString("base64"),
-					created_at: "2026-01-01T00:00:00Z",
-				},
-			],
-		})),
-		fetchWelcomes: vi.fn(async () => ({
-			welcomes: [
-				{
-					id: "w1",
-					group_id: "e4f5a6b7-c8d9-0123-abcd-ef1234567890",
-					blob: Buffer.from(new Uint8Array([1])).toString("base64"),
-					created_at: "2026-01-01T00:00:00Z",
-				},
-			],
-		})),
-		fetchGroupInfo: vi.fn(async () => ({
-			group_info: Buffer.from(new Uint8Array([1, 2])).toString("base64"),
-			epoch: 1,
-		})),
+		fetchHandshakes: vi.fn(async () => ({ handshakes: [] })),
+		fetchWelcomes: vi.fn(async () => ({ welcomes: [] })),
+		fetchGroupInfo: vi.fn(async () => ({ group_info: null, epoch: null })),
 	};
 });
 
-// ── Import ops (AFTER mocks) ────────────────────────────────────────────────
-
+import { generateAgentKeys, saveAgentKeys } from "../src/crypto/keys.js";
 import {
-	publishMlsKeyPackages,
-	initMlsGroup,
-	addMlsGroupMember,
-	removeMlsGroupMember,
-	externalJoinMlsGroup,
-	processMlsWelcomes,
-	syncMlsGroup,
-} from "../src/mls-ops.js";
-import {
-	uploadKeyPackages,
 	claimKeyPackages,
-	mlsInit,
-	mlsCommit,
-	mlsAck,
-	mlsNack,
+	fetchGroupInfo,
 	fetchHandshakes,
 	fetchWelcomes,
-	fetchGroupInfo,
+	mlsAck,
+	mlsCommit,
+	mlsFromBase64,
+	mlsInit,
+	mlsNack,
+	mlsToBase64,
+	uploadKeyPackages,
 } from "../src/crypto/mls-api.js";
-import { MlsError } from "ts-mls";
-import {
-	generateMlsKeyPackage,
-	createMlsGroup,
-	addMemberToMlsGroup,
-	removeMemberFromMlsGroup,
-	externalJoinMlsGroup as cryptoExternalJoin,
-	processMlsWelcome,
-	processMlsCommit,
-} from "../src/crypto/mls.js";
+import type { MlsCommitBody } from "../src/crypto/mls-api.js";
 import { loadMlsState } from "../src/crypto/mls-state.js";
+import { mlsGroupIdBytes, openMlsClient } from "../src/crypto/mls.js";
 import { RineApiError } from "../src/errors.js";
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
+import {
+	MLS_KEY_PACKAGE_LOW_WATER,
+	MLS_KEY_PACKAGE_TARGET,
+	addMlsGroupMember,
+	drainAndRepublishMlsKeyPackages,
+	ensureMlsKeyPackages,
+	externalJoinMlsGroup,
+	initMlsGroup,
+	processMlsWelcomes,
+	publishMlsKeyPackages,
+	removeMlsGroupMember,
+	syncMlsGroup,
+} from "../src/mls-ops.js";
 
 const SELF_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
 const MEMBER_ID = "b2c3d4e5-f6a7-8901-bcde-f12345678901";
+const THIRD_ID = "d4e5f6a7-b8c9-0123-def1-234567890123";
 const GROUP_ID = "c3d4e5f6-a7b8-9012-cdef-123456789012";
 
-function makeTmpDir(): string {
-	return fs.mkdtempSync(join(tmpdir(), "rine-mlsops-test-"));
+let dir: string;
+/** Every commit body the code posted, in order. */
+let posted: MlsCommitBody[];
+
+const client = {} as never;
+
+function agent(agentId: string) {
+	saveAgentKeys(dir, agentId, generateAgentKeys());
 }
 
-function setupAgent(dir: string, agentId: string) {
-	const keys = generateAgentKeys();
-	saveAgentKeys(dir, agentId, keys);
-	return keys;
+/** One claimable key package for `agentId`, minted by that agent's own client. */
+function offerKeyPackage(agentId: string): void {
+	const pkg = openMlsClient(dir, agentId).generateKeyPackage();
+	vi.mocked(claimKeyPackages).mockResolvedValue({
+		packages: [mlsToBase64(pkg)],
+		agent_id: agentId,
+	});
 }
 
-function makeMockClient() {
-	return {
-		get: vi.fn().mockResolvedValue({}),
-		post: vi.fn().mockResolvedValue({}),
-	};
+beforeEach(() => {
+	dir = fs.mkdtempSync(join(tmpdir(), "rine-mlsops-"));
+	posted = [];
+	vi.clearAllMocks();
+	vi.mocked(uploadKeyPackages).mockImplementation(async (_c, _a, p) => ({
+		stored: p.length,
+	}));
+	vi.mocked(mlsCommit).mockImplementation(async (_c, _g, body) => {
+		posted.push(body);
+		return { epoch: body.epoch ?? null, delivered_to: 1 };
+	});
+	vi.mocked(mlsAck).mockResolvedValue({ confirmed: true, acks: 1, needed: 1 });
+	vi.mocked(mlsNack).mockResolvedValue({ quarantined: true });
+	vi.mocked(fetchHandshakes).mockResolvedValue({ handshakes: [] });
+	vi.mocked(fetchWelcomes).mockResolvedValue({ welcomes: [] });
+	vi.mocked(fetchGroupInfo).mockResolvedValue({
+		group_info: null,
+		epoch: null,
+	});
+	agent(SELF_ID);
+	agent(MEMBER_ID);
+});
+
+afterEach(() => {
+	fs.rmSync(dir, { recursive: true, force: true });
+});
+
+/** Found GROUP_ID with SELF as creator and MEMBER welcomed into it. */
+async function foundGroup(): Promise<void> {
+	offerKeyPackage(MEMBER_ID);
+	vi.mocked(mlsInit).mockResolvedValue({
+		mls_pending: true,
+		members: [
+			{ agent_id: SELF_ID, has_key_package: true },
+			{ agent_id: MEMBER_ID, has_key_package: true },
+		],
+	});
+	await initMlsGroup(dir, SELF_ID, GROUP_ID, client);
+
+	const welcome = posted[0]?.welcomes?.[0]?.welcome;
+	if (!welcome) throw new Error("founding commit carried no welcome");
+	vi.mocked(fetchWelcomes).mockResolvedValue({
+		welcomes: [
+			{
+				id: "w1",
+				group_id: GROUP_ID,
+				blob: welcome,
+				created_at: "2026-01-01T00:00:00Z",
+			},
+		],
+	});
+	await processMlsWelcomes(dir, MEMBER_ID, client);
+	vi.mocked(fetchWelcomes).mockResolvedValue({ welcomes: [] });
 }
 
-// ── Tests ────────────────────────────────────────────────────────────────────
+/** Group state for SELF only, founded locally — no HTTP, so no replenishment. */
+function seedGroupState(): void {
+	openMlsClient(dir, SELF_ID).createGroup(mlsGroupIdBytes(GROUP_ID)).save();
+}
+
+/** SELF's current GroupInfo, as the server would publish it. */
+function currentGroupInfo(): string {
+	const group = openMlsClient(dir, SELF_ID).loadGroup(
+		mlsGroupIdBytes(GROUP_ID),
+	);
+	return mlsToBase64(group.groupInfo());
+}
+
+// ── key packages ─────────────────────────────────────────────────────────────
 
 describe("publishMlsKeyPackages", () => {
-	let dir: string;
-
-	beforeEach(() => {
-		dir = makeTmpDir();
-		setupAgent(dir, SELF_ID);
-		vi.clearAllMocks();
+	it("uploads the batch it was asked for and keeps every private half", async () => {
+		const result = await publishMlsKeyPackages(dir, SELF_ID, client, 5);
+		expect(result).toEqual({ stored: 5 });
+		expect(vi.mocked(uploadKeyPackages).mock.calls[0]![2]).toHaveLength(5);
+		expect(openMlsClient(dir, SELF_ID).keyPackageCount()).toBe(5);
 	});
 
-	afterEach(() => {
-		fs.rmSync(dir, { recursive: true, force: true });
-	});
-
-	it("generates and uploads the requested number of key packages", async () => {
-		const client = makeMockClient();
-		const result = await publishMlsKeyPackages(dir, SELF_ID, client as never, 5);
-		expect(result).toEqual({ stored: 10 });
-		expect(generateMlsKeyPackage).toHaveBeenCalledTimes(5);
-		expect(uploadKeyPackages).toHaveBeenCalledTimes(1);
-		const call = vi.mocked(uploadKeyPackages).mock.calls[0]!;
-		expect(call[1]).toBe(SELF_ID);
-		expect(call[2]).toHaveLength(5);
-	});
-
-	it("defaults to 10 key packages", async () => {
-		const client = makeMockClient();
-		await publishMlsKeyPackages(dir, SELF_ID, client as never);
-		expect(generateMlsKeyPackage).toHaveBeenCalledTimes(10);
-		const call = vi.mocked(uploadKeyPackages).mock.calls[0]!;
-		expect(call[2]).toHaveLength(10);
+	it("defaults to the core's target inventory", async () => {
+		await publishMlsKeyPackages(dir, SELF_ID, client);
+		expect(vi.mocked(uploadKeyPackages).mock.calls[0]![2]).toHaveLength(
+			MLS_KEY_PACKAGE_TARGET,
+		);
 	});
 });
 
+describe("ensureMlsKeyPackages", () => {
+	it("tops the inventory back up to the target when it is below the low-water mark", async () => {
+		openMlsClient(dir, SELF_ID).generateKeyPackages(1);
+		const status = await ensureMlsKeyPackages(dir, SELF_ID, client);
+		expect(status.available).toBe(1);
+		expect(status.published).toBe(MLS_KEY_PACKAGE_TARGET - 1);
+		expect(status.capReached).toBe(false);
+	});
+
+	it("is a no-op when the inventory is full", async () => {
+		openMlsClient(dir, SELF_ID).generateKeyPackages(MLS_KEY_PACKAGE_TARGET);
+		const status = await ensureMlsKeyPackages(dir, SELF_ID, client);
+		expect(status).toEqual({
+			available: MLS_KEY_PACKAGE_TARGET,
+			published: 0,
+			capReached: false,
+		});
+		expect(uploadKeyPackages).not.toHaveBeenCalled();
+	});
+
+	it("is a no-op exactly at the low-water mark", async () => {
+		openMlsClient(dir, SELF_ID).generateKeyPackages(MLS_KEY_PACKAGE_LOW_WATER);
+		const status = await ensureMlsKeyPackages(dir, SELF_ID, client);
+		expect(status.published).toBe(0);
+		expect(uploadKeyPackages).not.toHaveBeenCalled();
+	});
+
+	it("treats the server inventory cap as a no-op success, not a failure", async () => {
+		openMlsClient(dir, SELF_ID).generateKeyPackages(1);
+		vi.mocked(uploadKeyPackages).mockRejectedValue(
+			new RineApiError(409, "key package inventory full"),
+		);
+		const status = await ensureMlsKeyPackages(dir, SELF_ID, client);
+		expect(status).toEqual({ available: 1, published: 0, capReached: true });
+	});
+
+	it("surfaces a genuine upload failure", async () => {
+		openMlsClient(dir, SELF_ID).generateKeyPackages(1);
+		vi.mocked(uploadKeyPackages).mockRejectedValue(
+			new RineApiError(500, "boom"),
+		);
+		await expect(ensureMlsKeyPackages(dir, SELF_ID, client)).rejects.toThrow(
+			"boom",
+		);
+	});
+});
+
+describe("drainAndRepublishMlsKeyPackages", () => {
+	it("replaces the whole pool rather than adding to it (SPEC DEC-7)", async () => {
+		const mls = openMlsClient(dir, SELF_ID);
+		const before = mls
+			.generateKeyPackages(4)
+			.map((p) => Buffer.from(p).toString("base64"));
+
+		const result = await drainAndRepublishMlsKeyPackages(dir, SELF_ID, client);
+		expect(result.stored).toBe(MLS_KEY_PACKAGE_TARGET);
+		expect(openMlsClient(dir, SELF_ID).keyPackageCount()).toBe(
+			MLS_KEY_PACKAGE_TARGET,
+		);
+
+		const published = vi.mocked(uploadKeyPackages).mock.calls[0]![2];
+		expect(published).toHaveLength(MLS_KEY_PACKAGE_TARGET);
+		expect(published.some((p) => before.includes(p))).toBe(false);
+	});
+});
+
+// ── founding and membership ──────────────────────────────────────────────────
+
 describe("initMlsGroup", () => {
-	let dir: string;
+	it("admits every eligible member in the founding commit and saves only after the server accepts", async () => {
+		await foundGroup();
 
-	beforeEach(() => {
-		dir = makeTmpDir();
-		setupAgent(dir, SELF_ID);
-		vi.clearAllMocks();
-	});
-
-	afterEach(() => {
-		fs.rmSync(dir, { recursive: true, force: true });
-	});
-
-	it("initializes group with all eligible members", async () => {
-		const client = makeMockClient();
-		const result = await initMlsGroup(dir, SELF_ID, GROUP_ID, client as never);
-
-		// mlsInit called to get member list
 		expect(mlsInit).toHaveBeenCalledWith(client, GROUP_ID, undefined);
-
-		// createMlsGroup called with signing key
-		expect(createMlsGroup).toHaveBeenCalledTimes(1);
-		const createCall = vi.mocked(createMlsGroup).mock.calls[0]!;
-		expect(createCall[0]).toBeInstanceOf(Uint8Array);
-
-		// claimKeyPackages called for the eligible member (not self)
-		expect(claimKeyPackages).toHaveBeenCalledTimes(1);
 		expect(claimKeyPackages).toHaveBeenCalledWith(client, MEMBER_ID);
+		expect(claimKeyPackages).toHaveBeenCalledTimes(1); // never for self
+		expect(posted).toHaveLength(1);
 
-		// addMemberToMlsGroup called for eligible member
-		expect(addMemberToMlsGroup).toHaveBeenCalledTimes(1);
+		const body = posted[0]!;
+		expect(body.welcomes).toHaveLength(1);
+		expect(body.welcomes![0]!.agent_id).toBe(MEMBER_ID);
+		expect(body.group_info).toBeDefined();
+		expect(body.epoch).toBe(1);
+		expect(body.cipher_suite).toBe(0xf057);
 
-		// mlsCommit called with welcomes and group_info
-		expect(mlsCommit).toHaveBeenCalledTimes(1);
-		const commitCall = vi.mocked(mlsCommit).mock.calls[0]!;
-		expect(commitCall[1]).toBe(GROUP_ID);
-		expect(commitCall[2].welcomes).toHaveLength(1);
-		expect(commitCall[2].welcomes![0]!.agent_id).toBe(MEMBER_ID);
-		expect(commitCall[2].group_info).toBeDefined();
-		// One add after create(epoch 1) advances to the committed epoch 2.
-		expect(commitCall[2].epoch).toBe(2);
+		expect(loadMlsState(dir, SELF_ID, GROUP_ID)).toEqual({
+			groupId: GROUP_ID,
+			epoch: 1,
+			cipherSuite: 0xf057,
+		});
+	});
 
-		// State saved to disk
-		const saved = loadMlsState(dir, SELF_ID, GROUP_ID);
-		expect(saved).not.toBeNull();
-		expect(saved!.metadata.groupId).toBe(GROUP_ID);
-		expect(saved!.metadata.epoch).toBe(0);
-
-		expect(result.epoch).toBe(0);
-		expect(result.membersAdded).toBe(1);
+	it("tops up the acting agent's own inventory before founding", async () => {
+		await foundGroup();
+		expect(uploadKeyPackages).toHaveBeenCalledWith(
+			client,
+			SELF_ID,
+			expect.any(Array),
+		);
 	});
 });
 
 describe("addMlsGroupMember", () => {
-	let dir: string;
+	it("claims a key package, commits the add, and advances local state", async () => {
+		await foundGroup();
+		agent(THIRD_ID);
+		offerKeyPackage(THIRD_ID);
+		posted.length = 0;
 
-	beforeEach(() => {
-		dir = makeTmpDir();
-		setupAgent(dir, SELF_ID);
-		vi.clearAllMocks();
-		// Pre-save MLS state
-		saveMlsState(dir, SELF_ID, GROUP_ID, new Uint8Array([10, 20]), {
-			groupId: GROUP_ID,
-			epoch: 0,
-			cipherSuite: 1,
-		});
-	});
-
-	afterEach(() => {
-		fs.rmSync(dir, { recursive: true, force: true });
-	});
-
-	it("claims key package, adds member, commits, and updates state", async () => {
-		const client = makeMockClient();
-		const result = await addMlsGroupMember(
-			dir, SELF_ID, GROUP_ID, MEMBER_ID, client as never,
+		const { epoch } = await addMlsGroupMember(
+			dir,
+			SELF_ID,
+			GROUP_ID,
+			THIRD_ID,
+			client,
 		);
 
-		expect(claimKeyPackages).toHaveBeenCalledWith(client, MEMBER_ID);
-		expect(addMemberToMlsGroup).toHaveBeenCalledTimes(1);
-		expect(mlsCommit).toHaveBeenCalledTimes(1);
-
-		const commitCall = vi.mocked(mlsCommit).mock.calls[0]!;
-		expect(commitCall[2].welcomes).toHaveLength(1);
-		expect(commitCall[2].welcomes![0]!.agent_id).toBe(MEMBER_ID);
-		// A fresh GroupInfo is published on the add commit so the next external
-		// joiner self-joins against the new epoch.
-		expect(commitCall[2].group_info).toBeDefined();
-		// The add commit carries its committed epoch (crypto-owned).
-		expect(commitCall[2].epoch).toBe(2);
-
-		// State was updated on disk
-		const saved = loadMlsState(dir, SELF_ID, GROUP_ID);
-		expect(saved).not.toBeNull();
-		expect(Buffer.from(saved!.stateBlob).equals(Buffer.from(new Uint8Array([110, 120])))).toBe(true);
-
-		expect(result.epoch).toBe(0);
+		expect(epoch).toBe(2);
+		expect(posted[0]!.welcomes![0]!.agent_id).toBe(THIRD_ID);
+		expect(loadMlsState(dir, SELF_ID, GROUP_ID)!.epoch).toBe(2);
 	});
 
 	it("throws when no MLS state exists", async () => {
-		const freshDir = makeTmpDir();
-		setupAgent(freshDir, SELF_ID);
-		const client = makeMockClient();
+		await expect(
+			addMlsGroupMember(dir, SELF_ID, GROUP_ID, MEMBER_ID, client),
+		).rejects.toThrow(`No MLS state for group ${GROUP_ID}`);
+	});
+
+	it("throws when the member published no key package", async () => {
+		await foundGroup();
+		vi.mocked(claimKeyPackages).mockResolvedValue({
+			packages: [],
+			agent_id: THIRD_ID,
+		});
+		await expect(
+			addMlsGroupMember(dir, SELF_ID, GROUP_ID, THIRD_ID, client),
+		).rejects.toThrow(`No key packages available for ${THIRD_ID}`);
+	});
+
+	it("tops up before the add, so a long-lived agent never runs itself out", async () => {
+		seedGroupState();
+		agent(THIRD_ID);
+		offerKeyPackage(THIRD_ID);
+
+		await addMlsGroupMember(dir, SELF_ID, GROUP_ID, THIRD_ID, client);
+		expect(uploadKeyPackages).toHaveBeenCalledWith(
+			client,
+			SELF_ID,
+			expect.any(Array),
+		);
+	});
+
+	it("does not top up while the inventory is healthy", async () => {
+		seedGroupState();
+		agent(THIRD_ID);
+		offerKeyPackage(THIRD_ID);
+		openMlsClient(dir, SELF_ID).generateKeyPackages(MLS_KEY_PACKAGE_TARGET);
+		vi.mocked(uploadKeyPackages).mockClear();
+
+		await addMlsGroupMember(dir, SELF_ID, GROUP_ID, THIRD_ID, client);
+		expect(uploadKeyPackages).not.toHaveBeenCalled();
+	});
+
+	it("still completes when the top-up fails (maintenance is best-effort)", async () => {
+		await foundGroup();
+		agent(THIRD_ID);
+		offerKeyPackage(THIRD_ID);
+		vi.mocked(uploadKeyPackages).mockRejectedValue(new Error("network down"));
 
 		await expect(
-			addMlsGroupMember(freshDir, SELF_ID, GROUP_ID, MEMBER_ID, client as never),
-		).rejects.toThrow(`No MLS state for group ${GROUP_ID}`);
-
-		fs.rmSync(freshDir, { recursive: true, force: true });
+			addMlsGroupMember(dir, SELF_ID, GROUP_ID, THIRD_ID, client),
+		).resolves.toEqual({ epoch: 2 });
 	});
 });
 
 describe("removeMlsGroupMember", () => {
-	let dir: string;
+	it("commits a remove by leaf index and advances local state", async () => {
+		await foundGroup();
+		posted.length = 0;
 
-	beforeEach(() => {
-		dir = makeTmpDir();
-		setupAgent(dir, SELF_ID);
-		vi.clearAllMocks();
-		saveMlsState(dir, SELF_ID, GROUP_ID, new Uint8Array([10, 20]), {
-			groupId: GROUP_ID,
-			epoch: 0,
-			cipherSuite: 1,
-		});
-	});
-
-	afterEach(() => {
-		fs.rmSync(dir, { recursive: true, force: true });
-	});
-
-	it("removes member by leaf index, commits, and updates state", async () => {
-		const client = makeMockClient();
-		const result = await removeMlsGroupMember(
-			dir, SELF_ID, GROUP_ID, 2, client as never,
+		const { epoch } = await removeMlsGroupMember(
+			dir,
+			SELF_ID,
+			GROUP_ID,
+			1,
+			client,
 		);
 
-		expect(removeMemberFromMlsGroup).toHaveBeenCalledWith(
-			new Uint8Array([10, 20]), 2,
-		);
-		expect(mlsCommit).toHaveBeenCalledTimes(1);
-		// Remove also republishes a fresh GroupInfo for the next external joiner.
-		expect(vi.mocked(mlsCommit).mock.calls[0]![2].group_info).toBeDefined();
-		// The remove commit carries its committed epoch (crypto-owned).
-		expect(vi.mocked(mlsCommit).mock.calls[0]![2].epoch).toBe(1);
-
-		const saved = loadMlsState(dir, SELF_ID, GROUP_ID);
-		expect(saved).not.toBeNull();
-		expect(Buffer.from(saved!.stateBlob).equals(Buffer.from(new Uint8Array([7, 8])))).toBe(true);
-
-		expect(result.epoch).toBe(0);
+		expect(epoch).toBe(2);
+		expect(posted[0]!.welcomes).toEqual([]);
+		expect(loadMlsState(dir, SELF_ID, GROUP_ID)!.epoch).toBe(2);
 	});
 
 	it("throws when no MLS state exists", async () => {
-		const freshDir = makeTmpDir();
-		setupAgent(freshDir, SELF_ID);
-		const client = makeMockClient();
-
 		await expect(
-			removeMlsGroupMember(freshDir, SELF_ID, GROUP_ID, 2, client as never),
+			removeMlsGroupMember(dir, SELF_ID, GROUP_ID, 1, client),
 		).rejects.toThrow(`No MLS state for group ${GROUP_ID}`);
-
-		fs.rmSync(freshDir, { recursive: true, force: true });
 	});
 });
 
+// ── welcomes ─────────────────────────────────────────────────────────────────
+
 describe("processMlsWelcomes", () => {
-	let dir: string;
+	it("installs state keyed by the rine group UUID and replaces the key package it consumed", async () => {
+		await foundGroup();
 
-	beforeEach(() => {
-		dir = makeTmpDir();
-		setupAgent(dir, SELF_ID);
-		vi.clearAllMocks();
-	});
-
-	afterEach(() => {
-		fs.rmSync(dir, { recursive: true, force: true });
-	});
-
-	it("fetches welcomes, processes each, and saves state", async () => {
-		const client = makeMockClient();
-		const result = await processMlsWelcomes(dir, SELF_ID, client as never);
-
-		expect(fetchWelcomes).toHaveBeenCalledWith(client, SELF_ID);
-		expect(processMlsWelcome).toHaveBeenCalledTimes(1);
-
-		// Verify new 3-argument signature: welcomeBlob, publicBlob, privateBlob
-		const welcomeCall = vi.mocked(processMlsWelcome).mock.calls[0]!;
-		expect(welcomeCall).toHaveLength(3);
-		expect(welcomeCall[1]).toEqual(new Uint8Array([1, 2, 3])); // publicBlob from stored pkg
-		expect(welcomeCall[2]).toEqual(new Uint8Array([4, 5, 6])); // privateBlob from stored pkg
-
-		// State MUST be keyed by the rine group UUID (welcome.group_id), NOT the
-		// MLS-internal id returned by processMlsWelcome — otherwise
-		// decryptGroupMessage(rineGroupId) / encryptMlsGroupMessage(rineGroupId)
-		// would never find a joiner's state.
-		const welcomeGroupId = "e4f5a6b7-c8d9-0123-abcd-ef1234567890";
-		const saved = loadMlsState(dir, SELF_ID, welcomeGroupId);
-		expect(saved).not.toBeNull();
-		expect(saved!.metadata.groupId).toBe(welcomeGroupId);
-		expect(saved!.metadata.epoch).toBe(0);
-		expect(saved!.metadata.cipherSuite).toBe(1);
-		// metadata.groupId is the rine UUID, never the MLS-internal id — proving
-		// the welcome's group_id (not processMlsWelcome's groupId) keyed the state.
-
-		expect(result.processed).toBe(1);
-		expect(result.groupIds).toEqual(["e4f5a6b7-c8d9-0123-abcd-ef1234567890"]);
+		expect(loadMlsState(dir, MEMBER_ID, GROUP_ID)).toEqual({
+			groupId: GROUP_ID,
+			epoch: 1,
+			cipherSuite: 0xf057,
+		});
+		expect(uploadKeyPackages).toHaveBeenCalledWith(
+			client,
+			MEMBER_ID,
+			expect.any(Array),
+		);
 	});
 
 	it("skips welcomes the server could not associate with a rine group", async () => {
-		const client = makeMockClient();
-		vi.mocked(fetchWelcomes).mockResolvedValueOnce({
+		vi.mocked(fetchWelcomes).mockResolvedValue({
 			welcomes: [
 				{
-					id: "w-null",
+					id: "w1",
 					group_id: null,
-					blob: Buffer.from(new Uint8Array([1])).toString("base64"),
+					blob: "AAAA",
 					created_at: "2026-01-01T00:00:00Z",
 				},
 			],
 		});
-		const result = await processMlsWelcomes(dir, SELF_ID, client as never);
-		expect(result.processed).toBe(0);
-		expect(result.groupIds).toEqual([]);
-		expect(processMlsWelcome).not.toHaveBeenCalled();
+		const result = await processMlsWelcomes(dir, MEMBER_ID, client);
+		expect(result).toEqual({ processed: 0, groupIds: [] });
+	});
+
+	it("does not top up when there was nothing to process", async () => {
+		await processMlsWelcomes(dir, MEMBER_ID, client);
+		expect(uploadKeyPackages).not.toHaveBeenCalled();
 	});
 });
+
+// ── sync ─────────────────────────────────────────────────────────────────────
 
 describe("syncMlsGroup", () => {
-	let dir: string;
+	/** SELF commits a remove of leaf 1; the returned blob is what MEMBER must apply. */
+	function peerCommit(): string {
+		const group = openMlsClient(dir, SELF_ID).loadGroup(
+			mlsGroupIdBytes(GROUP_ID),
+		);
+		const bundle = group.removeMember(1);
+		group.save();
+		return mlsToBase64(bundle.commit);
+	}
 
-	beforeEach(() => {
-		dir = makeTmpDir();
-		setupAgent(dir, SELF_ID);
-		vi.clearAllMocks();
-		// Pre-save MLS state at epoch 0
-		saveMlsState(dir, SELF_ID, GROUP_ID, new Uint8Array([10, 20]), {
-			groupId: GROUP_ID,
-			epoch: 0,
-			cipherSuite: 1,
-		});
-	});
+	/** SELF removes MEMBER, so MEMBER is genuinely out of the canonical tree. */
+	function evictMember(): void {
+		const group = openMlsClient(dir, SELF_ID).loadGroup(
+			mlsGroupIdBytes(GROUP_ID),
+		);
+		group.removeMember(1);
+		group.save();
+	}
 
-	afterEach(() => {
-		fs.rmSync(dir, { recursive: true, force: true });
-	});
-
-	it("fetches handshakes since current epoch and applies commits", async () => {
-		const client = makeMockClient();
-		const result = await syncMlsGroup(dir, SELF_ID, GROUP_ID, client as never);
-
-		expect(fetchHandshakes).toHaveBeenCalledWith(client, GROUP_ID, 0, undefined);
-		expect(processMlsCommit).toHaveBeenCalledTimes(1);
-
-		// State was updated on disk
-		const saved = loadMlsState(dir, SELF_ID, GROUP_ID);
-		expect(saved).not.toBeNull();
-		expect(Buffer.from(saved!.stateBlob).equals(Buffer.from(new Uint8Array([3, 4])))).toBe(true);
-		expect(saved!.metadata.epoch).toBe(1);
-
-		expect(result.epoch).toBe(1);
-		expect(result.processed).toBe(1);
-	});
+	function handshake(blob: string, epoch: number | null = 2) {
+		return {
+			handshakes: [
+				{ id: "h1", epoch, blob, created_at: "2026-01-01T00:00:00Z" },
+			],
+		};
+	}
 
 	it("throws when no MLS state exists", async () => {
-		const freshDir = makeTmpDir();
-		setupAgent(freshDir, SELF_ID);
-		const client = makeMockClient();
-
-		await expect(
-			syncMlsGroup(freshDir, SELF_ID, GROUP_ID, client as never),
-		).rejects.toThrow(`No MLS state for group ${GROUP_ID}`);
-
-		fs.rmSync(freshDir, { recursive: true, force: true });
+		await expect(syncMlsGroup(dir, SELF_ID, GROUP_ID, client)).rejects.toThrow(
+			`No MLS state for group ${GROUP_ID}`,
+		);
 	});
 
-	it("H4: emits an ACK after cleanly processing a commit", async () => {
-		const client = makeMockClient();
-		await syncMlsGroup(dir, SELF_ID, GROUP_ID, client as never);
+	it("applies commits posted since the current epoch and ACKs each", async () => {
+		await foundGroup();
+		agent(THIRD_ID);
+		offerKeyPackage(THIRD_ID);
+		const group = openMlsClient(dir, SELF_ID).loadGroup(
+			mlsGroupIdBytes(GROUP_ID),
+		);
+		const bundle = group.addMember(
+			mlsFromBase64((await claimKeyPackages(client, THIRD_ID)).packages[0]!),
+		);
+		group.save();
+		vi.mocked(fetchHandshakes).mockResolvedValue(
+			handshake(mlsToBase64(bundle.commit)),
+		);
 
-		// The clean commit (handshake "h1") is ACKed, never NACKed.
+		const result = await syncMlsGroup(dir, MEMBER_ID, GROUP_ID, client);
+
+		expect(vi.mocked(fetchHandshakes).mock.calls[0]![2]).toBe(1); // since_epoch
+		expect(result).toEqual({ epoch: 2, processed: 1, evicted: false });
+		expect(mlsAck).toHaveBeenCalledWith(
+			client,
+			GROUP_ID,
+			{ object_id: "h1" },
+			undefined,
+		);
+		expect(loadMlsState(dir, MEMBER_ID, GROUP_ID)!.epoch).toBe(2);
+	});
+
+	it("reports eviction as the valid outcome of a valid commit, not an error", async () => {
+		await foundGroup();
+		vi.mocked(fetchHandshakes).mockResolvedValue(handshake(peerCommit()));
+
+		const result = await syncMlsGroup(dir, MEMBER_ID, GROUP_ID, client);
+		expect(result.processed).toBe(1);
+		expect(result.evicted).toBe(true);
 		expect(mlsAck).toHaveBeenCalledTimes(1);
-		const ackCall = vi.mocked(mlsAck).mock.calls[0]!;
-		expect(ackCall[1]).toBe(GROUP_ID);
-		expect(ackCall[2]).toEqual({ object_id: "h1" });
-		expect(mlsNack).not.toHaveBeenCalled();
 	});
 
-	it("H4: emits a NACK and saves NO state when a commit cannot be processed", async () => {
-		const client = makeMockClient();
-		vi.mocked(processMlsCommit).mockRejectedValueOnce(
-			new MlsError("cannot process commit"),
+	it("NACKs an un-processable commit and saves nothing", async () => {
+		await foundGroup();
+		vi.mocked(fetchHandshakes).mockResolvedValue(
+			handshake(Buffer.from("garbage").toString("base64")),
 		);
+		vi.mocked(fetchGroupInfo).mockResolvedValue({
+			group_info: currentGroupInfo(),
+			epoch: 1,
+		});
 
-		const result = await syncMlsGroup(dir, SELF_ID, GROUP_ID, client as never);
-
-		// NACK emitted for the un-processable handshake; no ACK.
-		expect(mlsNack).toHaveBeenCalledTimes(1);
-		const nackCall = vi.mocked(mlsNack).mock.calls[0]!;
-		expect(nackCall[1]).toBe(GROUP_ID);
-		expect(nackCall[2].object_id).toBe("h1");
-		expect(nackCall[2].epoch).toBe(1);
-		expect(mlsAck).not.toHaveBeenCalled();
-
-		// Aborted: no commit processed → epoch unchanged, no advance persisted.
+		const result = await syncMlsGroup(dir, MEMBER_ID, GROUP_ID, client);
 		expect(result.processed).toBe(0);
-		const saved = loadMlsState(dir, SELF_ID, GROUP_ID);
-		expect(saved!.metadata.epoch).toBe(0);
-		expect(
-			Buffer.from(saved!.stateBlob).equals(Buffer.from(new Uint8Array([10, 20]))),
-		).toBe(true);
-	});
-
-	it("H4 (MEDIUM-1): orphaned local epoch is discarded + re-bootstrapped, NOT NACK-looped", async () => {
-		const client = makeMockClient();
-		// Local state is ahead (epoch 2) of the server's confirmed epoch (1):
-		// our own tentative self-join was rolled back, so our branch is orphaned.
-		saveMlsState(dir, SELF_ID, GROUP_ID, new Uint8Array([99, 99]), {
-			groupId: GROUP_ID,
-			epoch: 2,
-			cipherSuite: 1,
-		});
-		// The fetched handshake (epoch 1, since_epoch=2 still returns the mock's
-		// h1) cannot apply to our orphaned branch → MlsError.
-		vi.mocked(processMlsCommit).mockRejectedValueOnce(
-			new MlsError("cannot process on orphaned branch"),
-		);
-		// Server's confirmed GroupInfo is at epoch 1 — BELOW our local epoch 2,
-		// the orphan signal.
-		vi.mocked(fetchGroupInfo).mockResolvedValueOnce({
-			group_info: Buffer.from(new Uint8Array([1, 2])).toString("base64"),
-			epoch: 1,
-		});
-		// The re-bootstrap external join then succeeds.
-		vi.mocked(fetchGroupInfo).mockResolvedValueOnce({
-			group_info: Buffer.from(new Uint8Array([1, 2])).toString("base64"),
-			epoch: 1,
-		});
-		vi.mocked(mlsCommit).mockResolvedValueOnce({ epoch: 2, delivered_to: 1 });
-
-		await syncMlsGroup(dir, SELF_ID, GROUP_ID, client as never);
-
-		// CRUX: no NACK was emitted — the failure was our orphaned state, not a
-		// garbage commit. (This is the per-member denial-of-participation fix.)
-		expect(mlsNack).not.toHaveBeenCalled();
+		expect(mlsNack).toHaveBeenCalledTimes(1);
 		expect(mlsAck).not.toHaveBeenCalled();
-		// Re-bootstrapped: the external join posted a fresh commit and saveMlsState
-		// overwrote the stale branch with the new epoch.
-		expect(cryptoExternalJoin).toHaveBeenCalledTimes(1);
-		const saved = loadMlsState(dir, SELF_ID, GROUP_ID);
-		expect(saved).not.toBeNull();
+		expect(loadMlsState(dir, MEMBER_ID, GROUP_ID)!.epoch).toBe(1);
 	});
 
-	it("H4: a mid-flight re-join failure leaves stale state intact (no permanent strand)", async () => {
-		const client = makeMockClient();
-		// Orphaned local branch at epoch 2 (our tentative self-join was rolled back).
-		saveMlsState(dir, SELF_ID, GROUP_ID, new Uint8Array([99, 99]), {
-			groupId: GROUP_ID,
-			epoch: 2,
-			cipherSuite: 1,
-		});
-		// The peer commit cannot apply to our orphaned branch → MlsError.
-		vi.mocked(processMlsCommit).mockRejectedValueOnce(
-			new MlsError("cannot process on orphaned branch"),
+	it("re-bootstraps an orphaned local epoch instead of NACK-looping it", async () => {
+		await foundGroup();
+		// MEMBER is no longer in the tree, but still holds epoch-1 local state whose
+		// epoch is AHEAD of the server's confirmed epoch (0) — only a rolled-back own
+		// commit produces that, so the state is orphaned rather than merely stale.
+		evictMember();
+		vi.mocked(fetchHandshakes).mockResolvedValue(
+			handshake(Buffer.from("garbage").toString("base64")),
 		);
-		// Server confirmed epoch 1 < local 2 → orphan signal (reconcile fetch).
-		vi.mocked(fetchGroupInfo).mockResolvedValueOnce({
-			group_info: Buffer.from(new Uint8Array([1, 2])).toString("base64"),
-			epoch: 1,
+		vi.mocked(fetchGroupInfo).mockResolvedValue({
+			group_info: currentGroupInfo(),
+			epoch: 0,
 		});
-		// The re-join's own GroupInfo fetch succeeds...
-		vi.mocked(fetchGroupInfo).mockResolvedValueOnce({
-			group_info: Buffer.from(new Uint8Array([1, 2])).toString("base64"),
-			epoch: 1,
-		});
-		// ...but the re-join commit fails mid-flight (server unreachable). Pre-fix
-		// this happened AFTER deleteMlsState → the agent was stranded stateless.
-		vi.mocked(mlsCommit).mockRejectedValueOnce(new Error("server unreachable"));
+		posted.length = 0;
 
-		await expect(
-			syncMlsGroup(dir, SELF_ID, GROUP_ID, client as never),
-		).rejects.toThrow("server unreachable");
+		const result = await syncMlsGroup(dir, MEMBER_ID, GROUP_ID, client);
 
-		// CRUX: the stale local state SURVIVES, so the next sync can retry the
-		// re-join instead of throwing "No MLS state for group".
-		const saved = loadMlsState(dir, SELF_ID, GROUP_ID);
-		expect(saved).not.toBeNull();
-		expect(saved!.metadata.epoch).toBe(2);
-		expect(
-			Buffer.from(saved!.stateBlob).equals(Buffer.from(new Uint8Array([99, 99]))),
-		).toBe(true);
-		// It was an orphan, not garbage — no NACK was emitted.
 		expect(mlsNack).not.toHaveBeenCalled();
+		expect(posted).toHaveLength(1); // the external re-join commit
+		expect(result.epoch).toBe(3);
+		expect(loadMlsState(dir, MEMBER_ID, GROUP_ID)!.epoch).toBe(3);
 	});
 
-	it("H4: emits neither ACK nor NACK on a transport error (rethrows)", async () => {
-		const client = makeMockClient();
-		// A non-MlsError (e.g. network) must NOT be a NACK — it should rethrow so
-		// the next sync retries, with no ACK/NACK side-effect.
-		vi.mocked(processMlsCommit).mockRejectedValueOnce(new Error("network down"));
+	it("leaves stale state intact when the re-bootstrap fails mid-flight", async () => {
+		await foundGroup();
+		vi.mocked(fetchHandshakes).mockResolvedValue(
+			handshake(Buffer.from("garbage").toString("base64")),
+		);
+		// Orphaned, but there is no GroupInfo to re-join against.
+		vi.mocked(fetchGroupInfo).mockResolvedValue({ group_info: null, epoch: 0 });
 
 		await expect(
-			syncMlsGroup(dir, SELF_ID, GROUP_ID, client as never),
-		).rejects.toThrow("network down");
+			syncMlsGroup(dir, MEMBER_ID, GROUP_ID, client),
+		).rejects.toThrow("no published GroupInfo");
+		// Not stranded stateless: the next sync re-enters the same path.
+		expect(loadMlsState(dir, MEMBER_ID, GROUP_ID)!.epoch).toBe(1);
+	});
+
+	it("emits neither ACK nor NACK on a transport error, and rethrows", async () => {
+		await foundGroup();
+		vi.mocked(fetchHandshakes).mockResolvedValue(handshake(peerCommit()));
+		vi.mocked(mlsFromBase64).mockImplementationOnce(() => {
+			throw new Error("socket hang up");
+		});
+
+		await expect(
+			syncMlsGroup(dir, MEMBER_ID, GROUP_ID, client),
+		).rejects.toThrow("socket hang up");
 		expect(mlsAck).not.toHaveBeenCalled();
 		expect(mlsNack).not.toHaveBeenCalled();
 	});
 });
 
-describe("externalJoinMlsGroup (orchestrator)", () => {
-	let dir: string;
+// ── external self-join ───────────────────────────────────────────────────────
 
-	beforeEach(() => {
-		dir = makeTmpDir();
-		setupAgent(dir, SELF_ID);
-		vi.clearAllMocks();
+describe("externalJoinMlsGroup", () => {
+	function conflict() {
+		return new RineApiError(409, "stale epoch", undefined, "epoch_conflict");
+	}
+
+	beforeEach(async () => {
+		await foundGroup();
+		agent(THIRD_ID);
+		vi.mocked(fetchGroupInfo).mockResolvedValue({
+			group_info: currentGroupInfo(),
+			epoch: 1,
+		});
+		posted.length = 0;
+		vi.mocked(mlsCommit).mockClear();
 	});
 
-	afterEach(() => {
-		fs.rmSync(dir, { recursive: true, force: true });
-	});
+	it("joins by external commit and saves state keyed by the rine UUID", async () => {
+		const { epoch } = await externalJoinMlsGroup(
+			dir,
+			THIRD_ID,
+			GROUP_ID,
+			client,
+		);
 
-	it("fetches GroupInfo, external-joins, posts commit+group_info, saves state by rine UUID", async () => {
-		const client = makeMockClient();
-		const result = await externalJoinMlsGroup(dir, SELF_ID, GROUP_ID, client as never);
-
-		expect(fetchGroupInfo).toHaveBeenCalledWith(client, GROUP_ID, undefined);
-		expect(cryptoExternalJoin).toHaveBeenCalledTimes(1);
-
-		// Posts the public external commit AND a fresh GroupInfo for the next joiner.
-		const commitCall = vi.mocked(mlsCommit).mock.calls[0]!;
-		expect(commitCall[1]).toBe(GROUP_ID);
-		expect(commitCall[2].commit).toBeDefined();
-		expect(commitCall[2].group_info).toBeDefined();
-		expect(commitCall[2].epoch).toBe(2);
-
-		// State keyed by the RINE group UUID so encrypt/decryptGroupMessage find it.
-		const saved = loadMlsState(dir, SELF_ID, GROUP_ID);
-		expect(saved).not.toBeNull();
-		expect(saved!.metadata.groupId).toBe(GROUP_ID);
-		expect(result.epoch).toBe(0); // server-reported epoch from mlsCommit mock
+		expect(epoch).toBe(2);
+		expect(posted).toHaveLength(1);
+		expect(posted[0]!.group_info).toBeDefined();
+		expect(loadMlsState(dir, THIRD_ID, GROUP_ID)!.epoch).toBe(2);
 	});
 
 	it("throws a clear error when no GroupInfo is published", async () => {
-		vi.mocked(fetchGroupInfo).mockResolvedValue({ group_info: null, epoch: null });
-		const client = makeMockClient();
+		vi.mocked(fetchGroupInfo).mockResolvedValue({ group_info: null, epoch: 1 });
 		await expect(
-			externalJoinMlsGroup(dir, SELF_ID, GROUP_ID, client as never),
+			externalJoinMlsGroup(dir, THIRD_ID, GROUP_ID, client),
 		).rejects.toThrow("no published GroupInfo");
 	});
 
-	it("retries once on an epoch conflict, then resolves when the second commit succeeds", async () => {
-		vi.mocked(fetchGroupInfo).mockResolvedValue({
-			group_info: Buffer.from(new Uint8Array([1, 2])).toString("base64"),
-			epoch: 1,
-		});
+	it("retries once on an epoch conflict and succeeds on the rebuild", async () => {
 		vi.mocked(mlsCommit)
-			.mockRejectedValueOnce(
-				new RineApiError(409, "MLS epoch conflict", undefined, "epoch_conflict"),
-			)
-			.mockResolvedValueOnce({ epoch: 3, delivered_to: 1 });
-		const client = makeMockClient();
-		const result = await externalJoinMlsGroup(dir, SELF_ID, GROUP_ID, client as never);
-		expect(result.epoch).toBe(3);
-		// Two attempts => GroupInfo fetched twice (discard-and-rebuild).
-		expect(fetchGroupInfo).toHaveBeenCalledTimes(2);
+			.mockRejectedValueOnce(conflict())
+			.mockImplementationOnce(async (_c, _g, body) => {
+				posted.push(body);
+				return { epoch: body.epoch ?? null, delivered_to: 1 };
+			});
+
+		const { epoch } = await externalJoinMlsGroup(
+			dir,
+			THIRD_ID,
+			GROUP_ID,
+			client,
+		);
+		expect(epoch).toBe(2);
 		expect(mlsCommit).toHaveBeenCalledTimes(2);
 	});
 
-	it("retries once on an epoch conflict, then surfaces a terminal error on a second conflict", async () => {
-		vi.mocked(fetchGroupInfo).mockResolvedValue({
-			group_info: Buffer.from(new Uint8Array([1, 2])).toString("base64"),
-			epoch: 1,
-		});
-		vi.mocked(mlsCommit).mockRejectedValue(
-			new RineApiError(409, "MLS epoch conflict", undefined, "epoch_conflict"),
-		);
-		const client = makeMockClient();
+	it("surfaces a terminal error on a second epoch conflict rather than looping", async () => {
+		vi.mocked(mlsCommit).mockRejectedValue(conflict());
 		await expect(
-			externalJoinMlsGroup(dir, SELF_ID, GROUP_ID, client as never),
+			externalJoinMlsGroup(dir, THIRD_ID, GROUP_ID, client),
 		).rejects.toThrow("after one retry");
-		expect(fetchGroupInfo).toHaveBeenCalledTimes(2);
+		expect(mlsCommit).toHaveBeenCalledTimes(2);
 	});
 
-	it("H4: retries briefly on pending_confirmation, then joins once confirmed", async () => {
-		vi.mocked(fetchGroupInfo)
+	it("retries briefly while the GroupInfo is pending confirmation, then joins", async () => {
+		vi.mocked(mlsCommit)
 			.mockRejectedValueOnce(
-				new RineApiError(409, "pending", undefined, "pending_confirmation"),
+				new RineApiError(
+					409,
+					"awaiting ack",
+					undefined,
+					"pending_confirmation",
+				),
 			)
-			.mockResolvedValue({
-				group_info: Buffer.from(new Uint8Array([1, 2])).toString("base64"),
-				epoch: 1,
+			.mockImplementationOnce(async (_c, _g, body) => {
+				posted.push(body);
+				return { epoch: body.epoch ?? null, delivered_to: 1 };
 			});
-		vi.mocked(mlsCommit).mockResolvedValue({ epoch: 2, delivered_to: 1 });
-		const client = makeMockClient();
-		const result = await externalJoinMlsGroup(dir, SELF_ID, GROUP_ID, client as never);
-		expect(result.epoch).toBe(2);
-		// First attempt was pending → retried; pending_confirmation must NOT be
-		// treated as an epoch conflict (that single retry stays available).
-		expect(fetchGroupInfo).toHaveBeenCalledTimes(2);
+
+		const { epoch } = await externalJoinMlsGroup(
+			dir,
+			THIRD_ID,
+			GROUP_ID,
+			client,
+		);
+		expect(epoch).toBe(2);
 	});
 
-	it("does NOT retry on a non-conflict error (surfaces it immediately, no misleading wrapper)", async () => {
-		// fetchGroupInfo returns no group_info → attempt() throws a plain Error.
-		// This is not recoverable by retrying, so it must surface without a retry.
-		vi.mocked(fetchGroupInfo).mockResolvedValue({ group_info: null, epoch: null });
-		const client = makeMockClient();
+	it("gives up with an actionable error when confirmation never arrives", async () => {
+		vi.mocked(mlsCommit).mockRejectedValue(
+			new RineApiError(409, "awaiting ack", undefined, "pending_confirmation"),
+		);
 		await expect(
-			externalJoinMlsGroup(dir, SELF_ID, GROUP_ID, client as never),
-		).rejects.toThrow("no published GroupInfo");
-		// Exactly one attempt: GroupInfo fetched once, never retried.
-		expect(fetchGroupInfo).toHaveBeenCalledTimes(1);
-		expect(mlsCommit).not.toHaveBeenCalled();
+			externalJoinMlsGroup(dir, THIRD_ID, GROUP_ID, client),
+		).rejects.toThrow("still pending");
+	});
+
+	it("does not retry a non-conflict error, and does not wrap it misleadingly", async () => {
+		vi.mocked(mlsCommit).mockRejectedValue(
+			new RineApiError(403, "not a member", undefined, "forbidden"),
+		);
+		await expect(
+			externalJoinMlsGroup(dir, THIRD_ID, GROUP_ID, client),
+		).rejects.toThrow("not a member");
+		expect(mlsCommit).toHaveBeenCalledTimes(1);
 	});
 });

@@ -1,4 +1,4 @@
-// REQ-CLI-08/09 + REQ-SEC-15/16 (relay side) — the per-request relay adapter in
+// The per-request relay adapter in
 // rine-core `src/funnel/relay-adapter.ts`. Given the plaintext HTTP request that
 // the local TLS listener produced from one mux conn, the adapter:
 //   (a) HMAC-verifies the RAW body (X-Hub-Signature-256 "sha256=<hex>" OR the
@@ -6,7 +6,7 @@
 //       buffers (length-mismatch fails SAFELY, no timing leak);
 //   (b) on success: fetchRecipientKeys → encryptMessage (hpke-v1) → self-send
 //       POST /messages with type "rine.v1.webhook" + metadata["rine.hook_name"]
-//       (NO conversation_id — MessageCreate has no such field; D7);
+//       (NO conversation_id — MessageCreate has no such field);
 //   (c) on failure: drops the conn (verify_failed) — rine never saw cleartext.
 //
 // FROZEN-CONTRACT (a violation is a build defect):
@@ -14,7 +14,7 @@
 //    + POST /messages. encryption_version stays "hpke-v1" (or hpke-hybrid-v1) —
 //    NO new encryption_version, NO server-sealed-v1, NO server crypto. type is
 //    EXACTLY "rine.v1.webhook". The relay self-addresses (from==to==agentId), so
-//    the message verifies as the agent (D8 self-send exception, type-literal).
+//    the message verifies as the agent (self-send exception, type-literal).
 //  - No-body-log: the relay NEVER logs the raw body, the decrypted payload, the
 //    HMAC secret, or the signature value — only verify outcome + counters/IDs.
 //
@@ -72,9 +72,9 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-// ── REQ-CLI-08: HMAC verify → encrypt → self-send ───────────────────────────
+// ── HMAC verify → encrypt → self-send ───────────────────────────
 
-describe("relay adapter — verify success path (REQ-CLI-08)", () => {
+describe("relay adapter — verify success path", () => {
 	it("verifies X-Hub-Signature-256 over the raw body, then self-sends hpke-v1", async () => {
 		const deps = makeDeps();
 		await handleWebhookRequest(deps, {
@@ -116,7 +116,7 @@ describe("relay adapter — verify success path (REQ-CLI-08)", () => {
 		expect(deps.client.post).toHaveBeenCalledTimes(1);
 	});
 
-	it("addresses the agent itself (self-send) so it verifies as the agent (D8)", async () => {
+	it("addresses the agent itself (self-send) so it verifies as the agent", async () => {
 		const deps = makeDeps();
 		await handleWebhookRequest(deps, {
 			headers: { "x-hub-signature-256": sign(SECRET, SENTINEL_BODY) },
@@ -135,9 +135,9 @@ describe("relay adapter — verify success path (REQ-CLI-08)", () => {
 	});
 });
 
-// ── REQ-CLI-09: envelope metadata + type ────────────────────────────────────
+// ── Envelope metadata + type ────────────────────────────────────
 
-describe("relay adapter — message envelope metadata (REQ-CLI-09)", () => {
+describe("relay adapter — message envelope metadata", () => {
 	it("sets type=rine.v1.webhook and metadata[rine.hook_name]", async () => {
 		const deps = makeDeps();
 		await handleWebhookRequest(deps, {
@@ -151,7 +151,7 @@ describe("relay adapter — message envelope metadata (REQ-CLI-09)", () => {
 		);
 	});
 
-	it("does NOT carry a conversation_id (MessageCreate has no such field — F4/D7)", async () => {
+	it("does NOT carry a conversation_id (MessageCreate has no such field)", async () => {
 		const deps = makeDeps();
 		await handleWebhookRequest(deps, {
 			headers: { "x-hub-signature-256": sign(SECRET, SENTINEL_BODY) },
@@ -162,9 +162,9 @@ describe("relay adapter — message envelope metadata (REQ-CLI-09)", () => {
 	});
 });
 
-// ── REQ-CLI-08 failure paths: constant-time, drop, no post ──────────────────
+// ── Failure paths: constant-time, drop, no post ──────────────────
 
-describe("relay adapter — verify failure path (REQ-CLI-08)", () => {
+describe("relay adapter — verify failure path", () => {
 	it("drops the conn and does NOT post when the HMAC is wrong", async () => {
 		const deps = makeDeps();
 		const result = await handleWebhookRequest(deps, {
@@ -212,9 +212,9 @@ describe("relay adapter — verify failure path (REQ-CLI-08)", () => {
 	});
 });
 
-// ── T1: empty-secret fail-closed (forged HMAC("",body) must NOT verify) ──────
+// ── Empty-secret fail-closed (forged HMAC("",body) must NOT verify) ──────
 
-describe("relay adapter — empty-secret fail-closed (T1)", () => {
+describe("relay adapter — empty-secret fail-closed", () => {
 	it('rejects an attacker-forged sha256=HMAC("", body) when the secret is empty', async () => {
 		// The attacker controls the body AND signs it with the empty key — the same
 		// computation a fail-OPEN relay would do, so this must fail closed.
@@ -240,9 +240,9 @@ describe("relay adapter — empty-secret fail-closed (T1)", () => {
 	});
 });
 
-// ── T2: verified-sender, untrusted-content marker ────────────────────────────
+// ── Verified-sender, untrusted-content marker ────────────────────────────
 
-describe("relay adapter — content-trust marker (T2)", () => {
+describe("relay adapter — content-trust marker", () => {
 	it("marks the relayed message as untrusted-external content alongside the hook name", async () => {
 		const deps = makeDeps();
 		await handleWebhookRequest(deps, {
@@ -259,9 +259,9 @@ describe("relay adapter — content-trust marker (T2)", () => {
 	});
 });
 
-// ── REQ-SEC-15/16: no-body-log behavioral proof ─────────────────────────────
+// ── No-body-log behavioral proof ─────────────────────────────
 
-describe("relay adapter — no-body-log (REQ-SEC-15/16)", () => {
+describe("relay adapter — no-body-log", () => {
 	function captureAllLogs(): {
 		lines: string[];
 		lifecycle: Record<string, unknown>[];

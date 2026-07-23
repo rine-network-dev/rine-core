@@ -1,10 +1,10 @@
 /**
- * R-1 payee-settle orchestration — behaviour tests through the public interface.
+ * Payee-settle orchestration — behaviour tests through the public interface.
  * The payer stamps `extensions["rine.quoteMessageId"]`; the payee loads THAT one
  * quote by id, proves it is payee-issued + same-conversation, and reconciles
  * against it. Every forge/omit/cross-conversation path must fail closed
  * (`NO_QUOTE`); the operator `--expect` override must NOT inherit payer-controlled
- * `extra`/`maxTimeoutSeconds` (R-2); the result must carry the matched quote.
+ * `extra`/`maxTimeoutSeconds`; the result must carry the matched quote.
  *
  * `decryptMessage` (the payee self-seal read) is the only external mocked — the
  * quote plaintext it returns stands in for the real HPKE self-decrypt so these
@@ -137,11 +137,11 @@ async function expectRefused(
 	await expect(promise).rejects.toMatchObject({ name: "X402Error", code });
 }
 
-describe("resolvePayeeRequirement — R-1 ref binding", () => {
+describe("resolvePayeeRequirement — ref binding", () => {
 	it("test_ref_bind_happy_path_returns_matched_quote", async () => {
 		decryptYields([req()]);
 		// Overpayment rides the SIGNED authorization value; the echoed `accepted`
-		// still names the payee's 100000 tier exactly (#3/#4). The RETURNED match
+		// still names the payee's 100000 tier exactly. The RETURNED match
 		// amount is the payee-authored quote's, never the payer's signed value.
 		const resolved = await resolveWithRef({
 			payment: {
@@ -236,7 +236,7 @@ describe("resolvePayeeRequirement — R-1 ref binding", () => {
 	});
 });
 
-describe("buildExpectedRequirement / override — R-2", () => {
+describe("buildExpectedRequirement / override", () => {
 	it("test_override_extra_is_registry_derived_not_payer_inherited", async () => {
 		// The payer set a hostile `extra`/`maxTimeoutSeconds`; the operator override
 		// must ignore both and author the requirement entirely itself.

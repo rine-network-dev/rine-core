@@ -2,7 +2,7 @@
 // sibling of funnel/idempotency-store.ts (which stores only membership/expiry).
 // Used to cache per-agent key material (GET /agents/{id}/keys) on a persistent
 // client instance so a multi-agent host stops re-fetching the same keys on every
-// send and every inbound-verify (rate-limit-resilience REQ-TS-04, D-5).
+// send and every inbound-verify.
 //
 // Insertion-ordered `Map` gives both eviction policies cheaply:
 // - TTL: an entry whose stored expiry is in the past is treated as absent (and
