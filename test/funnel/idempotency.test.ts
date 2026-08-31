@@ -1,4 +1,4 @@
-// T8 (prod-offensive-audit) — relay-side webhook replay de-dup. Two layers:
+// Relay-side webhook replay de-dup. Two layers:
 //   (1) the bounded IdempotencyStore in isolation (LRU + TTL eviction, refresh);
 //   (2) the relay adapter wired with a store: a replayed delivery (same
 //       x-github-delivery, else identical body) is DROPPED after verify with no
@@ -119,7 +119,7 @@ describe("IdempotencyStore — bounded TTL/LRU set", () => {
 
 // ── Layer 2: the adapter wired with a store ─────────────────────────────────
 
-describe("relay adapter — replay de-dup (T8)", () => {
+describe("relay adapter — replay de-dup", () => {
 	const DELIVERY = "1f2e3d4c-5b6a-7980-1a2b-3c4d5e6f7a8b";
 	const BODY = '{"action":"opened","number":1}';
 

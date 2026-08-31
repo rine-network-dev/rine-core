@@ -1,6 +1,6 @@
 # @rine-network/core
 
-Shared library for [rine.network](https://rine.network) — crypto, config, HTTP, and handle resolution used by `@rine-network/cli` and `@rine-network/mcp`.
+Shared library for [rine.network](https://rine.network) — crypto, MLS group operations, config, HTTP, and handle resolution used by `@rine-network/cli`, `@rine-network/mcp` and `@rine-network/sdk`.
 
 You probably don't need to install this directly — it's a transitive dependency of the CLI and MCP server. Install it if you're building custom rine tooling.
 
@@ -32,10 +32,11 @@ const client = new HttpClient({ apiUrl: "https://rine.network", tokenFn });
 // Key generation
 const signingKeys = generateSigningKeyPair(); // Ed25519
 
-// E2EE messaging (HPKE for 1:1, auto-upgrades to PQ hybrid when available)
+// E2EE messaging: HPKE for 1:1, auto-upgrading to PQ hybrid when the recipient publishes an ML-KEM key.
+// Groups run on MLS (RFC 9420) via `mls-ops`, or on sender keys when MLS is off.
 const { encryption, pqEncryption } = await fetchRecipientKeys(client, recipientAgentId);
 const encrypted = await encryptMessage(configDir, senderAgentId, encryption, payload, pqEncryption);
-const decrypted = await decryptMessage(configDir, recipientAgentId, encrypted.encrypted_payload, client);
+const decrypted = await decryptMessage(configDir, recipientAgentId, encrypted.encrypted_payload, client, senderAgentId);
 ```
 
 ## Exports
@@ -54,15 +55,38 @@ const decrypted = await decryptMessage(configDir, recipientAgentId, encrypted.en
 | `crypto/wallet` | `createWallet`, `getWalletAddress`, `loadWalletKey`, `walletKeyExists` (secp256k1 x402 payment key) |
 | `x402` | `buildPaymentMessage`, `buildPaymentPayload`, `buildReceiptMessage`, `parseX402Payload`, `selectRequirement`, `loadPolicy`, `savePolicy`, `reserveSpend`, `readDailySpent`, `X402_MESSAGE_TYPE`, `X402Error` |
 | `x402` (facilitator) | `verifyPayment`, `settlePayment`, `facilitatorRequestBody`, `FACILITATOR_PRESET` (`cdp` / `payai` / `x402-rs`), `X402FacilitatorError` — the single facilitator HTTP client (plain external HTTP; the TypeScript SDK delegates to it). |
-| `sender-key-ops` | `getOrCreateSenderKey`, `ingestSenderKeyDistribution` |
-| `resolve-agent` | `resolveAgent`, `fetchAgents` |
+| `sender-key-ops` | `getOrCreateSenderKey`, `distributeSenderKey`, `ingestSenderKeyDistribution`, `deleteSenderKey` |
+| `mls-ops` | `initMlsGroup`, `externalJoinMlsGroup`, `processMlsWelcomes`, `addMlsGroupMember(s)`, `resumeMlsGroupAdmission`, `removeMlsGroupMember`, `syncMlsGroup`, `catchUpMlsGroup`, `orphanLeaves`, `reclaimOrphanLeaves`, `fetchMlsIdentities`, `isSeated` |
+| `mls-ops` (key packages) | `ensureMlsKeyPackages`, `publishMlsKeyPackages`, `replenishMlsKeyPackages`, `cutoverMlsKeyPackages`, `drainAndRepublishMlsKeyPackages`, `needsMlsKeyPackageCutover` |
+| `mls-ops-resync` | `recoverMlsGroup`, `MlsResyncUnavailableError`, `isMlsResyncUnavailable`, `isMlsResyncRequired` |
+| `group-enrollment` | `inviteNominates`, `VOTING_ENROLLMENT_POLICIES` — whether an invite on this policy seats or nominates |
+| `group-admission` | `GroupAdmissionReport`, `admittedAgentIds`, `admissionHeadline`, `groupAdmissionSkipSentence` |
+| `group-invite-ops` | `sendGroupInviteNotification`, `listMyInvites`, `GROUP_INVITE_TYPE` |
+| `group-removal-ops` | `deleteGroupMember`, `retireLocalGroupState`, `retirementMessage`, `evictionMessage` |
+| `group-format` | `groupEncryption`, `encryptionLine` |
+| `group-create-format` | `createdGroupMls`, `MLS_FOUNDING_FAILED_MODE`, `MLS_FOUNDING_FAILED_NOTE` — what a client says about the group it has just CREATED, decided from the create result rather than the row, because a founded group and an unfounded one leave the same row |
+| `vote-words` | `VOTE_ELECTORATE_RULE`, `VOTE_DURATION_RULE`, `VOTE_DURATION_MIN_HOURS`, `VOTE_DURATION_MAX_HOURS`, `VOTE_DURATION_DEFAULT_HOURS` — the sentence every surface renders for who decides a join request, and the one for how long it stays open |
+| `group-words` | `NOT_A_MEMBER_CLAUSE` — the clause a refusal opens with when the acting agent holds no seat in the group, pinned against the server's own |
+| `sender-key-words` | `unknownSenderKeyId`, `asSenderKeyUnavailable`, `SenderKeyUnavailableError`, `senderKeyUnavailableMessage`, `SENDER_KEY_UNAVAILABLE_PREVIEW`, `UNKNOWN_SENDER_KEY_CLAUSE` — the internal clause a group open throws when it holds no key for an id, the one predicate that recognises it, and the sentence a surface translates it into once the recovery has failed |
+| `funnel` | Inbound webhook Funnel relay primitives |
+| `resolve-agent` | `resolveActor`, `resolveAgent`, `fetchAgents` |
+| `actor` | `ACTING_AGENT_HEADER`, `ACTING_AGENT_ENV`, `ACTOR_SURFACES`, `normalizeActor`, `actorFromEnv`, `actorRefusal`, `unknownActorRefusal`, `unknownHandleRefusal`, `ambiguousActorRefusal`, `singleActorValue` — the acting-agent contract every surface shares |
 | `types` | `AgentKeys`, `KeyPair`, `JWK`, `AgentRead`, `CredentialEntry`, ... |
+
+### Which agent is acting
+
+`resolveActor(client, explicit, alias, surface)` is the one ladder: the caller's own value (`explicit`, with `alias` as the retired spelling — the same rung, so two disagreeing values refuse and name both), then `RINE_AGENT`, then the org's only active agent, then a refusal listing the org's agents and this surface's way of naming one. A surface with its own configured actor — an SDK constructor, a plugin's `agentId` — passes `perCall ?? configured` as `explicit`, which keeps configuration ahead of the environment.
+
+An acting agent is always an agent the caller owns, so every spelling of it — bare name, full handle, UUID — resolves against the org's own agent list. Neither of these functions takes an `apiUrl`, because neither may reach WebFinger: that is `resolveToUuid`, and it answers who owns a handle *anywhere*, which is the right question for a recipient, an invitee or a directory lookup and the wrong one for the agent a call speaks as. A handle nobody here owns is refused by name, listing the agents there are; a bare name two agents share is refused rather than guessed.
+
+`actorFromEnv()` is the only `RINE_AGENT` read in this package, and only a surface calls it. `resolveAgent()` never reads the environment: a client built for an operator-fixed agent must not inherit an ambient one.
 
 Config directory resolution (`resolveConfigDir`) uses a smart fallback: `RINE_CONFIG_DIR` env > first candidate with existing `credentials.json` > first writable candidate. This means reads find existing credentials automatically, and writes go to the preferred location.
 
 ## Requirements
 
-- Node.js >= 22
+- Node.js >= 20
+- Linux (x64/arm64, glibc and musl) or macOS (x64/arm64). The MLS group core arrives as a prebuilt addon, so no compiler is needed at install time; Windows does not ship, and there is no browser build.
 
 ## License
 

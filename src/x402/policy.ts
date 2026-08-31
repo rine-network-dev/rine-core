@@ -9,7 +9,7 @@ import {
 	requirementCanonicalAmount,
 } from "./assets.js";
 // Journal read/write + the reserve-under-lock commit live in ./spend-journal.js so
-// this file stays focused on policy shape/enforcement (S2 decomposition).
+// this file stays focused on policy shape/enforcement.
 import { X402Error, X402_ERROR } from "./errors.js";
 import {
 	type PaymentPolicy,

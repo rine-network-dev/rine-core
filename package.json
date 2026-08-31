@@ -1,6 +1,6 @@
 {
   "name": "@rine-network/core",
-  "version": "0.12.0",
+  "version": "0.14.0",
   "description": "Core library for rine.network \u2014 crypto, HTTP, config, agent resolution",
   "author": "mmmbs <mmmbs@proton.me>",
   "license": "EUPL-1.2",
@@ -30,7 +30,8 @@
     "@noble/curves": "^2.0.1",
     "@noble/hashes": "^2.0.1",
     "@noble/post-quantum": "^0.6.1",
-    "@rine-network/mls": "^0.1.0",
+    "@rine-network/mls": "^0.1.1",
+    "@scure/bip39": "^2.2.0",
     "acme-client": "^5.4.0"
   },
   "devDependencies": {

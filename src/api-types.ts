@@ -13,6 +13,42 @@ export interface GroupRead {
 	mls_group_id?: string | null;
 	mls_pending?: boolean;
 	mls_cipher_suite?: number | null;
+	// The group's running conversation — the id `rine thread` takes. A group's
+	// thread is created lazily on its first post, so `null` is a fact —
+	// "nothing has been said in this group yet" — and never an error, never a
+	// missing feature, never "you may not read it". Render it as that sentence.
+	//
+	// Required rather than optional (unlike the `mls_*` fields above) because
+	// the server emits the key on all four `GroupRead` routes even when the
+	// value is null, and the SDK's zod mirror defaults it to `null`, so every
+	// surface reads the same `string | null`. It is a POINTER, not an
+	// authorisation: every read of the conversation it names is re-gated on
+	// LIVE group membership at the moment of the read.
+	conversation_id: string | null;
+	// Which of the CALLER'S OWN agents hold a seat in this group — the question
+	// `member_count` never answered. An org-scoped list is not proof that the
+	// agent doing the asking may post: the group row said how many members the
+	// group has, and nothing at all about whether any of them was yours.
+	//
+	// An empty array is a FACT, not an absence: no agent of this org is seated,
+	// so a send would be refused and the remedy is an invitation rather than a
+	// different header. Render it as that sentence, never as a blank.
+	//
+	// The values are agent UUIDs and are directly actionable — `X-Rine-Agent`
+	// accepts an agent's UUID as readily as its handle, so an id from here can
+	// be pasted into the header that makes the next call work.
+	//
+	// Purely additive, and it narrows nothing: `member_count` is still the whole
+	// roster, `GET /groups` still lists every group the org may see, and the
+	// list names no agent outside the caller's own org.
+	//
+	// Optional, unlike `conversation_id` above: this field is newer than the
+	// oldest server a current client can be pointed at, and the release order
+	// (server first, clients after) makes "new client, old server" a real state
+	// for the length of the hold. `undefined` therefore means "this deployment
+	// does not report it", which is not the same fact as `[]`, and the `??`
+	// guards on the rendering surfaces are live code rather than dead defence.
+	member_agent_ids?: string[];
 }
 
 export interface GroupMemberRead {
@@ -22,6 +58,18 @@ export interface GroupMemberRead {
 	role: string;
 	joined_at: string;
 	agent_handle?: string;
+	// Whether this roster row is one of the caller's own org's agents.
+	//
+	// A MARKER, never a filter. `GET /groups/{id}/members` still returns every
+	// member of the group and `total` is still the whole roster, so a surface
+	// that hid the rows where this is false would answer a question nobody
+	// asked and would hide the co-members a group send actually reaches.
+	//
+	// Optional for the reason `member_agent_ids` is: a server that predates the
+	// field omits the key, and `undefined` ("this build cannot tell you") is a
+	// different fact from `false` ("not one of yours") — which is exactly the
+	// distinction `memberRow` renders as an em dash.
+	is_own_org?: boolean;
 }
 
 export interface JoinRequestRead {
@@ -35,6 +83,30 @@ export interface JoinRequestRead {
 	created_at: string;
 	resolved_at?: string;
 	your_vote?: string;
+	// Where the vote stands. A request is decided by the members the group had
+	// when it was filed and only by those still in it, so `electorate_size` is
+	// the denominator BOTH bars come from — approvals and denials alike — and
+	// `quorum_total_members` is reporting only. `VOTE_ELECTORATE_RULE`
+	// (`./vote-words.js`) states that rule in the one sentence every surface
+	// renders. `you_may_vote_reason` predicts what the vote route would answer:
+	// `not_in_electorate`, `electorate_empty`, `bar_unreachable` and
+	// `is_applicant` are 403s, `already_voted` a 409, `not_pending` a 422. All
+	// null on an invitation, which nobody votes on; a server that predates the
+	// electorate sends none of them.
+	quorum_total_members?: number | null;
+	electorate_size?: number | null;
+	approvals?: number | null;
+	denials?: number | null;
+	approvals_needed?: number | null;
+	// How many more denials would refuse this request, netted against the ones
+	// cast. Null exactly when `approvals_needed` is — an invitation, a resolved
+	// row, or an electorate with nothing left in it — because the rule is "no
+	// bar is reachable", not "the number happens to be zero". Reported so a
+	// standing denial's weight is legible: it is measured against a shrinking
+	// electorate, so a departure can refuse a request nobody has voted on since.
+	denials_needed?: number | null;
+	you_may_vote?: boolean;
+	you_may_vote_reason?: string;
 	group_handle?: string;
 	group_name?: string;
 }
@@ -42,7 +114,13 @@ export interface JoinRequestRead {
 export interface AgentRead {
 	id: string;
 	name: string;
-	handle: string;
+	/**
+	 * The agent's handle, or `null` until its org has a slug — `POST /agents`
+	 * only mints one when it does. Nullable here so the compiler carries the
+	 * fact: a caller that prints `handle` unguarded names an agent by nothing
+	 * the wire accepts.
+	 */
+	handle: string | null;
 	human_oversight: boolean;
 	incoming_policy: string;
 	outgoing_policy: string;

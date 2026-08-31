@@ -1,5 +1,6 @@
 import { hmac } from "@noble/hashes/hmac.js";
 import { sha256 } from "@noble/hashes/sha2.js";
+import { UNKNOWN_SENDER_KEY_CLAUSE } from "../sender-key-words.js";
 import { encodeEnvelope } from "./envelope.js";
 import { fromBase64Url, toBase64Url } from "./keys.js";
 import { bytesToUuid, uuidToBytes } from "./sender-keys-helpers.js";
@@ -191,7 +192,11 @@ export async function openGroup(
 	const ciphertext = encryptedPayload.slice(offset);
 
 	const state = senderKeyStates.get(senderKeyId);
-	if (!state) throw new Error(`unknown sender key id: ${senderKeyId}`);
+	// The recovery paths read the id back off this message to know what to
+	// fetch, so the clause is the shared constant and not a literal — see
+	// `sender-key-words.ts`. What an operator is shown is composed there too,
+	// at the surface, once the recovery has run and failed.
+	if (!state) throw new Error(`${UNKNOWN_SENDER_KEY_CLAUSE}${senderKeyId}`);
 
 	let messageKey: Uint8Array;
 	let updatedState: SenderKeyState;

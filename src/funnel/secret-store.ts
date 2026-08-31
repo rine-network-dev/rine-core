@@ -12,7 +12,7 @@ import { join } from "node:path";
 /**
  * DNS-label-safe hook name (mirrors the backend HOOK_NAME_PATTERN): lowercase,
  * <=32 chars, no leading/trailing hyphen, and NO consecutive hyphens so the
- * shared-edge `--` separator stays unambiguous (SEC-2).
+ * shared-edge `--` separator stays unambiguous.
  */
 const HOOK_NAME_RE = /^[a-z0-9](-?[a-z0-9]){0,31}$/;
 

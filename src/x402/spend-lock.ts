@@ -1,9 +1,9 @@
-// Cross-process spend-journal lock (S2, S2_JOURNAL_DESIGN.md § Lock protocol).
-// Modelled on funnel/cert-lock.ts but with the S2 constants and — critically —
-// RENAME-STEAL rather than overwrite-in-place: at a 5 s TTL two processes can both
-// judge a lock stale and both overwrite it; rename() is atomic so exactly one wins
-// the steal. Held only across the tiny reserve critical section (read journal →
-// enforce policy → write journal), never across network I/O.
+// Cross-process spend-journal lock. Modelled on funnel/cert-lock.ts but with
+// this journal's own constants and — critically — RENAME-STEAL rather than
+// overwrite-in-place: at a 5 s TTL two processes can both judge a lock stale and
+// both overwrite it; rename() is atomic so exactly one wins the steal. Held only
+// across the tiny reserve critical section (read journal → enforce policy →
+// write journal), never across network I/O.
 //
 // Constants MUST match the Python mirror (rine-sdk) exactly — a lock written by one
 // language is read for staleness by the other, so both sides share this TTL/timeout.

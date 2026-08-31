@@ -55,12 +55,19 @@ function agent(agentId: string) {
 	return keys;
 }
 
-/** A client that answers the signing-key lookup `verifyEnvelopeSender` makes. */
+/**
+ * A client that answers the signing-key lookup `verifyEnvelopeSender` makes, and
+ * the sync/welcome reads the MLS recovery path makes with an empty bundle — so a
+ * decrypt that cannot be recovered surfaces its own MLS error rather than a
+ * stub-shaped one.
+ */
 function keyServer(signingPublicKey: Uint8Array) {
 	return {
-		get: vi.fn().mockResolvedValue({
-			signing_public_key: signingPublicKeyToJWK(signingPublicKey),
-		}),
+		get: vi.fn(async (path: string) =>
+			path.includes("/keys")
+				? { signing_public_key: signingPublicKeyToJWK(signingPublicKey) }
+				: { welcomes: [], handshakes: [] },
+		),
 		post: vi.fn(),
 	};
 }
@@ -107,7 +114,7 @@ describe("mlsGroupIdBytes", () => {
 	});
 });
 
-// ── client and epoch retention (SPEC DEC-8) ──────────────────────────────────
+// ── client and epoch retention ───────────────────────────────────────────────
 
 describe("openMlsClient", () => {
 	it("mints with the post-quantum default suite", () => {
@@ -302,6 +309,7 @@ describe("MLS group messages", () => {
 			GROUP_ID,
 			enc.encrypted_payload,
 			keyServer(creatorKeys.signing.publicKey) as never,
+			CREATOR_ID,
 		);
 		expect(JSON.parse(dec.plaintext)).toEqual({ hello: "world" });
 		expect(dec.verified).toBe(true);
@@ -320,9 +328,66 @@ describe("MLS group messages", () => {
 			GROUP_ID,
 			enc.encrypted_payload,
 			keyServer(creatorKeys.signing.publicKey) as never,
+			CREATOR_ID,
 		);
 		expect(JSON.parse(dec.plaintext)).toEqual({ mine: true });
 		expect(dec.senderKid).toBe(`rine:${CREATOR_ID}`);
+	});
+
+	it("refuses a message whose envelope names an agent other than the row's sender", async () => {
+		const creatorKeys = foundGroupWithJoiner();
+
+		const enc = await encryptMlsGroupMessage(tmpDir, CREATOR_ID, GROUP_ID, {
+			hello: "world",
+		});
+
+		// The envelope is genuinely the creator's, but the server authenticated the
+		// joiner as the sender of this row.
+		await expect(
+			decryptGroupMessage(
+				tmpDir,
+				JOINER_ID,
+				GROUP_ID,
+				enc.encrypted_payload,
+				keyServer(creatorKeys.signing.publicKey) as never,
+				JOINER_ID,
+			),
+		).rejects.toThrow("Envelope sender does not match the message sender");
+
+		// The refusal lands after the ratchet is saved, so the message has already
+		// spent its key: replaying it — even attributed correctly this time — finds
+		// that generation gone. A refused message costs its sender exactly what an
+		// accepted one does, so retrying it tells an attacker nothing.
+		await expect(
+			decryptGroupMessage(
+				tmpDir,
+				JOINER_ID,
+				GROUP_ID,
+				enc.encrypted_payload,
+				keyServer(creatorKeys.signing.publicKey) as never,
+				CREATOR_ID,
+			),
+		).rejects.toThrow(/key not available/);
+	});
+
+	it("accepts the same message when the row's sender is the envelope's signer", async () => {
+		const creatorKeys = foundGroupWithJoiner();
+
+		const enc = await encryptMlsGroupMessage(tmpDir, CREATOR_ID, GROUP_ID, {
+			hello: "world",
+		});
+
+		const dec = await decryptGroupMessage(
+			tmpDir,
+			JOINER_ID,
+			GROUP_ID,
+			enc.encrypted_payload,
+			keyServer(creatorKeys.signing.publicKey) as never,
+			CREATOR_ID.toUpperCase(),
+		);
+
+		expect(JSON.parse(dec.plaintext)).toEqual({ hello: "world" });
+		expect(dec.verified).toBe(true);
 	});
 
 	it("refuses to encrypt for a group this agent has no state for", async () => {
@@ -351,6 +416,7 @@ describe("MLS group messages", () => {
 				GROUP_ID,
 				payload,
 				client as never,
+				CREATOR_ID,
 			),
 		).rejects.toThrow("Cannot self-join MLS group");
 	});

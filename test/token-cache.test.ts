@@ -4,7 +4,6 @@
  * These tests verify that getOrRefreshToken returns the freshly-fetched token
  * even when the token cache cannot be persisted (e.g. read-only / foreign-owned
  * token_cache.json on the user's laptop).
- * See: phases/cc-plugin-token-storm-fix/SPEC.md — token-storm diagnosis.
  */
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";

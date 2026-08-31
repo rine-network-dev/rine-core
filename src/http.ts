@@ -1,9 +1,8 @@
 import type { AgentKeysResponse } from "./api-types.js";
-import type { TtlCache } from "./cache.js";
-import { RineApiError } from "./errors.js";
+import { TtlCache } from "./cache.js";
+import { rineErrorFromResponse } from "./errors.js";
 import { sleep } from "./funnel/propagation.js";
 import { MAX_RETRY_WAIT_MS, retryAfterMsFromResponse } from "./retry.js";
-import type { ApiError } from "./types.js";
 
 // The token helpers moved to token.ts to keep this file under the size cap; they
 // stay reachable from "./http.js" for back-compat with existing import sites.
@@ -26,35 +25,13 @@ export interface HttpClientOptions {
 	 */
 	signal?: AbortSignal;
 	/**
-	 * Optional per-agent key cache (GET /agents/{id}/keys) shared by
-	 * fetchRecipientKeys and verifyEnvelopeSender. Attach it to a PERSISTENT client
-	 * (or, in the SDK, to a single instance threaded into every short-lived core
-	 * client) so a multi-agent host stops re-fetching the same keys on every send
-	 * and inbound-verify. Absent ⇒ no caching.
+	 * Per-agent key cache (GET /agents/{id}/keys) read by the inbound-verify path.
+	 * Every client builds its own, which is what a persistent client wants. Pass
+	 * one to share a single cache across several clients instead — the SDK does
+	 * that, because it spawns a short-lived core client per crypto operation and a
+	 * per-instance cache would never see a second read.
 	 */
 	keyCache?: TtlCache<AgentKeysResponse>;
-}
-
-/**
- * Parse an error response body ONCE, extracting both the human-readable detail
- * and the structured error code. The server sends {"error": "<code>", "detail":
- * "..."} for typed errors (e.g. epoch_conflict); callers use `code` to branch.
- */
-async function parseError(
-	res: Response,
-): Promise<{ detail: string; code?: string }> {
-	try {
-		const body = (await res.json()) as ApiError;
-		const code = typeof body.error === "string" ? body.error : undefined;
-		if (typeof body.detail === "string") return { detail: body.detail, code };
-		if (Array.isArray(body.detail)) {
-			return { detail: body.detail.map((e) => e.msg).join("; "), code };
-		}
-		return { detail: res.statusText, code };
-	} catch {
-		// ignore parse failures
-	}
-	return { detail: res.statusText };
 }
 
 export class HttpClient {
@@ -63,8 +40,8 @@ export class HttpClient {
 	private readonly canRefresh: boolean;
 	private readonly defaultHeaders: Record<string, string>;
 	private readonly defaultSignal: AbortSignal | undefined;
-	/** Shared per-agent key cache; see {@link HttpClientOptions.keyCache}. */
-	readonly keyCache: TtlCache<AgentKeysResponse> | undefined;
+	/** Per-agent key cache; see {@link HttpClientOptions.keyCache}. */
+	readonly keyCache: TtlCache<AgentKeysResponse>;
 
 	constructor(opts: HttpClientOptions) {
 		this.baseUrl = opts.apiUrl;
@@ -72,7 +49,7 @@ export class HttpClient {
 		this.canRefresh = opts.canRefresh ?? true;
 		this.defaultHeaders = opts.defaultHeaders ?? {};
 		this.defaultSignal = opts.signal;
-		this.keyCache = opts.keyCache;
+		this.keyCache = opts.keyCache ?? new TtlCache();
 	}
 
 	private async request(
@@ -115,15 +92,21 @@ export class HttpClient {
 		}
 		// Single 429 retry honoring Retry-After (capped), mirroring the Python SDK's
 		// normal-call behavior. Read the header off `res` — never the
-		// body — so the retried response is the one parseError consumes on failure.
+		// body — so the retried response is the one whose body becomes the error.
+		//
+		// A wait this client is not going to honour is not a wait worth taking:
+		// the hour-window limiters (the public directory, group admission)
+		// answer `Retry-After` in the thousands of seconds, so sleeping the
+		// 30 s cap and retrying is a guaranteed second 429 — the operator just
+		// waits half a minute for it. Report the first one instead.
 		if (res.status === 429) {
-			await sleep(Math.min(retryAfterMsFromResponse(res), MAX_RETRY_WAIT_MS));
-			res = await doFetch();
+			const waitMs = retryAfterMsFromResponse(res);
+			if (waitMs <= MAX_RETRY_WAIT_MS) {
+				await sleep(waitMs);
+				res = await doFetch();
+			}
 		}
-		if (!res.ok) {
-			const { detail, code } = await parseError(res);
-			throw new RineApiError(res.status, detail, res, code);
-		}
+		if (!res.ok) throw await rineErrorFromResponse(res);
 		if (res.status === 204) return undefined;
 		return res.json();
 	}
@@ -160,11 +143,19 @@ export class HttpClient {
 		return this.request("PATCH", path, body, undefined, extraHeaders);
 	}
 
+	/**
+	 * `params` exists so a DELETE that carries a query parameter can still be
+	 * written as one path literal. `mls_removal_epoch` is the caller
+	 * (`deleteGroupMember`): spliced into the path string it becomes a literal no
+	 * route matches, which is invisible to a reader and to the client⇄server
+	 * contract test that extracts these paths.
+	 */
 	delete(
 		path: string,
 		extraHeaders?: Record<string, string>,
+		params?: Record<string, string | number | boolean>,
 	): Promise<unknown> {
-		return this.request("DELETE", path, undefined, undefined, extraHeaders);
+		return this.request("DELETE", path, undefined, params, extraHeaders);
 	}
 
 	async markDelivered(
@@ -188,10 +179,7 @@ export class HttpClient {
 		const qs = params?.toString();
 		const url = qs ? `${apiUrl}${path}?${qs}` : `${apiUrl}${path}`;
 		const res = await fetch(url, { headers: { Accept: "application/json" } });
-		if (!res.ok) {
-			const { detail, code } = await parseError(res);
-			throw new RineApiError(res.status, detail, res, code);
-		}
+		if (!res.ok) throw await rineErrorFromResponse(res);
 		return res.json();
 	}
 }

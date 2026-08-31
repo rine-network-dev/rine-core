@@ -9,8 +9,9 @@
  * every payee surface, keeping `reconcile.ts` pure.
  */
 
+import { ACTING_AGENT_HEADER } from "../actor.js";
 import type { MessageRead } from "../api-types.js";
-import { decryptMessage } from "../crypto/message.js";
+import { decryptMessage, isRefusedDecrypt } from "../crypto/message.js";
 import type { HttpClient } from "../http.js";
 import { X402Error, X402_ERROR } from "./errors.js";
 import { X402_MESSAGE_TYPE } from "./message-types.js";
@@ -55,7 +56,7 @@ export async function loadReferencedQuote(params: {
 	let quoteMsg: MessageRead;
 	try {
 		quoteMsg = (await client.get(`/messages/${ref}`, {}, {
-			"X-Rine-Agent": payeeAgentId,
+			[ACTING_AGENT_HEADER]: payeeAgentId,
 		})) as MessageRead;
 	} catch (err) {
 		throw new X402Error(
@@ -83,8 +84,16 @@ export async function loadReferencedQuote(params: {
 	}
 	let plaintext: string;
 	try {
-		const decrypted = await decryptMessage(configDir, payeeAgentId, sealed, client);
-		if (decrypted.verificationStatus === "invalid") {
+		// The guard above proved `from_agent_id == payeeAgentId`, so the payee's own
+		// id IS this row's server-authenticated sender.
+		const decrypted = await decryptMessage(
+			configDir,
+			payeeAgentId,
+			sealed,
+			client,
+			payeeAgentId,
+		);
+		if (isRefusedDecrypt(decrypted)) {
 			throw new X402Error(
 				X402_ERROR.NO_QUOTE,
 				`Referenced quote ${ref} failed sender-signature verification — refusing to settle`,

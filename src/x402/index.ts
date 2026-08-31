@@ -11,6 +11,7 @@ export * from "./thread-state.js";
 export * from "./facilitator.js";
 export * from "./facilitator-resolve.js";
 export * from "./reconcile.js";
+export * from "./sender-guard.js";
 export * from "./quote-ref.js";
 export * from "./payee-settle.js";
 export * from "./payee-receipt.js";

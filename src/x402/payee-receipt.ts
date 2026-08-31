@@ -9,6 +9,7 @@
  * specific client), so hosting them here drags no surface coupling into core.
  */
 
+import { ACTING_AGENT_HEADER } from "../actor.js";
 import type { MessageRead } from "../api-types.js";
 import { fetchRecipientKeys } from "../crypto/agent-keys.js";
 import { encryptMessage } from "../crypto/message.js";
@@ -78,6 +79,6 @@ export async function sendReceipt(params: {
 	return (await params.client.post(
 		`/messages/${params.messageId}/reply`,
 		body,
-		{ "X-Rine-Agent": params.payeeAgentId },
+		{ [ACTING_AGENT_HEADER]: params.payeeAgentId },
 	)) as MessageRead;
 }

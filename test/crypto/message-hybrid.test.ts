@@ -189,8 +189,9 @@ describe("encryptMessage auto-negotiation", () => {
 			RECIPIENT_ID,
 			encrypted.encrypted_payload,
 			client as never,
+			SENDER_ID,
 		);
-		expect(JSON.parse(result.plaintext)).toEqual(payload);
+		expect(JSON.parse(result.plaintext as string)).toEqual(payload);
 		expect(result.verified).toBe(true);
 	});
 
@@ -210,8 +211,9 @@ describe("encryptMessage auto-negotiation", () => {
 			RECIPIENT_ID,
 			encrypted.encrypted_payload,
 			client as never,
+			SENDER_ID,
 		);
-		expect(JSON.parse(result.plaintext)).toEqual(payload);
+		expect(JSON.parse(result.plaintext as string)).toEqual(payload);
 	});
 
 	it("treats an empty PQ key as classical (no false hybrid)", async () => {
@@ -286,8 +288,9 @@ describe("self-seal negotiation (independent of recipient)", () => {
 			SENDER_ID,
 			encrypted.self_encrypted_payload as string,
 			client as never,
+			SENDER_ID,
 		);
-		expect(JSON.parse(result.plaintext)).toEqual({ msg: "asymmetric" });
+		expect(JSON.parse(result.plaintext as string)).toEqual({ msg: "asymmetric" });
 		expect(result.verified).toBe(true);
 	});
 
@@ -308,8 +311,9 @@ describe("self-seal negotiation (independent of recipient)", () => {
 			SENDER_ID,
 			encrypted.self_encrypted_payload as string,
 			client as never,
+			SENDER_ID,
 		);
-		expect(JSON.parse(result.plaintext)).toEqual(payload);
+		expect(JSON.parse(result.plaintext as string)).toEqual(payload);
 		expect(result.verified).toBe(true);
 		expect(result.verificationStatus).toBe("verified");
 	});
@@ -348,6 +352,7 @@ describe("decryptMessage version dispatch", () => {
 				RECIPIENT_ID,
 				encrypted.encrypted_payload,
 				client as never,
+				SENDER_ID,
 			),
 		).rejects.toThrow("no PQ encryption key");
 	});

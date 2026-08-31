@@ -1,13 +1,64 @@
-import type { CommitBundle, MlsGroup } from "@rine-network/mls";
-import { claimKeyPackages, mlsFromBase64, mlsInit } from "./crypto/mls-api.js";
-import { mlsGroupIdBytes, openMlsClient, openMlsGroup } from "./crypto/mls.js";
 import type { HttpClient } from "./http.js";
-import { type Joiner, postMlsCommit } from "./mls-commit.js";
-import { replenishMlsKeyPackages } from "./mls-keypackages.js";
+import { addMlsGroupMembers } from "./mls-ops-admit.js";
 
 export { syncMlsGroup } from "./mls-ops-sync.js";
 export type { MlsSyncResult } from "./mls-ops-sync.js";
+// The eager catch-up an ordinary successful group read now runs. Separate from
+// `syncMlsGroup` because it is rate-limited and never throws: it exists so that
+// ordinary use keeps a member's epoch current, not so a caller can ask a
+// question and get an answer — that is what the explicit sync verb is for.
+export {
+	catchUpMlsGroup,
+	resetMlsCatchUpGate,
+	MLS_CATCHUP_MIN_INTERVAL_MS,
+} from "./mls-catchup.js";
 export { externalJoinMlsGroup, processMlsWelcomes } from "./mls-ops-join.js";
+// The group-substitution guard the Welcome path runs. Exported beside the join
+// verb so that a surface installing Welcomes can recognise a refusal without
+// matching on message text.
+//
+// 🔴 **No surface does yet.** Nothing outside this package imports any of the
+// three (checked repo-wide over `rine-cli`, `rine-ts-sdk`, `rine-mcp`,
+// `rine-openclaw`, `rine-mastra`, `rine-eve`), so today a refusal reaches an
+// operator unclassified: `rine-ts-sdk/src/resources/decrypt.ts` catches it in
+// the generic retry handler and reports it as a decrypt error on whichever
+// message triggered recovery — which need not be a message for the refused
+// group at all. This comment states an available capability, NOT a shipped one;
+// do not read it as "surfaces classify refusals".
+export {
+	MlsWelcomeRefusedError,
+	WELCOME_REFUSED_CODE,
+	isMlsWelcomeRefusedError,
+} from "./mls-welcome-guard.js";
+export type { WelcomeRefusalReason } from "./mls-welcome-guard.js";
+export {
+	addMlsGroupMembers,
+	initMlsGroup,
+	resumeMlsGroupAdmission,
+} from "./mls-ops-admit.js";
+export type {
+	MlsAdmissionOutcome,
+	MlsAdmissionResult,
+	MlsAdmissionSkipReason,
+	MlsReclamationDecline,
+	MlsReclamationDeclineReason,
+	MlsReclamationResult,
+} from "./mls-admission.js";
+// Leaf reclamation. The pass lives in its own module because it is a
+// removal loop rather than an admission, and because this file is at the
+// file-size ceiling; the surface belongs here, beside the other MLS verbs.
+export { orphanLeaves, reclaimOrphanLeaves } from "./mls-orphans.js";
+export type { OrphanLeaf } from "./mls-orphans.js";
+// Removal, in its own module for the same reason: it is a
+// commit that must DECLARE its target, plus the path-only rescue for a target
+// whose leaf is already gone, and neither belongs in an index of verbs.
+export { removeMlsGroupMember } from "./mls-ops-removal.js";
+export type { MlsRemovalCommit } from "./mls-ops-removal.js";
+// The tree readers surfaces need to answer "which key is this agent's?" and
+// "is that key seated?". Unexported, they were copied — a single-id `GET
+// /agents/keys` grew a second and a third home in the CLI and the TS SDK, each
+// unchunked and each with its own idea of how the map is keyed.
+export { fetchMlsIdentities, isSeated } from "./mls-admission-tree.js";
 export {
 	ensureMlsKeyPackages,
 	publishMlsKeyPackages,
@@ -25,100 +76,16 @@ export {
 export type { MlsCutoverResult } from "./mls-cutover.js";
 
 /**
- * Founding members admitted per commit.
+ * Add a single member to an existing MLS group.
  *
- * The native core admits every founding member in a single commit, so this is
- * not about epochs — it is about the request body. One `POST /mls/commit`
- * carries the commit plus one Welcome per member, and neither the server nor
- * the proxy in front of it declares a body limit. Measured on the post-quantum
- * suite, a 17-member founding commit is ~57 kB base64 with a ~33 kB Welcome
- * each, so the body grows roughly with the square of the batch. 16 keeps a
- * founding POST under ~600 kB; a larger group is founded across several commits
- * rather than in one body nobody has sized.
- */
-const MLS_FOUNDING_MEMBERS_PER_COMMIT = 16;
-
-function commitBatches(joiners: Joiner[]): Joiner[][] {
-	if (joiners.length === 0) return [[]];
-	const batches: Joiner[][] = [];
-	for (let i = 0; i < joiners.length; i += MLS_FOUNDING_MEMBERS_PER_COMMIT) {
-		batches.push(joiners.slice(i, i + MLS_FOUNDING_MEMBERS_PER_COMMIT));
-	}
-	return batches;
-}
-
-/**
- * Initialize an MLS group: create the group with every member who has published
- * a key package admitted in the founding commit, and post that commit plus its
- * welcomes to the server.
+ * One member is one batch, so this is {@link addMlsGroupMembers} over a list of
+ * one, kept as its own verb because three shipped surfaces call it that way.
+ * The plural form reports why a member was skipped; this one raises, because
+ * that is what a caller naming a single agent expects and what it already did.
  *
- * Local state is saved only after the server accepts a commit, so a rejected
- * commit leaves no forked state behind.
- */
-export async function initMlsGroup(
-	configDir: string,
-	agentId: string,
-	groupId: string,
-	client: HttpClient,
-	extraHeaders?: Record<string, string>,
-): Promise<{ epoch: number; membersAdded: number }> {
-	// Every MLS operation doubles as the heartbeat that keeps this agent's own
-	// key package inventory above its low-water mark, so the agent never becomes
-	// un-addable to a future group.
-	await replenishMlsKeyPackages(configDir, agentId, client);
-	const initResp = await mlsInit(client, groupId, extraHeaders);
-
-	const agentIdLower = agentId.toLowerCase();
-	const joiners: Joiner[] = [];
-	for (const member of initResp.members) {
-		if (!member.has_key_package) continue;
-		if (member.agent_id.toLowerCase() === agentIdLower) continue;
-		const claimed = await claimKeyPackages(client, member.agent_id);
-		const first = claimed.packages[0];
-		if (!first) continue;
-		joiners.push({
-			agentId: member.agent_id,
-			keyPackage: mlsFromBase64(first),
-		});
-	}
-
-	const mls = openMlsClient(configDir, agentId);
-	let group: MlsGroup | null = null;
-	let epoch = 0;
-	let membersAdded = 0;
-	for (const batch of commitBatches(joiners)) {
-		const keyPackages = batch.map((j) => j.keyPackage);
-		let bundle: CommitBundle;
-		if (group === null) {
-			group = mls.createGroupWithMembers(mlsGroupIdBytes(groupId), keyPackages);
-			const init = group.lastCommit();
-			if (!init) {
-				throw new Error(
-					`MLS group ${groupId} was created without an init commit`,
-				);
-			}
-			bundle = init;
-		} else {
-			bundle = group.addMembers(keyPackages);
-		}
-		epoch = await postMlsCommit(
-			client,
-			groupId,
-			group,
-			bundle,
-			batch,
-			extraHeaders,
-		);
-		group.save();
-		membersAdded += batch.length;
-	}
-
-	return { epoch, membersAdded };
-}
-
-/**
- * Add a single member to an existing MLS group by claiming their key package
- * and posting an add commit + welcome.
+ * A member whose leaf is already in the tree is a no-op rather than a failure —
+ * the add path is a resume, and re-inviting somebody who is already there costs
+ * neither a commit nor a KeyPackage.
  */
 export async function addMlsGroupMember(
 	configDir: string,
@@ -128,58 +95,23 @@ export async function addMlsGroupMember(
 	client: HttpClient,
 	extraHeaders?: Record<string, string>,
 ): Promise<{ epoch: number }> {
-	const group = openMlsGroup(configDir, agentId, groupId);
-
-	// Heartbeat replenishment of OUR inventory (see initMlsGroup). The member's
-	// own inventory is theirs to replenish — a client can only publish key
-	// packages for an agent whose signing key it holds.
-	await replenishMlsKeyPackages(configDir, agentId, client);
-	const claimed = await claimKeyPackages(client, memberAgentId);
-	const first = claimed.packages[0];
-	if (!first) {
+	const result = await addMlsGroupMembers(
+		configDir,
+		agentId,
+		groupId,
+		[memberAgentId],
+		client,
+		extraHeaders,
+	);
+	const outcome = result.outcomes[0];
+	if (outcome?.reason === "no_key_package") {
 		throw new Error(`No key packages available for ${memberAgentId}`);
 	}
-
-	const joiner: Joiner = {
-		agentId: memberAgentId,
-		keyPackage: mlsFromBase64(first),
-	};
-	const bundle = group.addMember(joiner.keyPackage);
-	const epoch = await postMlsCommit(
-		client,
-		groupId,
-		group,
-		bundle,
-		[joiner],
-		extraHeaders,
-	);
-	group.save();
-
-	return { epoch };
-}
-
-/**
- * Remove a member from an MLS group by leaf index and post the remove commit.
- * The evicted member reads no message committed after this epoch.
- */
-export async function removeMlsGroupMember(
-	configDir: string,
-	agentId: string,
-	groupId: string,
-	leafIndex: number,
-	client: HttpClient,
-	extraHeaders?: Record<string, string>,
-): Promise<{ epoch: number }> {
-	const group = openMlsGroup(configDir, agentId, groupId);
-	const bundle = group.removeMember(leafIndex);
-	const epoch = await postMlsCommit(
-		client,
-		groupId,
-		group,
-		bundle,
-		[],
-		extraHeaders,
-	);
-	group.save();
-	return { epoch };
+	if (outcome?.reason === "rejected_by_server") {
+		throw new Error(
+			`The server refused ${memberAgentId} as a Welcome recipient for group ${groupId}: ` +
+				"they are revoked, gone, or not enrolled in this group.",
+		);
+	}
+	return { epoch: result.epoch };
 }

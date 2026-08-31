@@ -1,3 +1,4 @@
+import { ACTING_AGENT_HEADER } from "./actor.js";
 import type { JoinRequestRead, ListResponse } from "./api-types.js";
 import { encryptMessage, fetchRecipientKeys } from "./crypto/message.js";
 import type { HttpClient } from "./http.js";
@@ -53,7 +54,7 @@ export async function sendGroupInviteNotification(
 	await client.post(
 		"/messages",
 		{ to_agent_id: inviteeAgentId, type: GROUP_INVITE_TYPE, ...encrypted },
-		{ "X-Rine-Agent": inviterAgentId },
+		{ [ACTING_AGENT_HEADER]: inviterAgentId },
 	);
 }
 

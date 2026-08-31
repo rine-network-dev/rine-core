@@ -1,0 +1,667 @@
+{
+  "note": "Golden refusal vectors for the recipient-resolution contract. ONE file, replayed by rine-core/test/recipient-refusal-golden.test.ts (ci.sh stage 11) and rine-sdk/tests/contract/test_recipient_refusal_golden.py (ci.sh stage 4). Two copies of this file is the failure the gate exists to prevent. `vectors` and `excluded` are pure input -> composed sentence: no HTTP, no client, no server. `by_id_disclosure` and `by_id_substitution` are the two exceptions and each says why in its own note — the by-id disclosure rule is a mapping from a STATUS to a sentence and the by-id substitution rule from a BODY to a typed raise, and no arrangement of a roster and a spelling can express either. Regenerate with RINE_REFUSAL_REGEN=1 and run BOTH replays — each writes only its own stack's fields. Vector INPUTS are ASCII; the expected sentences carry whatever bytes the product composes, including the em dash and the ellipsis of the overflow row, which are load-bearing.",
+  "slots": {
+    "unknown_group": "unknownGroupRefusal(candidates, spelling) / unknown_group_refusal(...)",
+    "bare_recipient_group": "recipientGroupForBareName(candidates, spelling) / recipient_group_for_bare_name(...), the refusal it raises",
+    "bare_agent_collision": "refuseIfABareAgentName(agents, spelling) / refuse_if_a_bare_agent_name(...), the refusal it raises; null when it raises none",
+    "compose_bare": "the composer with a lead and nothing else",
+    "compose_next_step_no_roster": "the composer with a lead and a next step",
+    "compose_next_step_under_roster": "the composer with a lead, a roster AND a next step",
+    "compose_next_step_empty_roster": "the composer with a lead, an EMPTY roster and a next step",
+    "invalid_agent_identifier": "invalidAgentIdentifierRefusal(spelling) / invalid_agent_identifier(...) — the sentence resolveToUuid / resolve_to_uuid_{sync,async} raises for a spelling that is neither a UUID nor a handle. One raise site per stack, so the sentence can be compared at all: the resolver is async and reaches WebFinger on its other arm, which is how a one-byte divergence (terminated on TS, unterminated on Python) hides from every per-stack suite while all of them read green. Each stack also asserts locally that its resolver raises exactly this.",
+    "join_bare_name": "bareNameJoinRefusal(spelling) / bare_name_join_refusal(...) — first of the two composers JOIN_TAKES_A_HANDLE_OR_AN_ID is spliced into. The constant is pinned as a CONSTANT by the backend gate JOIN_REFUSAL_TWIN_SENTENCES; that gate reads two module sources and cannot see what a composer does with the string, which is the hole these two slots close.",
+    "join_unresolved_handle": "unresolvedHandleJoinRefusal(spelling, unread) / unresolved_handle_join_refusal(...) — the other composer JOIN_TAKES_A_HANDLE_OR_AN_ID is spliced into. `unread` picks which middle sentence is spliced in (0 = the directory ran to the end), so both arms are replayed and the constant is proven to survive in each.",
+    "not_a_conversation_uuid": "notAConversationUuidRefusal(spelling, THREAD_REF_SURFACES[surface]) / not_a_conversation_uuid(...) — the surface-parameterised composer. The vector names its `surface` because TypeScript parameterises the two parameter spellings and Python hardcodes the tool ones; the Python replay asserts the vector names the surface it implements rather than composing a sentence for a surface it has never had."
+  },
+  "vectors": [
+    {
+      "id": "unknown-group-with-a-roster",
+      "slot": "unknown_group",
+      "spelling": "#nowhere@acme.rine.network",
+      "candidates": [
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "name": "logistics",
+          "handle": "#logistics@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000002",
+          "name": "ops",
+          "handle": "#ops@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000003",
+          "name": "planning",
+          "handle": "#planning@acme.rine.network"
+        }
+      ],
+      "agents": [],
+      "expected": "Group not found: #nowhere@acme.rine.network. Name one of these groups:\n  - #logistics@acme.rine.network (logistics)\n  - #ops@acme.rine.network (ops)\n  - #planning@acme.rine.network (planning)"
+    },
+    {
+      "id": "unknown-group-with-an-empty-roster",
+      "slot": "unknown_group",
+      "spelling": "#nowhere@acme.rine.network",
+      "candidates": [],
+      "agents": [],
+      "expected": "Group not found: #nowhere@acme.rine.network. This org is in no groups yet."
+    },
+    {
+      "id": "unknown-group-roster-of-twenty-five",
+      "slot": "unknown_group",
+      "spelling": "nowhere",
+      "candidates": [
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000100",
+          "name": "team-00",
+          "handle": "#team-00@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000101",
+          "name": "team-01",
+          "handle": "#team-01@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000102",
+          "name": "team-02",
+          "handle": "#team-02@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000103",
+          "name": "team-03",
+          "handle": "#team-03@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000104",
+          "name": "team-04",
+          "handle": "#team-04@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000105",
+          "name": "team-05",
+          "handle": "#team-05@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000106",
+          "name": "team-06",
+          "handle": "#team-06@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000107",
+          "name": "team-07",
+          "handle": "#team-07@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000108",
+          "name": "team-08",
+          "handle": "#team-08@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000109",
+          "name": "team-09",
+          "handle": "#team-09@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000110",
+          "name": "team-10",
+          "handle": "#team-10@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000111",
+          "name": "team-11",
+          "handle": "#team-11@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000112",
+          "name": "team-12",
+          "handle": "#team-12@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000113",
+          "name": "team-13",
+          "handle": "#team-13@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000114",
+          "name": "team-14",
+          "handle": "#team-14@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000115",
+          "name": "team-15",
+          "handle": "#team-15@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000116",
+          "name": "team-16",
+          "handle": "#team-16@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000117",
+          "name": "team-17",
+          "handle": "#team-17@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000118",
+          "name": "team-18",
+          "handle": "#team-18@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000119",
+          "name": "team-19",
+          "handle": "#team-19@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000120",
+          "name": "team-20",
+          "handle": "#team-20@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000121",
+          "name": "team-21",
+          "handle": "#team-21@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000122",
+          "name": "team-22",
+          "handle": "#team-22@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000123",
+          "name": "team-23",
+          "handle": "#team-23@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000124",
+          "name": "team-24",
+          "handle": "#team-24@acme.rine.network"
+        }
+      ],
+      "agents": [],
+      "expected": "Group not found: nowhere. Name one of these groups:\n  - #team-00@acme.rine.network (team-00)\n  - #team-01@acme.rine.network (team-01)\n  - #team-02@acme.rine.network (team-02)\n  - #team-03@acme.rine.network (team-03)\n  - #team-04@acme.rine.network (team-04)\n  - #team-05@acme.rine.network (team-05)\n  - #team-06@acme.rine.network (team-06)\n  - #team-07@acme.rine.network (team-07)\n  - #team-08@acme.rine.network (team-08)\n  - #team-09@acme.rine.network (team-09)\n  - #team-10@acme.rine.network (team-10)\n  - #team-11@acme.rine.network (team-11)\n  - #team-12@acme.rine.network (team-12)\n  - #team-13@acme.rine.network (team-13)\n  - #team-14@acme.rine.network (team-14)\n  - #team-15@acme.rine.network (team-15)\n  - #team-16@acme.rine.network (team-16)\n  - #team-17@acme.rine.network (team-17)\n  - #team-18@acme.rine.network (team-18)\n  - #team-19@acme.rine.network (team-19)\n  … and 5 more"
+    },
+    {
+      "id": "unknown-group-a-row-carrying-no-name",
+      "slot": "unknown_group",
+      "spelling": "nowhere",
+      "candidates": [
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000009",
+          "name": "",
+          "handle": "#quiet@acme.rine.network"
+        }
+      ],
+      "agents": [],
+      "expected": "Group not found: nowhere. Name one of these groups:\n  - #quiet@acme.rine.network"
+    },
+    {
+      "id": "unknown-group-a-spelling-ending-in-a-period",
+      "slot": "unknown_group",
+      "spelling": "ops.",
+      "candidates": [
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "name": "logistics",
+          "handle": "#logistics@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000002",
+          "name": "ops",
+          "handle": "#ops@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000003",
+          "name": "planning",
+          "handle": "#planning@acme.rine.network"
+        }
+      ],
+      "agents": [],
+      "expected": "Group not found: ops.. Name one of these groups:\n  - #logistics@acme.rine.network (logistics)\n  - #ops@acme.rine.network (ops)\n  - #planning@acme.rine.network (planning)"
+    },
+    {
+      "id": "unknown-group-a-spelling-ending-in-a-period-empty-roster",
+      "slot": "unknown_group",
+      "spelling": "ops.",
+      "candidates": [],
+      "agents": [],
+      "expected": "Group not found: ops.. This org is in no groups yet."
+    },
+    {
+      "id": "rule-4-a-spelling-that-ends-in-a-period",
+      "slot": "compose_bare",
+      "spelling": "ops.",
+      "lead": "Group not found: {spelling}.",
+      "candidates": [],
+      "agents": [],
+      "expected": "Group not found: ops.."
+    },
+    {
+      "id": "ambiguous-two-groups-answer",
+      "slot": "bare_recipient_group",
+      "spelling": "ops",
+      "candidates": [
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000011",
+          "name": "ops",
+          "handle": "#ops@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000012",
+          "name": "ops",
+          "handle": "#ops@beta.acme.rine.network"
+        }
+      ],
+      "agents": [],
+      "expected": "Group name 'ops' is ambiguous — more than one group answers to it. Name one of these groups:\n  - #ops@acme.rine.network (ops)\n  - #ops@beta.acme.rine.network (ops)"
+    },
+    {
+      "id": "ambiguous-three-groups-answer",
+      "slot": "bare_recipient_group",
+      "spelling": "ops",
+      "candidates": [
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000011",
+          "name": "ops",
+          "handle": "#ops@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000012",
+          "name": "ops",
+          "handle": "#ops@beta.acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000013",
+          "name": "ops",
+          "handle": "#ops@gamma.acme.rine.network"
+        }
+      ],
+      "agents": [],
+      "expected": "Group name 'ops' is ambiguous — more than one group answers to it. Name one of these groups:\n  - #ops@acme.rine.network (ops)\n  - #ops@beta.acme.rine.network (ops)\n  - #ops@gamma.acme.rine.network (ops)"
+    },
+    {
+      "id": "bare-recipient-nothing-answers-with-a-roster",
+      "slot": "bare_recipient_group",
+      "spelling": "nowhere",
+      "candidates": [
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "name": "logistics",
+          "handle": "#logistics@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000002",
+          "name": "ops",
+          "handle": "#ops@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000003",
+          "name": "planning",
+          "handle": "#planning@acme.rine.network"
+        }
+      ],
+      "agents": [],
+      "expected": "'nowhere' names neither an agent nor a group you can reach. A bare name is read as a group this org is seated in, and none of them answers to it. An agent is addressed in full — its name, an at sign, and its org's domain — and a group by its whole handle, which is a leading hash and the same three parts. Name one of these groups:\n  - #logistics@acme.rine.network (logistics)\n  - #ops@acme.rine.network (ops)\n  - #planning@acme.rine.network (planning)"
+    },
+    {
+      "id": "bare-recipient-nothing-answers-empty-roster",
+      "slot": "bare_recipient_group",
+      "spelling": "nowhere",
+      "candidates": [],
+      "agents": [],
+      "expected": "'nowhere' names neither an agent nor a group you can reach. A bare name is read as a group this org is seated in, and none of them answers to it. An agent is addressed in full — its name, an at sign, and its org's domain — and a group by its whole handle, which is a leading hash and the same three parts. This org is in no groups yet."
+    },
+    {
+      "id": "bare-recipient-a-spelling-ending-in-a-period",
+      "slot": "bare_recipient_group",
+      "spelling": "kofi.",
+      "candidates": [
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "name": "logistics",
+          "handle": "#logistics@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000002",
+          "name": "ops",
+          "handle": "#ops@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000003",
+          "name": "planning",
+          "handle": "#planning@acme.rine.network"
+        }
+      ],
+      "agents": [],
+      "expected": "'kofi.' names neither an agent nor a group you can reach. A bare name is read as a group this org is seated in, and none of them answers to it. An agent is addressed in full — its name, an at sign, and its org's domain — and a group by its whole handle, which is a leading hash and the same three parts. Name one of these groups:\n  - #logistics@acme.rine.network (logistics)\n  - #ops@acme.rine.network (ops)\n  - #planning@acme.rine.network (planning)"
+    },
+    {
+      "id": "bare-agent-collision-one-agent",
+      "slot": "bare_agent_collision",
+      "spelling": "ops",
+      "candidates": [],
+      "agents": [
+        {
+          "id": "bbbbbbbb-0000-4000-8000-000000000001",
+          "name": "ops",
+          "handle": "ops@acme.rine.network"
+        }
+      ],
+      "expected": "'ops' is the name of an agent of your org, not a group reference. To message that agent, name it by handle: ops@acme.rine.network. To post to a group of that name, write it as #ops@acme.rine.network."
+    },
+    {
+      "id": "bare-agent-collision-two-agents",
+      "slot": "bare_agent_collision",
+      "spelling": "ops",
+      "candidates": [],
+      "agents": [
+        {
+          "id": "bbbbbbbb-0000-4000-8000-000000000001",
+          "name": "ops",
+          "handle": "ops@acme.rine.network"
+        },
+        {
+          "id": "bbbbbbbb-0000-4000-8000-000000000002",
+          "name": "ops",
+          "handle": "ops2@acme.rine.network"
+        }
+      ],
+      "expected": "'ops' is the name of an agent of your org, not a group reference. To message that agent, name it by handle: ops@acme.rine.network, ops2@acme.rine.network. To post to a group of that name, write it as #ops@acme.rine.network."
+    },
+    {
+      "id": "bare-agent-collision-org-has-no-slug",
+      "slot": "bare_agent_collision",
+      "spelling": "ops",
+      "candidates": [],
+      "agents": [
+        {
+          "id": "bbbbbbbb-0000-4000-8000-000000000003",
+          "name": "ops",
+          "handle": null
+        }
+      ],
+      "expected": "'ops' is the name of an agent of your org, not a group reference. To message that agent, name it by handle: bbbbbbbb-0000-4000-8000-000000000003. To post to a group of that name, write it as #ops."
+    },
+    {
+      "id": "bare-agent-collision-handle-has-no-org-half",
+      "slot": "bare_agent_collision",
+      "spelling": "ops",
+      "candidates": [],
+      "agents": [
+        {
+          "id": "bbbbbbbb-0000-4000-8000-000000000004",
+          "name": "ops",
+          "handle": "solo"
+        }
+      ],
+      "expected": "'ops' is the name of an agent of your org, not a group reference. To message that agent, name it by handle: solo. To post to a group of that name, write it as #ops."
+    },
+    {
+      "id": "bare-agent-collision-the-spelling-is-upper-case",
+      "slot": "bare_agent_collision",
+      "spelling": "OPS",
+      "candidates": [],
+      "agents": [
+        {
+          "id": "bbbbbbbb-0000-4000-8000-000000000001",
+          "name": "ops",
+          "handle": "ops@acme.rine.network"
+        }
+      ],
+      "expected": "'OPS' is the name of an agent of your org, not a group reference. To message that agent, name it by handle: ops@acme.rine.network. To post to a group of that name, write it as #ops@acme.rine.network."
+    },
+    {
+      "id": "rule-3-a-roster-suppresses-the-next-step",
+      "slot": "compose_next_step_under_roster",
+      "spelling": "nowhere",
+      "lead": "Group not found: {spelling}",
+      "next_step": "Run the group list verb to see them.",
+      "candidates": [
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "name": "logistics",
+          "handle": "#logistics@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000002",
+          "name": "ops",
+          "handle": "#ops@acme.rine.network"
+        },
+        {
+          "id": "aaaaaaaa-0000-4000-8000-000000000003",
+          "name": "planning",
+          "handle": "#planning@acme.rine.network"
+        }
+      ],
+      "agents": [],
+      "expected": "Group not found: nowhere. Name one of these groups:\n  - #logistics@acme.rine.network (logistics)\n  - #ops@acme.rine.network (ops)\n  - #planning@acme.rine.network (planning)"
+    },
+    {
+      "id": "rule-4-a-lead-that-already-ends-in-a-period",
+      "slot": "compose_bare",
+      "spelling": "nowhere",
+      "lead": "Group not found: {spelling}.",
+      "candidates": [],
+      "agents": [],
+      "expected": "Group not found: nowhere."
+    },
+    {
+      "id": "rule-4-a-next-step-that-ends-in-a-period",
+      "slot": "compose_next_step_no_roster",
+      "spelling": "ops",
+      "lead": "'{spelling}' is the name of an agent of your org, not a group reference",
+      "next_step": "To post to a group of that name, write it as #ops@acme.rine.network.",
+      "candidates": [],
+      "agents": [],
+      "expected": "'ops' is the name of an agent of your org, not a group reference. To post to a group of that name, write it as #ops@acme.rine.network."
+    },
+    {
+      "id": "invalid-agent-identifier-a-bare-word",
+      "slot": "invalid_agent_identifier",
+      "spelling": "logistics",
+      "candidates": [],
+      "agents": [],
+      "expected": "Invalid agent identifier 'logistics': expected a UUID or handle written in full — an agent's name, an at sign, and its org's domain."
+    },
+    {
+      "id": "invalid-agent-identifier-an-empty-spelling",
+      "slot": "invalid_agent_identifier",
+      "spelling": "",
+      "candidates": [],
+      "agents": [],
+      "expected": "Invalid agent identifier '': expected a UUID or handle written in full — an agent's name, an at sign, and its org's domain."
+    },
+    {
+      "id": "join-a-bare-name-no-invitation-answers",
+      "slot": "join_bare_name",
+      "spelling": "nowhere",
+      "candidates": [],
+      "agents": [],
+      "expected": "Group not found: nowhere. A bare name is read as one of this agent's pending invitations, and none of them is for a group of that name. Nothing wider is searched for a bare name: a join cannot be taken back, so it is never aimed at a guess. Join takes a group's whole handle — a leading hash, the group's name, an at sign, and its org's domain — or its id."
+    },
+    {
+      "id": "join-a-handle-no-rung-resolved",
+      "slot": "join_unresolved_handle",
+      "spelling": "#nowhere@acme.rine.network",
+      "unread": 0,
+      "candidates": [],
+      "agents": [],
+      "expected": "Group not found: #nowhere@acme.rine.network. No group of that handle is one this org is seated in, one this agent's pending invitations name, or a public group in the directory. A group in none of those three is not reachable by handle at all, and its id is the only reference that reaches it. Join takes a group's whole handle — a leading hash, the group's name, an at sign, and its org's domain — or its id."
+    },
+    {
+      "id": "join-a-handle-the-directory-held-more-of-than-the-join-read",
+      "slot": "join_unresolved_handle",
+      "spelling": "#nowhere@acme.rine.network",
+      "unread": 7,
+      "candidates": [],
+      "agents": [],
+      "expected": "Group not found: #nowhere@acme.rine.network. No group of that handle is one this org is seated in or one this agent's pending invitations name, and the public directory holds 7 more groups matching that name than this join read — so this is not a report that the group is absent from it. The id the directory prints beside a handle reaches the group in one step. Join takes a group's whole handle — a leading hash, the group's name, an at sign, and its org's domain — or its id."
+    },
+    {
+      "id": "a-group-reference-in-the-conversation-slot",
+      "slot": "not_a_conversation_uuid",
+      "spelling": "#ops@acme.rine.network",
+      "surface": "tool",
+      "candidates": [],
+      "agents": [],
+      "expected": "conversation_id must be a conversation UUID; \"#ops@acme.rine.network\" is not one. To read a group, name the group instead — group takes a group's whole handle, a bare group name, or its UUID."
+    }
+  ],
+  "by_id_disclosure": {
+    "note": "🔴 The by-id disclosure rule, and the ONE section of this file that is not pure input → sentence. `GET /groups/{id}` 404s an id no group carries and 403s one carried by a group of an org this caller is neither owner of nor seated in, and the two must be indistinguishable: telling them apart would tell a stranger which unknown ids EXIST, which is the non-member lookup the protocol refuses to add. That rule is a mapping from a STATUS to a sentence, so no arrangement of a roster and a spelling can express it — each replay drives its own seated resolver (resolveGroup / RineSyncClient.resolve_group) against a stub transport instead. It is here and not only in each stack's own suite because both stacks already guard it SEPARATELY (rine-core/test/resolve-group-handle.test.ts and rine-sdk/tests/contract/test_recipient_parity.py::TestResolveGroup) and neither of those compares the two stacks' BYTES — which is the class of hole a one-byte divergence in invalidAgentIdentifierRefusal hides in while every suite reads green. `expected` is written by the Python replay alone, exactly as it is for the shared vectors. `propagated` is the bound the rule needs and not decoration: a blanket catch would compose a roster refusal for an outage and send a caller off to re-spell a perfectly good id, so a status outside `indistinguishable` must escape as itself. 429 is deliberately not among them — the transport retries it with backoff, and the wait is the transport's business rather than the resolver's.",
+    "vectors": [
+      {
+        "id": "an-unreadable-id-is-refused-with-the-roster-whichever-status-said-so",
+        "spelling": "cccccccc-0000-4000-8000-00000000ffff",
+        "candidates": [
+          {
+            "id": "aaaaaaaa-0000-4000-8000-000000000001",
+            "name": "logistics",
+            "handle": "#logistics@acme.rine.network"
+          },
+          {
+            "id": "aaaaaaaa-0000-4000-8000-000000000002",
+            "name": "ops",
+            "handle": "#ops@acme.rine.network"
+          }
+        ],
+        "indistinguishable": [
+          404,
+          403
+        ],
+        "propagated": [
+          500
+        ],
+        "expected": "Group not found: cccccccc-0000-4000-8000-00000000ffff. Name one of these groups:\n  - #logistics@acme.rine.network (logistics)\n  - #ops@acme.rine.network (ops)"
+      }
+    ]
+  },
+  "by_id_substitution": {
+    "note": "🔴 The by-id substitution rule — the UUID rung checks the row it got back, and this is the second section of this file that is DRIVEN rather than composed. The rung reads a row and five further surfaces route through it, so a body naming another group would make every downstream verb act on that group while the caller believed it had addressed its own. The rule is a mapping from a BODY to a raise, which no arrangement of a roster and a spelling can express, so each replay drives its own seated resolver (resolveGroup / RineSyncClient.resolve_group) against a stub transport. Three claims per vector, and the last two are the contract: the sentence is byte-identical across the stacks, the raise is TYPED and both stacks name the same type, and the roster is never bought — a server fault surfaces as a server fault, never as a missing group. The `answered` row is what `GET /groups/{id}` replies with; `roster` is what `GET /groups` would have said had anything asked it, which is exactly what must not happen. 🔴 The third vector is the one that would go unnoticed without a shared vector: a group id is a JSON string or it is absent, because `String(x)` and `str(x)` agree on strings and on nothing else (`false`/`False`, `[object Object]`/`{}`), so a body whose `id` is a number, a boolean or an object names NO group on both stacks rather than being rendered — and the sentence says so instead of leaving a blank before the full stop. `expected` is written by the Python replay alone, as it is everywhere else in this file.",
+    "vectors": [
+      {
+        "id": "a-body-naming-another-group-the-caller-does-hold",
+        "spelling": "aaaaaaaa-0000-4000-8000-000000000001",
+        "answered": {
+          "id": "aaaaaaaa-0000-4000-8000-000000000002",
+          "name": "ops",
+          "handle": "#ops@acme.rine.network"
+        },
+        "roster": [
+          {
+            "id": "aaaaaaaa-0000-4000-8000-000000000001",
+            "name": "logistics",
+            "handle": "#logistics@acme.rine.network"
+          },
+          {
+            "id": "aaaaaaaa-0000-4000-8000-000000000002",
+            "name": "ops",
+            "handle": "#ops@acme.rine.network"
+          }
+        ],
+        "error": "GroupIdentityMismatchError",
+        "expected": "Refusing the group read for aaaaaaaa-0000-4000-8000-000000000001: the server answered with group aaaaaaaa-0000-4000-8000-000000000002. A read that is not about the group it named cannot be used to establish that group's MLS state."
+      },
+      {
+        "id": "a-body-carrying-no-id-at-all-is-refused-rather-than-crashing",
+        "spelling": "aaaaaaaa-0000-4000-8000-000000000001",
+        "answered": {
+          "name": "logistics",
+          "handle": "#logistics@acme.rine.network"
+        },
+        "roster": [
+          {
+            "id": "aaaaaaaa-0000-4000-8000-000000000001",
+            "name": "logistics",
+            "handle": "#logistics@acme.rine.network"
+          },
+          {
+            "id": "aaaaaaaa-0000-4000-8000-000000000002",
+            "name": "ops",
+            "handle": "#ops@acme.rine.network"
+          }
+        ],
+        "error": "GroupIdentityMismatchError",
+        "expected": "Refusing the group read for aaaaaaaa-0000-4000-8000-000000000001: the server's answer carried no group id. A read that is not about the group it named cannot be used to establish that group's MLS state."
+      },
+      {
+        "id": "a-body-whose-id-is-a-falsy-non-string-names-no-group-either",
+        "spelling": "aaaaaaaa-0000-4000-8000-000000000001",
+        "answered": {
+          "id": 0,
+          "name": "logistics",
+          "handle": "#logistics@acme.rine.network"
+        },
+        "roster": [
+          {
+            "id": "aaaaaaaa-0000-4000-8000-000000000001",
+            "name": "logistics",
+            "handle": "#logistics@acme.rine.network"
+          },
+          {
+            "id": "aaaaaaaa-0000-4000-8000-000000000002",
+            "name": "ops",
+            "handle": "#ops@acme.rine.network"
+          }
+        ],
+        "error": "GroupIdentityMismatchError",
+        "expected": "Refusing the group read for aaaaaaaa-0000-4000-8000-000000000001: the server's answer carried no group id. A read that is not about the group it named cannot be used to establish that group's MLS state."
+      }
+    ]
+  },
+  "excluded": {
+    "reason": "Vectors whose two stacks genuinely disagree. They are carried here, not deleted: each replay asserts its OWN stack's recorded string, so the divergence is PINNED rather than absent — a stack that changes one of these fails, and the day both agree the vector moves into the shared set. Unifying the two stacks to make one of these pass is a product change, not a fixture change.",
+    "vectors": [
+      {
+        "id": "rule-1-a-lead-that-does-not-end-in-a-period",
+        "slot": "compose_bare",
+        "spelling": "nowhere",
+        "lead": "Group not found: {spelling}",
+        "candidates": [],
+        "agents": [],
+        "divergence": "Rule 4 says exactly one trailing '.'. Python's composer terminates every part it is handed (`_terminated`: the part unchanged when it already ends in a stop, otherwise one appended); TypeScript's `joinSentences` normalises only the SEAM between two sentences and leaves the last one exactly as the lead wrote it. So a lead that carries no full stop and has nothing appended to it comes back unterminated on TypeScript and terminated on Python. Unreachable through any shipped call site today — every shipped TypeScript lead either ends in a period or is followed by a roster — which is why no existing test moves. Closing it is a product change, not a fixture change.",
+        "ts": "Group not found: nowhere",
+        "py": "Group not found: nowhere."
+      },
+      {
+        "id": "rule-4-a-next-step-that-does-not-end-in-a-period",
+        "slot": "compose_next_step_no_roster",
+        "spelling": "ops",
+        "lead": "'{spelling}' is the name of an agent of your org, not a group reference",
+        "next_step": "To post to a group of that name, write it as #ops@acme.rine.network",
+        "candidates": [],
+        "agents": [],
+        "divergence": "The same rule-4 gap, on the other tail: Python's composer terminates the next step (`_terminated`, `_group_ref.py`), TypeScript's `joinSentences` leaves the last sentence exactly as it was handed. 🔴 The shipped bytes agree, but NOT because the two callers agree — they agree by two different mechanisms. The earlier reading of this vector, that *'the one shipped caller passes a next step that already ends in a period'*, was true only of TypeScript: `refuseIfABareAgentName` does end its next step in a period, so its non-termination is invisible; `refuse_if_a_bare_agent_name` passes an UNTERMINATED next step and the composer adds the stop. The two callers also split the sentence differently — TypeScript carries 'To message that agent…' in the next step, Python carries it in the lead — so any new caller that hands either stack the other's shape gets the other's tail.",
+        "ts": "'ops' is the name of an agent of your org, not a group reference. To post to a group of that name, write it as #ops@acme.rine.network",
+        "py": "'ops' is the name of an agent of your org, not a group reference. To post to a group of that name, write it as #ops@acme.rine.network."
+      },
+      {
+        "id": "rule-3-an-empty-roster-and-a-next-step",
+        "slot": "compose_next_step_empty_roster",
+        "spelling": "nowhere",
+        "lead": "Group not found: {spelling}",
+        "next_step": "Run the group list verb to see them.",
+        "candidates": [],
+        "agents": [],
+        "divergence": "Rule 3 fires on different inputs. Python suppresses the next step whenever candidates were PASSED (`candidates is not None`), so an empty roster suppresses it; TypeScript suppresses only when the rendered rows are non-empty (`candidates.rows !== \"\"`), so an empty roster prints the roster's empty-org sentence AND the next step. Unreachable today: no shipped refusal passes both a roster and a next step. It is the first thing a surface migrating onto these shared composers would hit, because 'there are none, here is how to find one' is the obvious shape for a surface to want.",
+        "ts": "Group not found: nowhere. This org is in no groups yet. Run the group list verb to see them.",
+        "py": "Group not found: nowhere. This org is in no groups yet."
+      },
+      {
+        "id": "fold-a-spelling-that-full-case-folds-onto-an-agent-name",
+        "slot": "bare_agent_collision",
+        "spelling": "Straße",
+        "candidates": [],
+        "agents": [
+          {
+            "id": "bbbbbbbb-0000-4000-8000-000000000004",
+            "name": "strasse",
+            "handle": "strasse@acme.rine.network"
+          }
+        ],
+        "divergence": "The documented casefold()/toLowerCase() split (`rine-core/src/group-ref.ts`, `normalizeGroupRef`'s table), reaching the collision GUARD rather than the matcher. Python folds 'Straße' onto 'strasse' and refuses; TypeScript lower-cases it to 'straße', matches no agent, and lets the reference through to the group ladder. Non-ASCII by construction — it is the only way to reach the split at all — so it is excluded from the shared set rather than from the fixture. Today unreachable in production because an agent `name` is a DNS slug and only the caller's spelling can carry a folding case; reachability changes the day that stops being true.",
+        "ts": null,
+        "py": "'Straße' is the name of an agent of your org, not a group reference. To message that agent, name it by handle: strasse@acme.rine.network. To post to a group of that name, write it as #strasse@acme.rine.network."
+      }
+    ]
+  }
+}

@@ -24,6 +24,10 @@ export const X402_ERROR = {
 	// The asset's decimals cannot be resolved from the registry (and none were
 	// explicitly declared) — refuse to price it rather than assume 6.
 	UNKNOWN_ASSET_DECIMALS: "unknown-asset-decimals",
+	// The message's envelope was not signed by the agent the server authenticated
+	// as its sender (or its signature does not check out at all) — the body is not
+	// the counterparty's word, so no quote is paid and no payment is settled.
+	INAUTHENTIC_SENDER: "inauthentic-sender",
 } as const;
 
 export type X402ErrorCode = (typeof X402_ERROR)[keyof typeof X402_ERROR];

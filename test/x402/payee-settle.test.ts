@@ -227,6 +227,19 @@ describe("resolvePayeeRequirement — ref binding", () => {
 		await expectRefused(resolveWithRef(), X402_ERROR.NO_QUOTE);
 	});
 
+	it("test_ref_signed_by_another_agent_fails_closed", async () => {
+		// The referenced quote decrypts, but its envelope was signed by an agent other
+		// than the payee the server recorded as its sender — the terms are not the
+		// payee's own, so there is nothing safe to reconcile against.
+		decryptMock.mockResolvedValue({
+			plaintext: JSON.stringify({ x402Version: 2, accepts: [req()] }),
+			senderKid: `rine:${OTHER}`,
+			verified: false,
+			verificationStatus: "sender-mismatch",
+		});
+		await expectRefused(resolveWithRef(), X402_ERROR.NO_QUOTE);
+	});
+
 	it("test_underpayment_against_referenced_quote_is_refused", async () => {
 		decryptYields([req({ amount: "1000000" })]); // quote wants 1.00
 		await expectRefused(

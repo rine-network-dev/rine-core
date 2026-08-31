@@ -1,7 +1,7 @@
-// Daily spend journal (schema v2) + the O2′ reserve-under-lock commit (S2,
-// S2_JOURNAL_DESIGN.md). The journal is a worst-case loss bound, NOT a ledger:
-// debits are permanent — there is no refund path. `reserveSpend` is the LAST local
-// act before a payload is transmitted; after transmit nothing is written.
+// Daily spend journal (schema v2) + the reserve-under-lock commit. The journal
+// is a worst-case loss bound, NOT a ledger: debits are permanent — there is no
+// refund path. `reserveSpend` is the LAST local act before a payload is
+// transmitted; after transmit nothing is written.
 
 import * as fs from "node:fs";
 import { join } from "node:path";
@@ -21,7 +21,7 @@ import type { PaymentPolicy, PaymentRequirements } from "./types.js";
 interface SpendJournal {
 	day: string; // UTC YYYY-MM-DD bucket
 	spentCanonical: string; // canonical micro-units, bigint string
-	paidIds?: string[]; // message ids already reserved today (S6 double-pay guard)
+	paidIds?: string[]; // message ids already reserved today (double-pay guard)
 }
 
 function journalPath(configDir: string, agentId: string): string {
@@ -90,7 +90,7 @@ export function recordSpend(
 
 /** Options for {@link reserveSpend}. */
 export interface ReserveSpendOptions {
-	/** Message id of the quote — enables the ALREADY_PAID (S6) double-pay guard. */
+	/** Message id of the quote — enables the ALREADY_PAID double-pay guard. */
 	messageId?: string;
 	/** Bypass the ALREADY_PAID guard to intentionally re-pay a message. */
 	force?: boolean;
@@ -100,7 +100,7 @@ export interface ReserveSpendOptions {
 
 /**
  * Reserve a spend under the cross-process lock and return the reserved canonical
- * value (S2, O2′). This is the LAST local act before transmit: acquire the lock,
+ * value. This is the LAST local act before transmit: acquire the lock,
  * compute the UTC-day bucket INSIDE the lock (a day computed before acquiring
  * could roll over while a contended acquire waits, clobbering the new day's total),
  * re-read the journal fresh (day rollover applies), refuse a same-message re-pay

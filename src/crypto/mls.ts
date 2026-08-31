@@ -69,14 +69,16 @@ export function mlsGroupIdBytes(groupId: string): Uint8Array {
 const EPOCH_RETENTION_ENV = "RINE_MLS_EPOCH_RETENTION";
 
 /**
- * Unset is rine's shipped policy: keep the full epoch backlog, so
- * anything the server's undelivered queue can still be holding stays
- * decryptable — the queue never drops an undelivered message, so a member
- * returning after any number of commits can still read what it missed.
+ * Unset is rine's shipped window, `EPOCH_RETENTION_DEFAULT` — the native core
+ * decides the number, so the TypeScript and Python stacks cannot disagree about
+ * it. It is derived from the server's own 90-day message retention at the peak
+ * modelled churn, so a group churning at or below that rate keeps at least as
+ * long as the server serves.
  *
- * Setting it to a positive integer trades that reach for a narrower
- * forward-secrecy window: old epoch secrets stop sitting on disk sooner, and a
- * member absent for more than that many commits can no longer read its backlog.
+ * There is no "keep everything" setting. Setting a smaller integer narrows the
+ * forward-secrecy window further: old epoch secrets stop sitting on disk
+ * sooner, and undelivered backlog older than the window becomes permanently
+ * undecryptable on this device — the epoch secret is the only copy.
  */
 function epochRetentionLimit(): number | undefined {
   const raw = process.env[EPOCH_RETENTION_ENV];

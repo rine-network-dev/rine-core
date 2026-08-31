@@ -69,9 +69,15 @@ describe("DM encrypt/decrypt round-trip", () => {
 		expect(encrypted.sender_signing_kid).toBe(`rine:${SENDER_ID}`);
 
 		const client = mockClientWithKeys(senderKeys);
-		const result = await decryptMessage(dir, RECIPIENT_ID, encrypted.encrypted_payload, client as never);
+		const result = await decryptMessage(
+			dir,
+			RECIPIENT_ID,
+			encrypted.encrypted_payload,
+			client as never,
+			SENDER_ID,
+		);
 
-		expect(JSON.parse(result.plaintext)).toEqual(payload);
+		expect(JSON.parse(result.plaintext as string)).toEqual(payload);
 		expect(result.verified).toBe(true);
 		expect(result.verificationStatus).toBe("verified");
 		expect(result.senderKid).toBe(`rine:${SENDER_ID}`);
@@ -95,10 +101,14 @@ describe("DM encrypt/decrypt round-trip", () => {
 		// Self-read = decrypt with the SENDER's own id + the self-blob.
 		const client = mockClientWithKeys(senderKeys);
 		const result = await decryptMessage(
-			dir, SENDER_ID, encrypted.self_encrypted_payload as string, client as never,
+			dir,
+			SENDER_ID,
+			encrypted.self_encrypted_payload as string,
+			client as never,
+			SENDER_ID,
 		);
 
-		expect(JSON.parse(result.plaintext)).toEqual(payload);
+		expect(JSON.parse(result.plaintext as string)).toEqual(payload);
 		expect(result.verified).toBe(true);
 		expect(result.verificationStatus).toBe("verified");
 	});
@@ -113,13 +123,17 @@ describe("DM encrypt/decrypt round-trip", () => {
 
 		const client = mockClientWithKeys(senderKeys);
 		const result = await decryptMessage(
-			dir, RECIPIENT_ID, encrypted.encrypted_payload, client as never,
+			dir,
+			RECIPIENT_ID,
+			encrypted.encrypted_payload,
+			client as never,
+			SENDER_ID,
 		);
-		expect(JSON.parse(result.plaintext)).toEqual(payload);
+		expect(JSON.parse(result.plaintext as string)).toEqual(payload);
 		expect(result.verified).toBe(true);
 	});
 
-	it("reports invalid when sender key doesn't match", async () => {
+	it("withholds the text when the sender key doesn't match", async () => {
 		const payload = { msg: "spoofed" };
 		const encrypted = await encryptMessage(
 			dir, SENDER_ID, recipientKeys.encryption.publicKey, payload,
@@ -129,8 +143,15 @@ describe("DM encrypt/decrypt round-trip", () => {
 		const imposterKeys = generateAgentKeys();
 		const client = mockClientWithKeys(imposterKeys);
 
-		const result = await decryptMessage(dir, RECIPIENT_ID, encrypted.encrypted_payload, client as never);
-		expect(JSON.parse(result.plaintext)).toEqual(payload);
+		const result = await decryptMessage(
+			dir,
+			RECIPIENT_ID,
+			encrypted.encrypted_payload,
+			client as never,
+			SENDER_ID,
+		);
+		// An authenticity failure comes back as the verdict, never as content.
+		expect(result.plaintext).toBeUndefined();
 		expect(result.verified).toBe(false);
 		expect(result.verificationStatus).toBe("invalid");
 	});
@@ -142,7 +163,13 @@ describe("DM encrypt/decrypt round-trip", () => {
 		);
 
 		const client = { get: vi.fn().mockRejectedValue(new Error("network error")), post: vi.fn() };
-		const result = await decryptMessage(dir, RECIPIENT_ID, encrypted.encrypted_payload, client as never);
+		const result = await decryptMessage(
+			dir,
+			RECIPIENT_ID,
+			encrypted.encrypted_payload,
+			client as never,
+			SENDER_ID,
+		);
 		expect(result.verified).toBe(false);
 		expect(result.verificationStatus).toBe("unverifiable");
 	});
@@ -176,7 +203,12 @@ describe("Group encrypt/decrypt round-trip", () => {
 
 		const client = mockClientWithKeys(senderKeys);
 		const decrypted = await decryptGroupMessage(
-			dir, RECIPIENT_ID, GROUP_ID, encrypted.encrypted_payload, client as never,
+			dir,
+			RECIPIENT_ID,
+			GROUP_ID,
+			encrypted.encrypted_payload,
+			client as never,
+			SENDER_ID,
 		);
 
 		expect(JSON.parse(decrypted.plaintext)).toEqual(payload);
@@ -207,7 +239,14 @@ describe("Group encrypt/decrypt round-trip", () => {
 		const client = mockClientWithKeys(imposterKeys);
 
 		await expect(
-			decryptGroupMessage(dir, RECIPIENT_ID, GROUP_ID, encrypted.encrypted_payload, client as never),
+			decryptGroupMessage(
+				dir,
+				RECIPIENT_ID,
+				GROUP_ID,
+				encrypted.encrypted_payload,
+				client as never,
+				SENDER_ID,
+			),
 		).rejects.toThrow("Sender signature verification failed");
 	});
 
@@ -222,7 +261,12 @@ describe("Group encrypt/decrypt round-trip", () => {
 		// Sender decrypts their own message — uses cached self-read key
 		const client = mockClientWithKeys(senderKeys);
 		const decrypted = await decryptGroupMessage(
-			dir, SENDER_ID, GROUP_ID, encrypted.encrypted_payload, client as never,
+			dir,
+			SENDER_ID,
+			GROUP_ID,
+			encrypted.encrypted_payload,
+			client as never,
+			SENDER_ID,
 		);
 
 		expect(JSON.parse(decrypted.plaintext)).toEqual(payload);

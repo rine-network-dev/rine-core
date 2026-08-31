@@ -4,6 +4,130 @@ All notable changes to `@rine-network/core` are documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added — a group id read is checked against the group it named
+
+`resolveGroup` reads the group a UUID names before it answers. That read is refused
+when the server replies with a different group, or with a body carrying no group id
+at all, and it throws `GroupIdentityMismatchError`. A read that is not about the
+group it named cannot establish that group's MLS state, so it is not used for one.
+`isGroupIdentityMismatchError` narrows it, and consumers that widen this package's
+refusals into their own error hierarchy recognise it the way they already recognise
+the MLS refusals.
+
+The join ladder is unaffected: a join targets a group the caller holds no seat in,
+so its id rung asks the server nothing and has nothing to check.
+
+### Added — a join resolves its own group reference
+
+`resolveGroupUuidForJoin` walks the three places a join's handle can answer
+from — a group this org is already seated in, one that has invited or nominated
+this agent, and the public group directory — matching the whole handle exactly
+at every rung, so the directory's substring search yields candidates and only
+the group that was named survives. A bare name walks one rung and no other: this
+agent's own pending invitations. A bare name none of them answers to is refused,
+and one that two of them answer to is refused with both handles printed, because
+a bare name carries no org to tell two same-named groups apart and a join cannot
+be taken back. The directory read is bounded to two pages of 50, and a refusal
+that stopped on that budget states how many matching rows it never read rather
+than reporting the group absent.
+
+`group-join-words.ts` holds every sentence a refused join says and every matcher
+that decides one — `isExactGroupHandle`, `isInvitationOfThatName`,
+`directoryQueryForHandle`, `JOIN_REFERENCE_RULE` — and its sentences are
+byte-identical to the Python SDK's `rine._group_join`, pinned against it by a
+contract test.
+
+### Fixed — a group handle written without its `#` resolves
+
+`resolveGroupUuid` sends the sigil on `?handle=`, which is the form the server
+stores and compares against. `ops@acme.rine.network` matched no group where
+`#ops@acme.rine.network` did, so a caller seated in the group was told its
+handle reached nothing.
+
+### Fixed — a group reference written with a doubled `#` resolves
+
+`groupLocalPart` strips every leading `#` rather than only the first, which is
+what the Python SDK's `group_local_part` already did. A reference that carries
+the sigil twice — `##ops` against an invitation to `#ops@acme.rine.network` —
+was read as a group named `#ops` here and as one named `ops` there, so the same
+join was seated by the Python surfaces and refused by the TypeScript ones. That
+is the cross-stack split `group-join-words.ts` exists to prevent. The match
+stays bounded to groups that have already invited this agent, so nothing wider
+is reachable than before, and whole-handle exactness is untouched:
+`#ops@acme.rine.network` and `##ops@acme.rine.network` remain different handles.
+
+### Added — a group read says what its catch-up applied
+
+Opening a closed group's message advances that group's MLS state first, and
+that work is now reported instead of discarded. `DecryptResult.catchUp` carries
+the commits this read applied, the epoch they left the group on, and whether one
+of them evicted this agent — a member who restores an old backup no longer reads
+exactly like a current one. It reports work, never distance: "how far behind was
+I" costs a round trip per read and stays with the explicit catch-up verb.
+
+**Breaking for direct consumers of `catchUpMlsGroup`.** It returns
+`MlsSyncResult | null` rather than `boolean`; `null` means nothing to report,
+which is the 60 s floor declining the attempt or the attempt failing, and both
+leave the read exactly where it was. Matches the Python SDK's
+`catch_up_mls_group`.
+
+### Added — a sender key that never arrives is explained instead of echoed
+
+`unknown sender key id: <uuid>` is what the sender-key open throws so the
+recovery knows what to fetch, and three surfaces printed it verbatim at an
+operator. New in `sender-key-words.ts`: `unknownSenderKeyId` (the one predicate
+that recognises it, replacing three open-coded regexes), `senderKeyUnavailableMessage`
+and the `SenderKeyUnavailableError` it names, `asSenderKeyUnavailable` for the
+surface that translates at its boundary, and `SENDER_KEY_UNAVAILABLE_PREVIEW`
+for a one-line stream row. The refusal is minted only after the one-shot
+recovery has run and come back empty, so it says what happened, what to do
+instead, and what is not coming back. The thrown control string is unchanged.
+
+### Added — one home for the sentence that reports an eviction
+
+`MLS_EVICTED_BY_COMMIT` is the sentence `describeMlsRecovery` already appended
+to an evicting recovery, now a constant so a plain read can report the same
+event in the same words. Rendered output is unchanged.
+
+## [0.13.0] - 2026-07-25
+
+### Changed — a message the row's sender did not sign comes back with no content
+
+A 1:1 decrypt whose envelope was signed by an agent other than the sender the
+server authenticated returns its verdict — `sender-mismatch`, or `invalid` when
+the signature does not check out against the sender's published key — and no
+`plaintext`. The group paths already refused such a message by throwing, so both
+halves now refuse identically. `decryptMessage` returns a `MessageDecryptResult`
+whose `plaintext` is absent on a refusal; narrow on it, or on
+`isAuthenticityFailure`, before reading the body. A verdict that could not be
+reached is unchanged: an `unverifiable` message still returns its content.
+
+### Added — the x402 money paths refuse a body their sender did not sign
+
+`requireAuthenticPlaintext` returns an x402 message's body only when the
+envelope was signed by the agent the server authenticated as its sender, and
+otherwise throws the typed `inauthentic-sender` error the payer and payee
+surfaces report. Group refusals now carry their verdict on a
+`GroupAuthenticityError`, so a caller that catches one can tell a misattributed
+turn from a key-lookup miss.
+
+### Changed — peer signing keys are cached when verifying, never when sending
+
+Verifying a message's sender reads the peer's signing key from a short-lived
+cache. Sending fetches a fresh key every time, so a peer's key rotation is
+visible to the very next send. The two paths are deliberately asymmetric: the
+verify path can recover from a stale key by refetching, and the send path
+cannot, so only verification is allowed to trade freshness for a cached read.
+
+### Added — `keyChanged` on the decrypt result
+
+When a verification failure prompts a refetch and the peer's key has changed,
+the result carries a `SenderKeyChange` naming the agent and the previous and
+current key fingerprints. Fingerprints are hex SHA-256 over the raw Ed25519 key.
+A refetch that returns the same key raises no change and is not retried again.
+
 ## [0.12.0] - 2026-07-23
 
 ### Changed — MLS groups move to a new core, and existing MLS groups must be recreated

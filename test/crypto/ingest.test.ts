@@ -3,7 +3,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ingestSenderKeyDistribution } from "../../src/crypto/ingest.js";
-import { loadSenderKeyStates } from "../../src/crypto/sender-keys-helpers.js";
+import {
+	loadSenderKeyStates,
+	markSenderKeysRetired,
+	senderKeysRetired,
+	unretireSenderKeys,
+} from "../../src/crypto/sender-keys-helpers.js";
 import type { DecryptResult } from "../../src/crypto/message.js";
 
 function makeTmpDir(): string {
@@ -114,5 +119,67 @@ describe("ingestSenderKeyDistribution", () => {
 			makeDecryptResult({ plaintext: "not json" }),
 		);
 		expect(result).toBe(false);
+	});
+
+	it("test_ingest_when_the_group_was_retired_then_the_key_is_refused", () => {
+		markSenderKeysRetired(dir, AGENT_ID, GROUP_ID);
+
+		const result = ingestSenderKeyDistribution(
+			dir,
+			AGENT_ID,
+			"rine.v1.sender_key_distribution",
+			makeDecryptResult(),
+		);
+
+		expect(result).toBe(false);
+		expect(loadSenderKeyStates(dir, AGENT_ID, GROUP_ID)).toEqual([]);
+	});
+
+	it("test_ingest_when_another_group_was_retired_then_this_one_still_ingests", () => {
+		const otherGroup = "e5f6a7b8-c9d0-1234-efab-345678901234";
+		markSenderKeysRetired(dir, AGENT_ID, otherGroup);
+
+		const result = ingestSenderKeyDistribution(
+			dir,
+			AGENT_ID,
+			"rine.v1.sender_key_distribution",
+			makeDecryptResult(),
+		);
+
+		expect(result).toBe(true);
+	});
+
+	it("test_ingest_when_the_retirement_was_written_upper_cased_then_it_still_refuses", () => {
+		// The marker and the state file have to agree on one spelling of the group
+		// id or a retirement written from an upper-cased id is invisible to the
+		// reader that matters — the ingest path, which takes the id from the
+		// distribution payload and never normalises it.
+		markSenderKeysRetired(dir, AGENT_ID, GROUP_ID.toUpperCase());
+
+		const result = ingestSenderKeyDistribution(
+			dir,
+			AGENT_ID,
+			"rine.v1.sender_key_distribution",
+			makeDecryptResult(),
+		);
+
+		expect(result).toBe(false);
+	});
+
+	it("test_ingest_when_the_retirement_is_lifted_then_the_key_is_taken_again", () => {
+		markSenderKeysRetired(dir, AGENT_ID, GROUP_ID);
+		expect(senderKeysRetired(dir, AGENT_ID, GROUP_ID)).toBe(true);
+
+		unretireSenderKeys(dir, AGENT_ID, GROUP_ID);
+
+		expect(senderKeysRetired(dir, AGENT_ID, GROUP_ID)).toBe(false);
+		expect(
+			ingestSenderKeyDistribution(
+				dir,
+				AGENT_ID,
+				"rine.v1.sender_key_distribution",
+				makeDecryptResult(),
+			),
+		).toBe(true);
 	});
 });

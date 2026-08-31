@@ -299,8 +299,9 @@ describe("verbatim-object round-trip through the real E2EE envelope", () => {
 			RECIPIENT_ID,
 			enc.encrypted_payload,
 			client as never,
+			SENDER_ID,
 		);
-		return parseX402Payload(built.type, dec.plaintext);
+		return parseX402Payload(built.type, dec.plaintext as string);
 	}
 
 	it("roundTrip_paymentRequired_preservesObjectByteForByte", async () => {

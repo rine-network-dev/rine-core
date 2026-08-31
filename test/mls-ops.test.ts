@@ -22,6 +22,7 @@ vi.mock("../src/crypto/mls-api.js", async () => {
 			stored: p.length,
 		})),
 		claimKeyPackages: vi.fn(async () => ({ packages: [], agent_id: "" })),
+		claimKeyPackagesBatch: vi.fn(async () => ({ claims: [] })),
 		mlsFromBase64: vi.fn(actual.mlsFromBase64),
 		mlsInit: vi.fn(async () => ({ mls_pending: true, members: [] })),
 		mlsCommit: vi.fn(async () => ({ epoch: null, delivered_to: 1 })),
@@ -33,9 +34,15 @@ vi.mock("../src/crypto/mls-api.js", async () => {
 	};
 });
 
-import { generateAgentKeys, saveAgentKeys } from "../src/crypto/keys.js";
+import {
+	agentKeysExist,
+	generateAgentKeys,
+	saveAgentKeys,
+	signingPublicKeyToJWK,
+} from "../src/crypto/keys.js";
 import {
 	claimKeyPackages,
+	claimKeyPackagesBatch,
 	fetchGroupInfo,
 	fetchHandshakes,
 	fetchWelcomes,
@@ -74,7 +81,38 @@ let dir: string;
 /** Every commit body the code posted, in order. */
 let posted: MlsCommitBody[];
 
-const client = {} as never;
+/**
+ * The reads the admission path makes outside `crypto/mls-api.js`: who already
+ * holds a leaf, and how big the tree it is joining is. Answering "nobody" and
+ * "just the founder" keeps these cases about the MLS mechanics; the batching
+ * and resume behaviour those reads drive is exercised in `mls-admission.test.ts`.
+ */
+const client = {
+	get: async (path: string, params?: Record<string, string>) => {
+		if (path === "/agents/keys") return { keys: publishedKeys(params) };
+		if (path === `/groups/${GROUP_ID}`) return { member_count: 1 };
+		if (path === `/groups/${GROUP_ID}/requests`) return { items: [] };
+		throw new Error(`unexpected GET ${path}`);
+	},
+} as never;
+
+/**
+ * The published signing keys `GET /agents/keys` would return for `ids`.
+ *
+ * An agent with no keys on disk is simply absent, which is how the server
+ * answers for a revoked or erased one — and what `removeMlsGroupMember` reads
+ * to decide whether there is a leaf to name at all.
+ */
+function publishedKeys(params?: Record<string, string>) {
+	const keys: Record<string, unknown> = {};
+	for (const id of String(params?.ids ?? "").split(",")) {
+		if (!id || !agentKeysExist(dir, id)) continue;
+		// The MLS basic-credential identity is the agent's raw Ed25519 key.
+		const jwk = signingPublicKeyToJWK(openMlsClient(dir, id).publicKey());
+		keys[id] = { signing_public_key: jwk, encryption_public_key: jwk };
+	}
+	return keys;
+}
 
 function agent(agentId: string) {
 	saveAgentKeys(dir, agentId, generateAgentKeys());
@@ -82,10 +120,14 @@ function agent(agentId: string) {
 
 /** One claimable key package for `agentId`, minted by that agent's own client. */
 function offerKeyPackage(agentId: string): void {
-	const pkg = openMlsClient(dir, agentId).generateKeyPackage();
+	const pkg = mlsToBase64(openMlsClient(dir, agentId).generateKeyPackage());
+	// Founding claims in batches, adding a member claims one at a time.
 	vi.mocked(claimKeyPackages).mockResolvedValue({
-		packages: [mlsToBase64(pkg)],
+		packages: [pkg],
 		agent_id: agentId,
+	});
+	vi.mocked(claimKeyPackagesBatch).mockResolvedValue({
+		claims: [{ agent_id: agentId, packages: [pkg] }],
 	});
 }
 
@@ -223,7 +265,7 @@ describe("ensureMlsKeyPackages", () => {
 });
 
 describe("drainAndRepublishMlsKeyPackages", () => {
-	it("replaces the whole pool rather than adding to it (SPEC DEC-7)", async () => {
+	it("replaces the whole pool rather than adding to it", async () => {
 		const mls = openMlsClient(dir, SELF_ID);
 		const before = mls
 			.generateKeyPackages(4)
@@ -248,8 +290,8 @@ describe("initMlsGroup", () => {
 		await foundGroup();
 
 		expect(mlsInit).toHaveBeenCalledWith(client, GROUP_ID, undefined);
-		expect(claimKeyPackages).toHaveBeenCalledWith(client, MEMBER_ID);
-		expect(claimKeyPackages).toHaveBeenCalledTimes(1); // never for self
+		expect(claimKeyPackagesBatch).toHaveBeenCalledWith(client, [MEMBER_ID]);
+		expect(claimKeyPackagesBatch).toHaveBeenCalledTimes(1); // never for self
 		expect(posted).toHaveLength(1);
 
 		const body = posted[0]!;
@@ -264,6 +306,40 @@ describe("initMlsGroup", () => {
 			epoch: 1,
 			cipherSuite: 0xf057,
 		});
+	});
+
+	it("founds without a member whose key package pool emptied, rather than failing", async () => {
+		agent(THIRD_ID);
+		const pkg = mlsToBase64(openMlsClient(dir, MEMBER_ID).generateKeyPackage());
+		vi.mocked(claimKeyPackagesBatch).mockResolvedValue({
+			claims: [
+				{ agent_id: MEMBER_ID, packages: [pkg] },
+				// Drained between /mls/init reporting it and the claim landing.
+				{ agent_id: THIRD_ID, packages: [] },
+			],
+		});
+		vi.mocked(mlsInit).mockResolvedValue({
+			mls_pending: true,
+			members: [
+				{ agent_id: SELF_ID, has_key_package: true },
+				{ agent_id: MEMBER_ID, has_key_package: true },
+				{ agent_id: THIRD_ID, has_key_package: true },
+			],
+		});
+
+		const result = await initMlsGroup(dir, SELF_ID, GROUP_ID, client);
+
+		expect(result.added).toBe(1);
+		expect(result.outcomes).toContainEqual({
+			agentId: THIRD_ID,
+			status: "skipped",
+			reason: "no_key_package",
+		});
+		expect(claimKeyPackagesBatch).toHaveBeenCalledWith(client, [
+			MEMBER_ID,
+			THIRD_ID,
+		]);
+		expect(posted[0]?.welcomes?.map((w) => w.agent_id)).toEqual([MEMBER_ID]);
 	});
 
 	it("tops up the acting agent's own inventory before founding", async () => {
@@ -304,9 +380,8 @@ describe("addMlsGroupMember", () => {
 
 	it("throws when the member published no key package", async () => {
 		await foundGroup();
-		vi.mocked(claimKeyPackages).mockResolvedValue({
-			packages: [],
-			agent_id: THIRD_ID,
+		vi.mocked(claimKeyPackagesBatch).mockResolvedValue({
+			claims: [{ agent_id: THIRD_ID, packages: [] }],
 		});
 		await expect(
 			addMlsGroupMember(dir, SELF_ID, GROUP_ID, THIRD_ID, client),
@@ -350,26 +425,79 @@ describe("addMlsGroupMember", () => {
 });
 
 describe("removeMlsGroupMember", () => {
-	it("commits a remove by leaf index and advances local state", async () => {
+	it("commits a remove for the named agent and advances local state", async () => {
 		await foundGroup();
 		posted.length = 0;
 
-		const { epoch } = await removeMlsGroupMember(
+		const result = await removeMlsGroupMember(
 			dir,
 			SELF_ID,
 			GROUP_ID,
-			1,
+			MEMBER_ID,
 			client,
 		);
 
-		expect(epoch).toBe(2);
+		expect(result).toEqual({ epoch: 2, removedLeaf: true });
 		expect(posted[0]!.welcomes).toEqual([]);
 		expect(loadMlsState(dir, SELF_ID, GROUP_ID)!.epoch).toBe(2);
 	});
 
+	it("declares the target on the commit, so the DELETE has something to spend", async () => {
+		await foundGroup();
+		posted.length = 0;
+
+		await removeMlsGroupMember(dir, SELF_ID, GROUP_ID, MEMBER_ID, client);
+
+		// Without the declaration the server refuses the DELETE with
+		// mls_removal_commit_required and the member row can never be dropped.
+		expect(posted[0]!.removes).toEqual([MEMBER_ID]);
+	});
+
+	it("commits a path-only rescue when the target holds no leaf, and reports it took none", async () => {
+		// The stranded removal: the Remove landed and the DELETE did not,
+		// so the leaf is already out of the tree and no second Remove can be built
+		// for it. Before the rescue the client could produce no epoch at all and
+		// the member row was stuck for good.
+		await foundGroup();
+		await removeMlsGroupMember(dir, SELF_ID, GROUP_ID, MEMBER_ID, client);
+		posted.length = 0;
+
+		const result = await removeMlsGroupMember(
+			dir,
+			SELF_ID,
+			GROUP_ID,
+			MEMBER_ID,
+			client,
+		);
+
+		expect(result).toEqual({ epoch: 3, removedLeaf: false });
+		expect(posted[0]!.removes).toEqual([MEMBER_ID]);
+		expect(posted[0]!.welcomes).toEqual([]);
+		expect(loadMlsState(dir, SELF_ID, GROUP_ID)!.epoch).toBe(3);
+	});
+
+	it("rescues an agent the server publishes no signing key for", async () => {
+		// Revoked or erased: no basic-credential identity to resolve, so no leaf
+		// to name — and before the rescue such an agent could never be dropped
+		// from an MLS group at all.
+		await foundGroup();
+		posted.length = 0;
+
+		const result = await removeMlsGroupMember(
+			dir,
+			SELF_ID,
+			GROUP_ID,
+			THIRD_ID,
+			client,
+		);
+
+		expect(result).toEqual({ epoch: 2, removedLeaf: false });
+		expect(posted[0]!.removes).toEqual([THIRD_ID]);
+	});
+
 	it("throws when no MLS state exists", async () => {
 		await expect(
-			removeMlsGroupMember(dir, SELF_ID, GROUP_ID, 1, client),
+			removeMlsGroupMember(dir, SELF_ID, GROUP_ID, MEMBER_ID, client),
 		).rejects.toThrow(`No MLS state for group ${GROUP_ID}`);
 	});
 });

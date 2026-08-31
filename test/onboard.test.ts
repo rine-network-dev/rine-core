@@ -403,7 +403,7 @@ describe("performAgentCreation", () => {
 	});
 
 	// -----------------------------------------------------------------------
-	// PQ hybrid upload (T6 regression — A11)
+	// PQ hybrid upload
 	//
 	// generateAgentKeys() always populates a pqEncryption keypair, so the POST
 	// body MUST carry pq_encryption_public_key as a ML-KEM JWK. If the

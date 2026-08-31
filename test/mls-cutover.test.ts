@@ -1,5 +1,5 @@
 /**
- * SPEC DEC-7 — the KeyPackage cutover, driven against the REAL native core.
+ * The KeyPackage cutover, driven against the REAL native core.
  *
  * Only the network is mocked: `crypto/mls-api.js` stands in for the server's
  * upload/claim pair, backed by an in-memory pool that behaves the way the

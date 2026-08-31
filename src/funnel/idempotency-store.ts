@@ -1,4 +1,4 @@
-// rine Funnel relay-side webhook de-dup (T8). The relay's HMAC verify
+// rine Funnel relay-side webhook de-dup. The relay's HMAC verify
 // authenticates the BODY only — a captured signed webhook (leaked CI log,
 // pre-TLS MITM at the source, shared transcript) replays forever, minting
 // duplicate `rine.v1.webhook` inbox messages with no de-dup. This bounded

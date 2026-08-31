@@ -128,7 +128,14 @@ describe("external join — full orchestrator round-trip", () => {
 		const enc = await encryptMlsGroupMessage(dir, joinerId, GROUP_ID, { hi: "there" });
 		expect(enc.encryption_version).toBe("mls-v1");
 
-		const dec = await decryptGroupMessage(dir, creatorId, GROUP_ID, enc.encrypted_payload, client);
+		const dec = await decryptGroupMessage(
+			dir,
+			creatorId,
+			GROUP_ID,
+			enc.encrypted_payload,
+			client,
+			joinerId,
+		);
 		expect(JSON.parse(dec.plaintext)).toEqual({ hi: "there" });
 		expect(dec.verified).toBe(true);
 	});

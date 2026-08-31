@@ -11,6 +11,7 @@ import {
 	toBase64Url,
 } from "../../src/crypto/keys.js";
 import { encryptGroupMessage } from "../../src/crypto/message.js";
+import { unknownSenderKeyId } from "../../src/sender-key-words.js";
 import {
 	advanceChain,
 	deriveMessageKey,
@@ -126,7 +127,13 @@ describe("sealGroup + openGroup roundtrip", () => {
 		expect(Buffer.from(ct1).equals(Buffer.from(ct2))).toBe(false);
 	});
 
-	it("rejects unknown sender key id", async () => {
+	it("rejects unknown sender key id, in the words the recovery reads", async () => {
+		// 🔴 This throw is a control signal, not prose: three recovery paths
+		// read the missing id back off it to know what to fetch, and a reworded
+		// throw breaks all three SILENTLY. Asserting through the shared
+		// predicate is what makes a reword fail here instead of in production —
+		// the sentence an operator reads is composed at the surface
+		// (`senderKeyUnavailableMessage`), never here.
 		const signing = generateSigningKeyPair();
 		const state = makeState();
 		const { encryptedPayload } = await sealGroup(
@@ -136,9 +143,22 @@ describe("sealGroup + openGroup roundtrip", () => {
 			new Uint8Array([1]),
 		);
 
-		await expect(openGroup(new Map(), encryptedPayload)).rejects.toThrow(
-			"unknown sender key id",
+		const err = await openGroup(new Map(), encryptedPayload).catch(
+			(e: unknown) => e,
 		);
+
+		expect(unknownSenderKeyId(err)).toBe(state.senderKeyId);
+	});
+
+	it("does not read a missing-key id off any other failure", async () => {
+		// The predicate's other half: "message key expired or already consumed"
+		// is a different fact with a different remedy, and a recovery that
+		// treated it as a missing key would fetch for ever.
+		expect(
+			unknownSenderKeyId(new Error("message key expired or already consumed")),
+		).toBeNull();
+		expect(unknownSenderKeyId(new Error("encrypted payload too short"))).toBeNull();
+		expect(unknownSenderKeyId("unknown sender key id: not-an-error")).toBeNull();
 	});
 
 	it("rejects wrong version byte", async () => {
