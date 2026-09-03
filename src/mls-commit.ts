@@ -1,7 +1,7 @@
 import type { CommitBundle, MlsGroup } from "@rine-network/mls";
 import { mlsCommit, mlsToBase64 } from "./crypto/mls-api.js";
 import { RineApiError } from "./errors.js";
-import type { HttpClient } from "./http.js";
+import { type MlsActor, mlsHeartbeat } from "./mls-heartbeat.js";
 
 /** A member a commit admits, and the KeyPackage claimed for them. */
 export interface Joiner {
@@ -40,9 +40,15 @@ export function isEpochConflict(err: unknown): boolean {
  * commit really carries a Remove for these agents. Declaring buys that
  * the claim was made in advance — before the poster knew which DELETE would
  * land — and that it is spendable exactly once.
+ *
+ * Every commit the product posts passes through here, which is why the acting
+ * agent's key-package heartbeat lives here too: seven verbs get it structurally
+ * and an eighth cannot ship without one. It beats AFTER the server has accepted
+ * the commit — the commit is the caller's purpose, replenishment is
+ * maintenance, and a top-up must never be the reason a commit did not land.
  */
 export async function postMlsCommit(
-	client: HttpClient,
+	actor: MlsActor,
 	groupId: string,
 	group: MlsGroup,
 	bundle: CommitBundle,
@@ -61,7 +67,7 @@ export async function postMlsCommit(
 	});
 
 	const resp = await mlsCommit(
-		client,
+		actor.client,
 		groupId,
 		{
 			commit: mlsToBase64(bundle.commit),
@@ -73,5 +79,6 @@ export async function postMlsCommit(
 		},
 		extraHeaders,
 	);
+	await mlsHeartbeat(actor, "gated");
 	return resp.epoch ?? bundle.epoch;
 }

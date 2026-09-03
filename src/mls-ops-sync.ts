@@ -8,6 +8,7 @@ import {
 import { isUnprocessableCommit } from "./crypto/mls-errors.js";
 import { openMlsGroup } from "./crypto/mls.js";
 import type { HttpClient } from "./http.js";
+import { mlsHeartbeat } from "./mls-heartbeat.js";
 import { externalJoinMlsGroup } from "./mls-ops-join.js";
 
 export interface MlsSyncResult {
@@ -28,6 +29,12 @@ export interface MlsSyncResult {
 /**
  * Sync local MLS group state by fetching and applying every commit posted since
  * the group's current epoch.
+ *
+ * Carries the acting agent's key-package heartbeat, which is what covers the
+ * verbs that post no commit — the catch-up behind an ordinary read, the replay
+ * rung of a recovery, and the retries behind a removal or a reclamation. It
+ * beats BEFORE the group handle is opened, so only one MLS handle for this
+ * store root is ever live at a time.
  */
 export async function syncMlsGroup(
 	configDir: string,
@@ -36,6 +43,7 @@ export async function syncMlsGroup(
 	client: HttpClient,
 	extraHeaders?: Record<string, string>,
 ): Promise<MlsSyncResult> {
+	await mlsHeartbeat({ configDir, agentId, client }, "gated");
 	const group = openMlsGroup(configDir, agentId, groupId);
 	const { handshakes } = await fetchHandshakes(
 		client,

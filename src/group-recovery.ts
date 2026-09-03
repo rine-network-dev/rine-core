@@ -48,7 +48,16 @@ import {
 } from "./crypto/group-predicates.js";
 import type { GroupRegimeFields } from "./crypto/group-predicates.js";
 import type { HttpClient } from "./http.js";
-import { recoverMlsGroup } from "./mls-ops-resync.js";
+import {
+	NO_KEY_PACKAGE_TOP_UP,
+	topUpKeyPackages,
+} from "./mls-keypackage-topup.js";
+import type { KeyPackageTopUp } from "./mls-keypackage-topup.js";
+import {
+	MlsResyncUnavailableError,
+	isMlsResyncUnavailable,
+	recoverMlsGroup,
+} from "./mls-ops-resync.js";
 import type { MlsRecoveryResult } from "./mls-ops-resync.js";
 import {
 	mlsInitInFlightSync,
@@ -118,6 +127,14 @@ export interface SenderKeyRecoveryResult {
 	 * first on MCP and raise `TypeError` on hermes.
 	 */
 	mlsNeverFoundedNote?: string;
+	/**
+	 * What the key-package top-up that rode along with this recovery did.
+	 *
+	 * Absent when the recovery was not driven through `recoverGroup` — the
+	 * `mlsNeverFoundedNote` rule: a consumer spreading the result into JSON then
+	 * emits no key at all rather than a null.
+	 */
+	keyPackages?: KeyPackageTopUp;
 }
 
 /** What recovering a group did, whichever encryption it runs. */
@@ -180,17 +197,47 @@ export async function recoverGroup(
 	const mlsNeverFoundedNote = groupMlsNeverFounded(group)
 		? mlsNeverFoundedSync(repair)
 		: undefined;
+	// 🔴 AHEAD of the regime branch, and ahead of the throw inside it. An agent
+	// whose published key packages have run out is un-addable: no member can mint
+	// it a Welcome, so a carried vote seats it on the roster with no leaf, and
+	// `recoverMlsGroup` answers that agent by THROWING — its local state will not
+	// load, because it never had any. A top-up attached to the returned result
+	// would run for every group except the one this exists to fix, so it runs
+	// here and rides on both the result and the refusal.
+	const keyPackages = groupIsMls(group)
+		? await topUpKeyPackages({ configDir, agentId, client })
+		: NO_KEY_PACKAGE_TOP_UP;
 	// `recoverMlsGroup` sets `regime: "mls"` on both of its own returns, so this
 	// arm re-tags nothing: a discriminant restated at the call site is a second
 	// place it can be forgotten.
 	if (groupIsMls(group)) {
-		return await recoverMlsGroup(
-			configDir,
-			agentId,
-			group.id,
-			client,
-			extraHeaders,
-		);
+		try {
+			const recovered = await recoverMlsGroup(
+				configDir,
+				agentId,
+				group.id,
+				client,
+				extraHeaders,
+			);
+			return { ...recovered, ...topUpField(keyPackages) };
+		} catch (err) {
+			// Re-minted rather than mutated, the `resyncFailure` precedent: the
+			// message is composed in the constructor, so a refusal that learned
+			// about the top-up afterwards would carry a field its own sentence
+			// never mentions. Every other failure is somebody else's to explain.
+			//
+			// 🔴 And re-minted WITHOUT a `cause`. This is a replacement for the
+			// refusal, not a wrapper around a different failure: the inner error's
+			// message is this one's message minus the top-up line. Every renderer
+			// in this repo concatenates an error with its cause — `formatError`
+			// returns `${message}: ${cause.message}` — so carrying it would print
+			// the whole admin-remedy paragraph, then the top-up sentence, then the
+			// paragraph again, with the top-up report reading as a prefix to a
+			// duplicate. An error that composes the operator's whole sentence does
+			// not also carry the sentence it replaced.
+			if (!isMlsResyncUnavailable(err)) throw err;
+			throw new MlsResyncUnavailableError(group.id, { keyPackages });
+		}
 	}
 	// Asked before the scan so the two zeroes can be told apart: "nothing was
 	// waiting" and "this agent's material was retired here" are different facts
@@ -205,6 +252,7 @@ export async function recoverGroup(
 			ingested: 0,
 			retired: true,
 			...(mlsNeverFoundedNote ? { mlsNeverFoundedNote } : {}),
+			...topUpField(keyPackages),
 		};
 	}
 	// The scan, not the count-only wrapper every read path calls: this is the one
@@ -229,5 +277,17 @@ export async function recoverGroup(
 		// reporting that nothing happened.
 		...(scan.unscanned > 0 ? { unscanned: scan.unscanned } : {}),
 		...(mlsNeverFoundedNote ? { mlsNeverFoundedNote } : {}),
+		...topUpField(keyPackages),
 	};
+}
+
+/**
+ * The top-up, spread rather than assigned — the `mlsNeverFoundedNote` rule. A
+ * group that runs sender keys has no key packages to report on, so it reports
+ * no key, not a `healthy` nobody asked about.
+ */
+function topUpField(
+	keyPackages: KeyPackageTopUp,
+): { keyPackages?: KeyPackageTopUp } {
+	return keyPackages.outcome === "healthy" ? {} : { keyPackages };
 }

@@ -124,9 +124,14 @@ export interface GroupRefusalParts {
  * implementation of this seam is a second place for it to diverge.
  *
  * @internal Cross-module seam, not a supported `@rine-network/core` API. It
- * reaches npm only because `index.ts` re-exports this module with `export *`,
- * and its Python twin `_join_sentences` stays underscore-private. Nothing
- * outside this package should depend on it.
+ * reaches npm only because `index.ts` re-exports this module with `export *`.
+ * Nothing outside this package should depend on it.
+ *
+ * ⚠️ Python holds no single twin for this one — the two stacks split the job
+ * differently. `_terminated` (`rine-sdk/src/rine/_group_ref.py`) supplies the
+ * stop and its callers compose inline. (The nearby `joinLines` DOES have a
+ * one-to-one twin, `_join_lines`; do not conflate them — that one joins with a
+ * newline, this one with a sentence stop.)
  */
 export function joinSentences(opening: string, next: string): string {
 	if (next === "") return opening;

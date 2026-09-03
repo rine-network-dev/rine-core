@@ -408,7 +408,38 @@ describe("addMlsGroupMembers", () => {
 		).toBe(true);
 	});
 
-	it("surfaces a failure that is not about recipients", async () => {
+	it("catches up and rebuilds once when a peer's commit wins the epoch", async () => {
+		// The gap this closes: admission was the ONE MLS commit verb with no
+		// sync-and-retry, while join, removal, reclamation and resync all had
+		// one — so `group resume-admission`, the verb an operator reaches for
+		// precisely when other members are committing, reported the race instead
+		// of resolving it. The rebuild is sound because the commit is built over
+		// state re-read each pass, and the KeyPackages this batch claimed are
+		// one-time keys bound to their owner, not to an epoch.
+		seedGroup();
+		vi.mocked(mlsCommit).mockRejectedValueOnce(
+			new RineApiError(409, "stale epoch", undefined, "epoch_conflict"),
+		);
+
+		const result = await addMlsGroupMembers(
+			dir,
+			SELF_ID,
+			GROUP_ID,
+			agents(1),
+			client,
+		);
+
+		expect(result).toMatchObject({ added: 1 });
+		expect(mlsCommit).toHaveBeenCalledTimes(2);
+		// The catch-up itself, and not merely a second attempt at the same
+		// superseded epoch: a rebuild that skipped it would race identically.
+		expect(fetchHandshakes).toHaveBeenCalled();
+	});
+
+	it("surfaces a lost epoch that the catch-up does not resolve", async () => {
+		// One retry, never a loop. A second refusal means this batch cannot be
+		// made to land, and an unbounded retry against an advancing epoch is a
+		// self-DoS.
 		seedGroup();
 		vi.mocked(mlsCommit).mockRejectedValue(
 			new RineApiError(409, "stale epoch", undefined, "epoch_conflict"),
@@ -416,6 +447,101 @@ describe("addMlsGroupMembers", () => {
 		await expect(
 			addMlsGroupMembers(dir, SELF_ID, GROUP_ID, agents(1), client),
 		).rejects.toThrow("stale epoch");
+		expect(mlsCommit).toHaveBeenCalledTimes(2);
+	});
+
+	/**
+	 * A second admin, holding real state, seats `joiners` in a commit of its own
+	 * — the commit that wins the CAS below — and queues it as the handshake the
+	 * catch-up will read.
+	 *
+	 * Nothing is faked into the tree: the peer installs its own Welcome, claims
+	 * `joiners` a DIFFERENT KeyPackage than the admission under test will claim,
+	 * and posts a genuine Add. That is the whole premise — a claim is exclusive
+	 * per package, not per agent, so both admins hold a valid one for the same
+	 * joiner.
+	 */
+	async function peerSeats(joiners: string[]): Promise<void> {
+		const peer = agent();
+		vi.mocked(mlsInit).mockResolvedValue({
+			mls_pending: true,
+			members: [SELF_ID, peer].map((agent_id) => ({
+				agent_id,
+				has_key_package: true,
+			})),
+		});
+		await initMlsGroup(dir, SELF_ID, GROUP_ID, client);
+		await processMlsWelcomes(dir, peer, client);
+		const group = openMlsGroup(dir, peer, GROUP_ID);
+		const bundle = group.addMembers(
+			joiners.map((id) => openMlsClient(dir, id).generateKeyPackage()),
+		);
+		group.save();
+		vi.mocked(fetchHandshakes).mockResolvedValueOnce({
+			handshakes: [
+				{
+					id: randomUUID(),
+					epoch: 2,
+					blob: mlsToBase64(bundle.commit),
+					created_at: new Date().toISOString(),
+				},
+			],
+		});
+		vi.mocked(mlsCommit).mockClear();
+	}
+
+	it("drops a joiner the winning commit already seated, and rebuilds with the rest", async () => {
+		// The retry's unsound assumption, made concrete: the commit that won the
+		// race seated one of this batch. Rebuilding the Add over a leaf the tree
+		// now holds is a duplicate identity, which the native core refuses out of
+		// the commit BUILDER — outside the retry's `try`, so out of the whole
+		// admission, with the ledger unwritten and every later batch unrun.
+		const [seatedByPeer, mine] = agents(2);
+		await peerSeats([seatedByPeer as string]);
+		vi.mocked(mlsCommit).mockRejectedValueOnce(
+			new RineApiError(409, "stale epoch", undefined, "epoch_conflict"),
+		);
+
+		const result = await addMlsGroupMembers(
+			dir,
+			SELF_ID,
+			GROUP_ID,
+			[seatedByPeer as string, mine as string],
+			client,
+		);
+
+		// `already_in_group`, not `added`: this client did not seat them, it lost
+		// to the client that did. Their claimed KeyPackage is spent either way.
+		expect(outcomeFor(result, seatedByPeer as string)).toEqual({
+			agentId: seatedByPeer as string,
+			status: "skipped",
+			reason: "already_in_group",
+		});
+		expect(result).toMatchObject({ added: 1, commits: 1 });
+		expect(posted.at(-1)?.welcomes?.map((w) => w.agent_id)).toEqual([mine]);
+	});
+
+	it("reports a batch the winning commit seated whole, and posts nothing", async () => {
+		// Nothing left to add is not a failure and not an empty commit: the
+		// admission records what the race did and returns, so the batches after
+		// it still run.
+		const [taken] = agents(1);
+		await peerSeats([taken as string]);
+		vi.mocked(mlsCommit).mockRejectedValueOnce(
+			new RineApiError(409, "stale epoch", undefined, "epoch_conflict"),
+		);
+
+		const result = await addMlsGroupMembers(
+			dir,
+			SELF_ID,
+			GROUP_ID,
+			[taken as string],
+			client,
+		);
+
+		expect(result).toMatchObject({ added: 0, commits: 0 });
+		expect(outcomeFor(result, taken as string)?.reason).toBe("already_in_group");
+		expect(mlsCommit).toHaveBeenCalledTimes(1);
 	});
 
 	it("prices the tree only when there is more than one member to seat", async () => {

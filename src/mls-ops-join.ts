@@ -10,7 +10,7 @@ import { type MlsGroup, loadMlsGroup, openMlsClient } from "./crypto/mls.js";
 import { RineApiError } from "./errors.js";
 import type { HttpClient } from "./http.js";
 import { postMlsCommit } from "./mls-commit.js";
-import { replenishMlsKeyPackages } from "./mls-keypackages.js";
+import { mlsHeartbeat } from "./mls-heartbeat.js";
 import {
 	type MlsWelcomeRefusedError,
 	refusalIsRetryable,
@@ -180,8 +180,8 @@ export async function processMlsWelcomes(
 			// A different core or a different ciphersuite minted it and no later
 			// attempt changes that, so it leaves the spool — a permanently
 			// unjoinable Welcome must not fail every future pass. It is counted and
-			// the pass carries on, because throwing here would skip
-			// `replenishMlsKeyPackages` and throw away the ids this pass DID install,
+			// the pass carries on, because throwing here would skip the
+			// key-package heartbeat and throw away the ids this pass DID install,
 			// for one Welcome nobody can ever use. The Python twin
 			// (`_mls/welcomes.py` `_install`) reaches the same outcome.
 			spool.discard(path);
@@ -211,14 +211,24 @@ export async function processMlsWelcomes(
 		spool.discard(path);
 	}
 
-	// Each processed welcome consumed one key package. This is the only path on
-	// which an agent's OWN inventory shrinks, so it is where replenishment
-	// matters most: without it the agent silently becomes un-addable once the
-	// onboarding batch runs out. Before the refusal, so a substituted Welcome
-	// cannot cost this agent its pool as well.
-	if (groupIds.length > 0) {
-		await replenishMlsKeyPackages(configDir, agentId, client);
-	}
+	// Each processed welcome consumed one key package, and this is the only path
+	// on which an agent's OWN inventory shrinks — so the beat here is forced,
+	// never gated: waiting out a floor would leave the agent short in exactly
+	// the window a peer is most likely to add it.
+	//
+	// Unconditional WITHIN THE PASS, which is the whole claim and the wording
+	// the Python twin already carries. `:151` returns early on an empty spool,
+	// so a pass that found nothing never arrives here — and 🔴 the fix for that
+	// is NOT to hoist this call above the early return. Those agents get their
+	// beat from the `postMlsCommit`/`syncMlsGroup` seams; hoisting it would
+	// change behaviour nobody has ruled on and split the two stacks.
+	//
+	// A pass whose Welcomes were all REFUSED still needs it, and that is
+	// measured rather than argued: mls-rs deletes each KeyPackage's private half
+	// inside `join_group` BEFORE rine's roster guard can refuse the install, so
+	// a refused pass has already spent the pool. Hence also: before the refusal,
+	// not after.
+	await mlsHeartbeat({ configDir, agentId, client }, "forced");
 	const refused = pickRefusal(refusals, opts.forGroup);
 	if (refused) throw refused;
 
@@ -293,7 +303,7 @@ export async function externalJoinMlsGroup(
 		}
 
 		const epoch = await postMlsCommit(
-			client,
+			{ configDir, agentId, client },
 			groupId,
 			group,
 			bundle,

@@ -19,6 +19,16 @@
  * **invitation** was minted, the MLS one whether a ratchet-tree **leaf** was.
  * An agent can be `invited` in the first and `no_key_package` in the second —
  * it may join, and it cannot read a word until a leaf exists for it.
+ *
+ * 🔴 The MLS vocabulary says nothing about WHICH entitlement an agent holds,
+ * and a sentence here must not imply one. Its reasons are recorded over a flat
+ * list of agent ids that `fetchGroupTree` built by concatenating the group's
+ * members with its live invitees, and the outcome carries only
+ * `{agentId, status, reason}` — so an invitee and an agent a carried vote
+ * already seated arrive here indistinguishable. `no_key_package` shipped saying
+ * "they hold their invitation", which is false of every member seated by a
+ * vote: the group where this was measured. The fix is to say the true thing
+ * about the leaf, not to thread provenance through eight packages for a clause.
  */
 
 import type { MlsAdmissionSkipReason } from "./mls-admission.js";
@@ -80,9 +90,29 @@ const GROUP_ADMISSION_SENTENCES: Record<GroupAdmissionSkipReason, string> = {
 		"this group takes open enrollment, so it mints no invitation because none is needed — the agent may join whenever it likes",
 };
 
+/**
+ * 🔴 Byte-identical to `_MLS_ADMISSION_SENTENCES` in the Python SDK's
+ * `admission_words.py`, and bound to it by `test/group-admission.test.ts` —
+ * these were twins by convention only, and the convention is what let
+ * `no_key_package` state the invite path as fact on both stacks at once.
+ *
+ * The remedy names the MOVES and no verb's spelling. Nine surfaces render these
+ * clauses — two SDKs, the CLI, MCP and five framework tools — and `rine group
+ * sync` is a sentence only one of their readers can follow. Each surface's own
+ * renderer is free to name its own verb; this string is not.
+ *
+ * 🔴 And it names TWO moves because the reason covers two populations that
+ * cannot make the same one. Syncing a group opens with `GET /groups/{id}`,
+ * which `has_read_access` grants to the owning org or to an org holding a
+ * MEMBER row (`src/rine/api/group_helpers.py`) — so an agent from another org
+ * that has not joined yet cannot read the group at all, and telling it to sync
+ * would be a remedy the product refuses. Joining is that agent's move: a closed
+ * group's joiner takes its own leaf by external commit and needs no Welcome
+ * from anybody.
+ */
 const MLS_ADMISSION_SENTENCES: Record<MlsAdmissionSkipReason, string> = {
 	no_key_package:
-		"published no key package to claim, so no Welcome was minted — they hold their invitation and cannot read this group until a leaf exists for them",
+		"published no key package to claim, so no Welcome could be minted — the group still holds their place, and they cannot read this group until a leaf exists for them. An agent that is already in the group republishes its key packages by syncing it; one that has not joined yet takes its own leaf on joining, and needs no Welcome from anybody. Resume the admission afterwards to seat whoever is left",
 	already_in_group:
 		"already holds a ratchet-tree leaf, so there was nothing to do",
 	rejected_by_server:

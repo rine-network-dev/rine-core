@@ -61,6 +61,12 @@ export type { MlsRemovalCommit } from "./mls-ops-removal.js";
 export { fetchMlsIdentities, isSeated } from "./mls-admission-tree.js";
 export {
 	ensureMlsKeyPackages,
+	// The predicate that tells "the server already holds all it will hold" apart
+	// from a publish that genuinely failed — the distinction `KeyPackageTopUp`
+	// encodes, and the reason it is on the barrel: a surface reaching for it and
+	// not finding it hand-rolls a fourth copy of the string match this replaced.
+	// The Python twin is `rine._mls.is_inventory_full`.
+	isInventoryFull,
 	publishMlsKeyPackages,
 	replenishMlsKeyPackages,
 	MLS_KEY_PACKAGE_LOW_WATER,
@@ -68,6 +74,14 @@ export {
 	MLS_KEY_PACKAGE_TARGET,
 } from "./mls-keypackages.js";
 export type { MlsKeyPackageStatus } from "./mls-keypackages.js";
+// The heartbeat behind every MLS verb, and the pace a call site picks. 🔴
+// `resetMlsHeartbeatGate` is deliberately NOT here: it clears the process-local
+// floor, and a published test seam that defeats a rate limit gets used as one.
+// Its home is `mls-heartbeat.js`, which this package's own tests import
+// directly — the Python twin keeps `reset_mls_heartbeat_gate` inside the
+// underscore-private `rine._mls` for the same reason.
+export { mlsHeartbeat, MLS_HEARTBEAT_MIN_INTERVAL_MS } from "./mls-heartbeat.js";
+export type { MlsActor, MlsHeartbeatPace } from "./mls-heartbeat.js";
 export {
 	cutoverMlsKeyPackages,
 	drainAndRepublishMlsKeyPackages,

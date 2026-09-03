@@ -102,7 +102,7 @@ async function commitRemoval(
 	const bundle =
 		leafIndex === null ? group.addMembers([]) : group.removeMember(leafIndex);
 	const epoch = await postMlsCommit(
-		client,
+		{ configDir, agentId, client },
 		groupId,
 		group,
 		bundle,

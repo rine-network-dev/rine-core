@@ -32,6 +32,7 @@ import {
 } from "./recipient-target.js";
 import { resolveToUuid } from "./resolve-agent.js";
 import {
+	readableGroupById,
 	resolveBareRecipientGroup,
 	resolveGroup,
 	resolveGroupByHandle,
@@ -93,16 +94,37 @@ export async function resolveGroupForJoin(
  * | `group`, no `@` | `resolveGroupByName` | the group |
  * | `group`, with `@` | `resolveGroupByHandle` | the group |
  * | `bare` | `resolveBareRecipientGroup` | the group |
- * | `agent`, `id` | `resolveToUuid` | the agent |
+ * | `id` | `readableGroupById`, then `resolveToUuid` | the group, else the agent |
+ * | `agent` | `resolveToUuid` | the agent |
  * | `empty` | `resolveToUuid` | refuses, on syntax, before any request |
  *
- * 🔴 **This widens nothing, and the argument is the classifier's.**
- * `resolveToUuid` accepts a UUID or something containing `@` and refuses
- * everything else on syntax, before any request — so `bare` and sigiled `group`
- * are exactly the spellings that were a certain refusal one line later, and the
- * worst a group ladder can do for them is replace that refusal with a better
- * one. Widen a class and that argument stops being true without a test going
- * red.
+ * 🔴 **The `id` class is the one arm that reaches both namespaces, and it is a
+ * decision rather than a consequence of the classifier.** For `bare` and for a
+ * sigiled `group` the argument was the classifier's own: `resolveToUuid` accepts
+ * a UUID or something containing `@` and refuses everything else on syntax,
+ * before any request, so those two spellings were a certain refusal one line
+ * later and the worst a group ladder could do for them was replace that refusal
+ * with a better one. That argument does NOT cover `id` — a UUID is a legitimate
+ * agent id and always was — so this arm was widened on a founder decision
+ * rather than because it was free.
+ *
+ * What keeps the widening safe is the ORDER and the scope of the two reads.
+ * `GET /groups/{id}` is org-scoped (`has_read_access`), and `GET /agents/{id}/keys`
+ * is unauthenticated and global — so asking the agent side first would prefer a
+ * stranger's namespace over the caller's own org's. The group probe goes first,
+ * answers only for a row this caller may read, and {@link readableGroupById}
+ * checks that the row it got back is the one that was asked for; a miss falls
+ * through to the untouched agent arm, which still spends no request for a UUID.
+ * The cost of the widening is therefore exactly one indexed row on the agent
+ * path, which is the accounting this resolver already makes for a resolved id.
+ *
+ * 🔴 **No ambiguity refusal, and none may be added.** Both id spaces are minted
+ * server-side — `gen_random_uuid()` on two tables, `uuid.uuid4()` on two routes
+ * — and no route accepts a caller-supplied primary key, so a UUID that names
+ * both an agent and a group is not constructible. Writing a refusal for it would
+ * document a state the product cannot reach. That verdict rests on the absence
+ * of a caller-chosen id and expires if one is ever accepted; it is not a claim
+ * that the two id spaces are disjoint by construction.
  *
  * **Why the sigil arm skips the collision guard** is `isSigilGroupReference`'s
  * to argue and is not restated here. What belongs to this call site is the dead
@@ -158,6 +180,19 @@ export async function resolveRecipient(
 				await resolveBareRecipientGroup(client, to, extraHeaders, agents),
 				to,
 			);
+		case REF_CLASS.id: {
+			// The group namespace first, and only its own route: a hit is a group
+			// this caller's org may read, a 404 or a 403 is the miss that hands the
+			// spelling to the agent arm below. Never `resolveGroup` — that entry
+			// point buys the roster and THROWS on a miss, which would refuse every
+			// agent UUID in the product — and never `resolveGroupForJoin`, whose own
+			// UUID rung passes an id through UNREAD precisely because a joiner holds
+			// no seat this org-scoped route would answer for. Two UUID rungs, two
+			// questions; they are not to be unified.
+			const group = await readableGroupById(client, to, extraHeaders);
+			if (group) return groupRecipient(group, to);
+			return agentRecipient(await resolveToUuid(apiUrl, to), to);
+		}
 		default:
 			return agentRecipient(await resolveToUuid(apiUrl, to), to);
 	}

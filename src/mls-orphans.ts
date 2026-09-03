@@ -135,7 +135,7 @@ async function commitOrphanRemoval(
 	if (leafIndex === null) return null;
 	const bundle = group.removeMember(leafIndex);
 	const epoch = await postMlsCommit(
-		client,
+		{ configDir, agentId, client },
 		groupId,
 		group,
 		bundle,

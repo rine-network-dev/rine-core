@@ -21,6 +21,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const recoverMlsGroupSpy = vi.fn();
 const scanSpy = vi.fn();
 const retirementSpy = vi.fn();
+/**
+ * The key-package top-up rides ahead of the regime branch on every call, so it
+ * is stubbed here for the same reason the two primitives are: this suite is
+ * about which recovery a group GETS. It answers `healthy` — the one arm that
+ * spreads no field — so every assertion below stays about the shape the
+ * decision produced. That the top-up really runs, really reaches the wire, and
+ * really rides on the refusal is `group-recovery-topup.test.ts`, against the
+ * real one.
+ */
+const topUpSpy = vi.fn(async () => ({ outcome: "healthy", published: 0 }));
 
 vi.mock("../src/mls-ops-resync.js", async (importOriginal) => {
 	const actual =
@@ -29,6 +39,12 @@ vi.mock("../src/mls-ops-resync.js", async (importOriginal) => {
 		...actual,
 		recoverMlsGroup: (...args: unknown[]) => recoverMlsGroupSpy(...args),
 	};
+});
+
+vi.mock("../src/mls-keypackage-topup.js", async (importOriginal) => {
+	const actual =
+		await importOriginal<typeof import("../src/mls-keypackage-topup.js")>();
+	return { ...actual, topUpKeyPackages: () => topUpSpy() };
 });
 
 vi.mock("../src/sender-key-recovery.js", async (importOriginal) => {

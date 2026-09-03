@@ -34,6 +34,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { GroupRead } from "../src/api-types.js";
 import { groupEncryption } from "../src/group-format.js";
+import type { GroupRecoveryResult } from "../src/group-recovery.js";
+import type { KeyPackageTopUp } from "../src/mls-keypackage-topup.js";
 import {
 	MLS_NEVER_FOUNDED_NOTE,
 	type UnfoundedGroupRepair,
@@ -356,6 +358,88 @@ describe("the Python twin — the three recovery heads", () => {
 				"the retired arm",
 				/if result\.retired:[\s\S]*?return with_note\(\n([\s\S]*?)\n\s*\)/,
 			),
+		);
+	});
+});
+
+describe("the Python twin — the key-package top-up appended to a recovery", () => {
+	// Added with the sentences themselves. The suite above binds five heads and
+	// would not have gone red for a sixth: a sentence that exists on one stack
+	// only is invisible to a gate whose assertions are written one per sentence,
+	// and this file's own history is a sentence that drifted under exactly such a
+	// gate.
+	//
+	// Bound through the RENDERED summary, and through the difference between the
+	// summary WITH a top-up and the same summary without one, so what is pinned
+	// is the appended line AND the newline that joins it — the separator lesson
+	// the `scan_tail` block above had to learn twice. The base it subtracts is
+	// already bound sentence-for-sentence by that block, so nothing here is a
+	// copy this test wrote itself.
+	const BASE: GroupRecoveryResult = {
+		regime: "sender-key",
+		ingested: 2,
+		retired: false,
+	};
+
+	const pyLine = (name: string, fields: Record<string, string> = {}) => {
+		let line = pySource(name, new RegExp(`\\n${name} = \\(([\\s\\S]*?)\\n\\)`));
+		for (const [slot, value] of Object.entries(fields)) {
+			line = line.replace(`{${slot}}`, value);
+		}
+		return line;
+	};
+
+	/** What `describeMlsRecovery` appends for this top-up, separator included. */
+	const appended = (keyPackages: KeyPackageTopUp): string => {
+		const withTopUp = describeMlsRecovery("#ops", { ...BASE, keyPackages });
+		const base = describeMlsRecovery("#ops", BASE);
+		expect(
+			withTopUp.startsWith(base),
+			"the top-up must be APPENDED to the recovery summary, never woven into it",
+		).toBe(true);
+		return withTopUp.slice(base.length);
+	};
+
+	it("stays silent on both stacks when the pool was already healthy", () => {
+		// A group that runs sender keys mints no Welcome and claims no key
+		// package. Saying so anyway would put a line about MLS inventory under
+		// every sender-key recovery on one stack and not the other.
+		expect(describeMlsRecovery("#ops", { ...BASE, keyPackages: undefined })).toBe(
+			describeMlsRecovery("#ops", BASE),
+		);
+		expect(appended({ outcome: "healthy", published: 0 })).toBe("");
+	});
+
+	it("reports a published batch in the same sentence", () => {
+		expect(appended({ outcome: "topped-up", published: 4 })).toBe(
+			`\n${pyLine("_KEY_PACKAGE_PUBLISHED", { published: "4" })}`,
+		);
+	});
+
+	it("says the server's cap was already reached in the same sentence", () => {
+		expect(appended({ outcome: "cap-reached", published: 0 })).toBe(
+			`\n${pyLine("_KEY_PACKAGE_CAP_REACHED")}`,
+		);
+	});
+
+	it("reports a failed top-up, and its consequence, in the same sentence", () => {
+		// The arm that matters most and is hardest to reach in life: the operator
+		// ran a recovery, the group is caught up, and the agent is still
+		// un-addable. One stack saying so and the other not is half a warning.
+		expect(
+			appended({ outcome: "failed", published: 0, detail: "502 from the server" }),
+		).toBe(
+			`\n${pyLine("_KEY_PACKAGE_FAILED", { detail: "502 from the server" })}`,
+		);
+	});
+
+	it("falls back to the same words when the failure reported no reason", () => {
+		const fallback = pySource(
+			"the _KEY_PACKAGE_FAILED detail fallback",
+			/top_up\.detail or ("[^"]+")/,
+		);
+		expect(appended({ outcome: "failed", published: 0 })).toBe(
+			`\n${pyLine("_KEY_PACKAGE_FAILED", { detail: fallback })}`,
 		);
 	});
 });

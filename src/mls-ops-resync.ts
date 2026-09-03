@@ -33,7 +33,9 @@ import { loadMlsGroup, openMlsClient } from "./crypto/mls.js";
 import { RineApiError } from "./errors.js";
 import type { HttpClient } from "./http.js";
 import { isEpochConflict, postMlsCommit } from "./mls-commit.js";
+import type { KeyPackageTopUp } from "./mls-keypackage-topup.js";
 import { syncMlsGroup } from "./mls-ops-sync.js";
+import { joinLines, keyPackageTopUpLine } from "./mls-recovery-format.js";
 
 /**
  * The server's answer when a replay cannot carry this agent to the group: it
@@ -62,23 +64,37 @@ export const MLS_RESYNC_UNAVAILABLE_CODE = "mls_resync_unavailable";
  * agent the tree already holds — `duplicate signature key, hpke key or identity
  * found at index N` — so the fallback would replace an actionable refusal with a
  * protocol error about a leaf the operator never asked about.
+ *
+ * 🔴 It carries the recovery's key-package top-up, and that is not decoration.
+ * This refusal IS the answer an agent gets when a carried vote seated it with no
+ * Welcome — the exact population whose published pool has run out — so the one
+ * thing that unblocks the re-admission it asks for is the pool the top-up just
+ * refilled. Reporting the top-up only on the returned result would report it
+ * everywhere except the case it was built for.
  */
 export class MlsResyncUnavailableError extends Error {
 	readonly code = MLS_RESYNC_UNAVAILABLE_CODE;
 
+	/** What the top-up that ran ahead of this refusal did, when one ran. */
+	readonly keyPackages?: KeyPackageTopUp;
+
 	constructor(
 		public readonly groupId: string,
-		options?: { cause?: unknown },
+		options?: { cause?: unknown; keyPackages?: KeyPackageTopUp },
 	) {
 		super(
-			`Cannot resync MLS group ${groupId}: this agent's local group state ` +
-				`will not load, and a resync needs it — the leaf a resync replaces is ` +
-				`named by the stale state itself and by nothing the server knows. Ask ` +
-				`an admin to remove this agent from the group and invite it again; ` +
-				`re-admission mints a new leaf and a fresh Welcome.`,
+			joinLines(
+				`Cannot resync MLS group ${groupId}: this agent's local group state ` +
+					`will not load, and a resync needs it — the leaf a resync replaces is ` +
+					`named by the stale state itself and by nothing the server knows. Ask ` +
+					`an admin to remove this agent from the group and invite it again; ` +
+					`re-admission mints a new leaf and a fresh Welcome.`,
+				keyPackageTopUpLine(options?.keyPackages),
+			),
 			options,
 		);
 		this.name = "MlsResyncUnavailableError";
+		this.keyPackages = options?.keyPackages;
 	}
 }
 
@@ -98,12 +114,14 @@ export function isMlsResyncUnavailable(err: unknown): boolean {
  * the failure this verb exists to replace. Everything the operator can
  * act on is put in front of it; the core's text is kept, last, because it is
  * what distinguishes one refusal from another in a bug report.
+ *
+ * 🔴 It carries no `cause`, deliberately. The refusal's own words are already
+ * inlined as the last clause, and every renderer in this repo concatenates an
+ * error with its cause — `formatError` returns `${message}: ${cause.message}` —
+ * so attaching it printed the core's sentence twice, the second time behind a
+ * bare `: `.
  */
-function resyncFailure(
-	groupId: string,
-	err: unknown,
-	options?: { cause?: unknown },
-): Error {
+function resyncFailure(groupId: string, err: unknown): Error {
 	const detail = err instanceof Error ? err.message : String(err);
 	return new Error(
 		`Recovering MLS group ${groupId} failed on the resync rung. Replaying the ` +
@@ -113,7 +131,6 @@ function resyncFailure(
 			`agent's state cannot reach the group's stored epochs at all, ask an ` +
 			`admin to remove it from the group and invite it again — re-admission ` +
 			`mints a new leaf and a fresh Welcome. The refusal was: ${detail}`,
-		options,
 	);
 }
 
@@ -181,6 +198,14 @@ export interface MlsRecoveryResult {
 	 * still opens; nothing after the Remove ever will.
 	 */
 	evicted: boolean;
+	/**
+	 * What the key-package top-up that rode along with this recovery did.
+	 *
+	 * Absent when the recovery was not driven through `recoverGroup` — the
+	 * `mlsNeverFoundedNote` rule: a consumer spreading the result into JSON then
+	 * emits no key at all rather than a null.
+	 */
+	keyPackages?: KeyPackageTopUp;
 }
 
 /**
@@ -241,7 +266,7 @@ async function resyncOnce(
 		throw new Error(`MLS resync for group ${groupId} produced no commit`);
 	}
 	const epoch = await postMlsCommit(
-		client,
+		{ configDir, agentId, client },
 		groupId,
 		group,
 		bundle,
@@ -292,7 +317,7 @@ async function resyncWithRetry(
 		// because a surface already translates it into a membership fact.
 		if (!isEpochConflict(err)) {
 			if (mlsErrorCode(err) === MLS_ERR_GROUP_INACTIVE) throw err;
-			throw resyncFailure(groupId, err, { cause: err });
+			throw resyncFailure(groupId, err);
 		}
 		try {
 			return await resyncOnce(

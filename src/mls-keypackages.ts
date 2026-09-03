@@ -74,10 +74,11 @@ export interface MlsKeyPackageStatus {
  *
  * An agent that has not yet had its KeyPackage cutover gets that instead of a
  * top-up: its pool is bare ts-mls-era key packages, and topping up a pool this
- * core cannot read would only mix framings. This is where the cutover fires
- * because every MLS operation already replenishes here, so an upgraded agent
- * cuts over on its next group operation with no command to run and no call site
- * to change.
+ * core cannot read would only mix framings. This is the only place the cutover
+ * fires, which is why `mlsHeartbeat` (`mls-heartbeat.ts`) — the one call every
+ * MLS operation routes through — awaits it: an upgraded agent that only reads, syncs,
+ * self-joins or removes would otherwise never cut over, and its whole published
+ * pool would stay unreadable to every peer.
  */
 export async function ensureMlsKeyPackages(
   configDir: string,
@@ -116,6 +117,12 @@ export async function ensureMlsKeyPackages(
  * never the caller's purpose: a failed top-up must not fail a group add or undo
  * a Welcome that already succeeded, and every subsequent MLS operation retries
  * it, so the inventory self-heals with no user-facing surface.
+ *
+ * The heartbeat does not go through here — it awaits {@link
+ * ensureMlsKeyPackages} itself, because it has to know whether the beat
+ * actually did the maintenance its floor then claims was done. This is the
+ * wrapper for the callers that genuinely do not care: onboarding, and any
+ * surface topping an agent up outside an MLS verb.
  */
 export async function replenishMlsKeyPackages(
   configDir: string,
@@ -129,6 +136,11 @@ export async function replenishMlsKeyPackages(
   }
 }
 
-function isInventoryFull(err: unknown): boolean {
+/**
+ * The server refusing an upload that would push this agent past its per-agent
+ * inventory cap. A no-op success wherever it is caught: an agent at the cap has
+ * far more key packages than any peer can claim.
+ */
+export function isInventoryFull(err: unknown): boolean {
   return err instanceof RineApiError && /inventory full/i.test(err.detail);
 }

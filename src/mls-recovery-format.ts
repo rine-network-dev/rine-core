@@ -3,6 +3,43 @@ import type {
 	SenderKeyRecoveryResult,
 } from "./group-recovery.js";
 import type { MlsReclamationResult } from "./mls-admission.js";
+import type { KeyPackageTopUp } from "./mls-keypackage-topup.js";
+
+/**
+ * Two blocks of operator prose, joined by exactly one newline, where either
+ * half may be absent.
+ *
+ * The newline sibling of `recipient-refusal.ts`'s {@link joinSentences}, and a
+ * separate function rather than a parameter on it because the two normalise
+ * different things: the sentence seam terminates an unterminated opening, and
+ * this one must never touch the content at all — every tail it appends is a
+ * pinned sentence that two matrix drivers regex.
+ *
+ * 🔴 **The empty case is the whole reason it exists.** Four sites hand-rolled
+ * `tail ? \`${head}\n${tail}\` : head`, and the recorded failure mode of a fifth
+ * copy is getting that backwards: an absent half then emits a **leading blank
+ * line** into an operator's answer, which the `^`-anchored head regexes in
+ * `scripts/mls-matrix/driver_framework_ts_admin.mjs` and
+ * `scripts/mls-matrix/container_admin.py` read as the surface refusing — a
+ * successful recovery graded as a broken surface. Absent means absent: the
+ * other half is returned unchanged, with no separator on either end.
+ *
+ * Only the CONDITIONAL seams route through here. A join whose halves are both
+ * constants — {@link describeMlsRung}'s eviction line — stays a template
+ * literal, because passing an argument that cannot be empty to a function whose
+ * subject is emptiness reads as a claim that it can be.
+ *
+ * @internal Cross-module seam for {@link module:mls-ops-resync}, not a
+ * supported `@rine-network/core` API. It reaches npm only because `index.ts`
+ * re-exports this module with `export *`, and its Python twin
+ * `rine.format._join_lines` stays underscore-private. Nothing outside this
+ * package should depend on it.
+ */
+export function joinLines(first: string, second: string | undefined): string {
+	if (!second) return first;
+	if (!first) return second;
+	return `${first}\n${second}`;
+}
 
 /**
  * A group between its MLS init and the latch has neither recovery yet.
@@ -379,8 +416,7 @@ function describeSenderKeyRecovery(
 	result: SenderKeyRecoveryResult,
 ): string {
 	const note = result.mlsNeverFoundedNote;
-	const withNote = (head: string): string =>
-		note ? `${head}\n${note}` : head;
+	const withNote = (head: string): string => joinLines(head, note);
 	// Both arms where the scan ran end the same way: what it could not reach, if
 	// anything, and then the next action. Composed once so the two cannot drift.
 	const scanTail = `${unscannedClause(result.unscanned)} ${SCAN_DONE}`;
@@ -454,9 +490,65 @@ export function describeMlsRecovery(
 	groupRef: string,
 	result: GroupRecoveryResult,
 ): string {
-	if (result.regime === "sender-key") {
-		return describeSenderKeyRecovery(groupRef, result);
+	const body =
+		result.regime === "sender-key"
+			? describeSenderKeyRecovery(groupRef, result)
+			: describeMlsRung(groupRef, result);
+	const topUp = keyPackageTopUpLine(result.keyPackages);
+	// 🔴 APPENDED, never prepended. Two matrix drivers match this answer's head
+	// with `^`-anchored regexes and read a miss as the surface refusing — a
+	// successful recovery graded as a broken surface.
+	return joinLines(body, topUp);
+}
+
+/**
+ * What the key-package top-up that rode along with this recovery did.
+ *
+ * Empty, with no trailing newline, when there is nothing to say — the
+ * {@link unscannedClause} shape, so the caller composes one way and not two. A
+ * group that runs sender keys mints no Welcome and claims no key package, so
+ * `healthy` is genuinely silent rather than a reassurance nobody asked for.
+ *
+ * Every other arm is said out loud, including the successful one, because this
+ * is a recovery the operator ran on purpose and the pool is the thing that was
+ * most likely broken. An agent whose published pool is empty cannot be told
+ * apart from a healthy one anywhere else in the product: a carried vote seats
+ * it on the roster, the roster lists it as a full member, and it reads nothing.
+ *
+ * Its Python twin is `rine.format.key_package_top_up_line`, bound to it by
+ * `test/mls-recovery-twin.test.ts`.
+ */
+export function keyPackageTopUpLine(topUp?: KeyPackageTopUp): string {
+	if (!topUp || topUp.outcome === "healthy") return "";
+	if (topUp.outcome === "cap-reached") {
+		return (
+			"This agent's published key packages are already at the server's" +
+			" per-agent cap, so none were added — any member adding it to a group" +
+			" has plenty to claim."
+		);
 	}
+	if (topUp.outcome === "failed") {
+		return (
+			"Could not publish key packages for this agent: " +
+			`${topUp.detail ?? "the reason was not reported"}. Until that succeeds` +
+			" no member can mint it a Welcome, so a group it is voted into would" +
+			" seat it on the roster with no leaf in the ratchet tree and it would" +
+			" read nothing there. Run this sync again."
+		);
+	}
+	return (
+		`Published ${topUp.published} key package(s) for this agent along the way.` +
+		" Peers claim one each time they add it to a group, and an agent whose" +
+		" published pool has run out is one no member can mint a Welcome for —" +
+		" seated by a carried vote, listed on the roster, reading nothing."
+	);
+}
+
+/** The MLS half of {@link describeMlsRecovery}, by rung. */
+function describeMlsRung(
+	groupRef: string,
+	result: Extract<GroupRecoveryResult, { regime: "mls" }>,
+): string {
 	const distance =
 		result.behind === null
 			? "by an unknown distance (the group has published no confirmed epoch)"

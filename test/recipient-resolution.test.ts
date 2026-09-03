@@ -336,7 +336,32 @@ describe("resolveRecipient", () => {
 		expect(queryOf(get, 0)).toEqual({ handle: `#ops@${ORG}` });
 	});
 
-	it("reads a UUID as an agent, with no handle to normalise and no request", async () => {
+	it("reads a UUID that names a group as that group, by its own route", async () => {
+		// 🔴 The id rung, and the assertion that used to say the opposite. A group's own
+		// id in the recipient slot used to be adopted verbatim as `to_agent_id`
+		// and fail at the outbound key fetch with a bare "Agent not found" — a
+		// sentence about the wrong namespace, from a route the send never
+		// reached. The row's OWN handle comes back, which is what `POST
+		// /messages` addresses by exact equality.
+		const { client, get } = clientHolding([OPS]);
+		expect(await resolveRecipient(client, API, OPS_ID)).toEqual({
+			kind: "group",
+			id: OPS_ID,
+			handle: `#ops@${ORG}`,
+			spelling: OPS_ID,
+			row: OPS,
+		});
+		// One indexed row, and no roster: this rung must never climb
+		// `resolveGroup`, whose miss buys the list and throws.
+		expect(paths(get)).toEqual([`/groups/${OPS_ID}`]);
+	});
+
+	it("reads a UUID no group answers to as an agent, after one indexed miss", async () => {
+		// The other half of the same arm, and the reason the group is asked
+		// FIRST: `GET /groups/{id}` is org-scoped and `GET /agents/{id}/keys` is
+		// global, so agent-first would prefer a stranger's namespace over the
+		// caller's own org's. The agent arm itself is untouched — it still
+		// answers with the id and spends no request of its own.
 		const { client, get } = clientHolding([OPS]);
 		expect(await resolveRecipient(client, API, KOFI_ID)).toEqual({
 			kind: "agent",
@@ -345,7 +370,39 @@ describe("resolveRecipient", () => {
 			spelling: KOFI_ID,
 			row: undefined,
 		});
-		expect(get).not.toHaveBeenCalled();
+		// 🔴 The whole cost of the widening, pinned as a list rather than as a
+		// count: exactly one read, and it is the group route. An accidental
+		// extra round trip on the hottest verb in the product fails here.
+		expect(paths(get)).toEqual([`/groups/${KOFI_ID}`]);
+	});
+
+	it("reads a UUID the group route refuses with 403 as an agent, not as a throw", async () => {
+		// 403 and 404 are one answer by disclosure rule — separating them would
+		// tell a stranger which unknown ids exist — so a group belonging to
+		// another org falls through to the agent arm exactly as an unknown id
+		// does, rather than refusing a spelling that may well name an agent.
+		const get = vi.fn(async (path: string) => {
+			if (path === `/groups/${KOFI_ID}`) throw new RineApiError(403, "Forbidden");
+			throw new Error(`unexpected path ${path}`);
+		});
+		const target = await resolveRecipient({ get } as never, API, KOFI_ID);
+		expect(target).toMatchObject({ kind: "agent", id: KOFI_ID });
+		// The read is asserted, not assumed: an arm that skipped the probe
+		// altogether would answer `agent` here too and say nothing about 403.
+		expect(get).toHaveBeenCalledWith(`/groups/${KOFI_ID}`, undefined, undefined);
+	});
+
+	it("does not read a faulting group route as 'then it must be an agent'", async () => {
+		// 🔴 The asymmetry decides this: a wrong group resolution is refused by
+		// the server's seat gate, a wrong agent resolution DELIVERS. So a 500 or
+		// a 429 has to surface as itself — swallowing it into the agent arm
+		// would seal this payload for whoever holds that id.
+		const get = vi.fn(async () => {
+			throw new RineApiError(500, "Internal Server Error");
+		});
+		await expect(
+			resolveRecipient({ get } as never, API, KOFI_ID),
+		).rejects.toThrow("Internal Server Error");
 	});
 
 	it("reads an agent handle as an agent, normalised, and keeps the spelling", async () => {

@@ -13,11 +13,13 @@ import {
 	recordOutcome,
 	requireGroup,
 } from "./mls-admission.js";
-import { type Joiner, postMlsCommit } from "./mls-commit.js";
+import { dropSeatedJoiners } from "./mls-admission-recheck.js";
+import { type Joiner, isEpochConflict, postMlsCommit } from "./mls-commit.js";
 import {
 	claimFoundingKeyPackages,
 	mlsFoundingBatchSizes,
 } from "./mls-founding.js";
+import { syncMlsGroup } from "./mls-ops-sync.js";
 
 /**
  * The agent ids a `welcome_recipient_rejected` 422 named, or null when the
@@ -94,13 +96,21 @@ async function claimBatch(
 
 /**
  * Post one batch, answering a rejected-recipient 422 by dropping exactly the
- * recipients it named and retrying the remainder ONCE.
+ * recipients it named and retrying the remainder ONCE, and a lost epoch race by
+ * catching up and rebuilding ONCE.
  *
- * One retry, never a loop: the KeyPackages a refused batch claimed are spent
- * either way, and a second refusal means this batch cannot be made to land.
- * Whoever is left is recorded `rejected_by_server` and the admission moves on
- * to the next batch — the group's state is exactly where it was, so the later
+ * One retry each, never a loop: the KeyPackages a refused batch claimed are
+ * spent either way, and a second refusal means this batch cannot be made to
+ * land. Whoever is left is recorded `rejected_by_server` and the admission moves
+ * on to the next batch — the group's state is exactly where it was, so the later
  * batches are still valid, and an admission never fails whole.
+ *
+ * 🔴 The epoch arm is the same single sync-then-retry `removeMlsGroupMember`,
+ * `reclaimOrphanLeaves` and the self-join already answer a lost CAS with. Its
+ * absence is what made `resume-admission` the one MLS commit verb that reported
+ * an epoch conflict to the operator instead of resolving it — and the verb an
+ * operator reaches for is precisely the one running against a group that other
+ * members are committing to.
  *
  * Returns the epoch the commit landed at, or null when nothing landed.
  */
@@ -112,7 +122,9 @@ async function commitBatch(
 	ledger: AdmissionLedger,
 ): Promise<number | null> {
 	let attempt = joiners;
-	for (let tries = 0; ; tries++) {
+	let tries = 0;
+	let caughtUp = false;
+	for (;;) {
 		const { group, bundle } = buildCommit(
 			ctx,
 			mls,
@@ -121,7 +133,7 @@ async function commitBatch(
 		);
 		try {
 			const epoch = await postMlsCommit(
-				ctx.client,
+				ctx,
 				ctx.groupId,
 				group,
 				bundle,
@@ -138,6 +150,40 @@ async function commitBatch(
 			}
 			return epoch;
 		} catch (err) {
+			// A peer's commit won the epoch CAS, so this one was built against a
+			// superseded epoch. Catch up once and rebuild against the epoch the
+			// server now holds. Two things make the rebuild sound: `buildCommit`
+			// re-reads local state on every pass, so it builds over what the sync
+			// just adopted; and the claimed KeyPackages outlive the conflict, being
+			// one-time keys bound to their owner and not to an epoch.
+			//
+			// 🔴 What is NOT sound is assuming the winning commit seated nobody
+			// from this batch. A claim is exclusive per KeyPackage, not per agent,
+			// so a second admin holding a different one of the ten an agent
+			// published admits it just as validly — and an Add rebuilt over a leaf
+			// the tree already holds throws out of `buildCommit`, which is outside
+			// this `try`. {@link dropSeatedJoiners} is what keeps that error from
+			// escaping the whole admission with the ledger unwritten.
+			//
+			// Founding is excluded on purpose: `create` means the group's first
+			// commit, so there is no local state to catch up and a conflict there
+			// says somebody else founded the group, which no retry mends.
+			if (isEpochConflict(err) && !create && !caughtUp) {
+				caughtUp = true;
+				await syncMlsGroup(
+					ctx.configDir,
+					ctx.agentId,
+					ctx.groupId,
+					ctx.client,
+					ctx.extraHeaders,
+				);
+				attempt = await dropSeatedJoiners(ctx, mls, attempt, ledger);
+				// Everybody in the batch was seated by the commit that won, each
+				// recorded as such. Nothing landed from this client, which is what
+				// the caller reads a null as, and the batches after it still run.
+				if (attempt.length === 0) return null;
+				continue;
+			}
 			const rejected = rejectedRecipients(err);
 			if (rejected === null) throw err;
 			const named = new Set(rejected.map(admissionKey));
@@ -152,6 +198,7 @@ async function commitBatch(
 			}
 			if (spent) return null;
 			attempt = survivors;
+			tries += 1;
 		}
 	}
 }

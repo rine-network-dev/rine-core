@@ -215,8 +215,18 @@ async function fetchOwnGroups(
  * rules out, and the producer here is a server answering badly. Anything that
  * is not a string is therefore reported as *no id* rather than rendered, on
  * both stacks; the twin is `rine._recipient_reads.answered_group_id`.
+ *
+ * 🔴 **Exported because a second caller needs the MISS, not the refusal.**
+ * `send --to <uuid>` asks the group namespace first and falls through to the
+ * agent one when nothing answers — {@link resolveRecipient}, and the CLI's own
+ * dispatch in `rine-cli/src/commands/messages.ts` — so neither can climb
+ * {@link resolveGroup}: that entry point spends the roster and throws, and a
+ * throw would refuse every agent UUID in the product. Hand-rolling a bare read
+ * of the single-group route for that probe instead would silently drop the
+ * identity check above and the 404/403-as-miss rule with it, which is why this
+ * is a function and not three lines.
  */
-async function readableGroupById(
+export async function readableGroupById(
 	client: HttpClient,
 	id: string,
 	extraHeaders?: Record<string, string>,

@@ -15,7 +15,7 @@ import {
 	admissionKey,
 	requireGroup,
 } from "./mls-admission.js";
-import { replenishMlsKeyPackages } from "./mls-keypackages.js";
+import { mlsHeartbeat } from "./mls-heartbeat.js";
 import { reclaimOrphanLeaves } from "./mls-orphans.js";
 
 /**
@@ -44,10 +44,9 @@ export async function initMlsGroup(
 	extraHeaders?: Record<string, string>,
 ): Promise<MlsAdmissionResult> {
 	const ctx = { configDir, agentId, groupId, client, extraHeaders };
-	// Every MLS operation doubles as the heartbeat that keeps this agent's own
-	// key package inventory above its low-water mark, so the agent never becomes
-	// un-addable to a future group.
-	await replenishMlsKeyPackages(configDir, agentId, client);
+	// Forced rather than gated: founding is about to spend key packages, and the
+	// founder's own inventory is the one no other member can top up.
+	await mlsHeartbeat({ configDir, agentId, client }, "forced");
 	const initResp = await mlsInit(client, groupId, extraHeaders);
 
 	// Everyone the server reported, in the order it reported them, so the
@@ -121,10 +120,10 @@ export async function addMlsGroupMembers(
 	await ensureAdmitterState(configDir, agentId, groupId, client);
 	const mls = openMlsClient(configDir, agentId);
 	const group = requireGroup(mls, groupId);
-	// Heartbeat replenishment of OUR inventory. Each member's own inventory is
+	// Forced replenishment of OUR inventory. Each member's own inventory is
 	// theirs to replenish — a client can only publish key packages for an agent
 	// whose signing key it holds.
-	await replenishMlsKeyPackages(configDir, agentId, client);
+	await mlsHeartbeat({ configDir, agentId, client }, "forced");
 
 	const ledger: AdmissionLedger = new Map();
 	const pending = await resolveUnseated(ctx, group, memberAgentIds, ledger);
@@ -187,7 +186,7 @@ export async function resumeMlsGroupAdmission(
 	await ensureAdmitterState(configDir, agentId, groupId, client);
 	const mls = openMlsClient(configDir, agentId);
 	const group = requireGroup(mls, groupId);
-	await replenishMlsKeyPackages(configDir, agentId, client);
+	await mlsHeartbeat({ configDir, agentId, client }, "forced");
 
 	const tree = await fetchGroupTree(client, groupId, extraHeaders);
 	const ledger: AdmissionLedger = new Map();

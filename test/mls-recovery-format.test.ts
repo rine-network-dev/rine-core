@@ -15,6 +15,7 @@ import {
 	MLS_NEVER_FOUNDED_NOTE,
 	describeMlsReclamation,
 	describeMlsRecovery,
+	joinLines,
 	mlsInitInFlightSync,
 	mlsNeverFoundedSync,
 } from "../src/mls-recovery-format.js";
@@ -453,5 +454,50 @@ describe("describeMlsRecovery — the never-founded warning rides on the answer"
 
 		expect(said).not.toContain("never founded");
 		expect(said.split("\n")).toHaveLength(1);
+	});
+});
+
+/**
+ * The seam four sites used to hand-roll, and the case none of them asserted.
+ *
+ * The recorded failure mode of a hand-rolled copy is getting the empty case
+ * backwards, which emits a LEADING BLANK LINE into an operator's answer — and
+ * `driver_framework_ts_admin.mjs` and `container_admin.py` match these answers'
+ * heads with `^`-anchored regexes, so a blank first line is read as the surface
+ * refusing: a successful recovery graded as a broken one. Nothing asserted it
+ * before this block. Its Python twin is `TestJoinLines` in
+ * `rine-sdk/tests/test_format.py`.
+ */
+describe("joinLines", () => {
+	it("returns the head alone when there is no tail", () => {
+		expect(joinLines("head", "")).toBe("head");
+		expect(joinLines("head", undefined)).toBe("head");
+	});
+
+	it("returns the tail alone, with NO leading newline, when there is no head", () => {
+		expect(joinLines("", "tail")).toBe("tail");
+	});
+
+	it("answers empty for two empty halves", () => {
+		expect(joinLines("", "")).toBe("");
+		expect(joinLines("", undefined)).toBe("");
+	});
+
+	it("puts exactly one newline between two present halves", () => {
+		expect(joinLines("head", "tail")).toBe("head\ntail");
+	});
+
+	it("never opens or closes an answer on a blank line", () => {
+		for (const first of ["", "head"]) {
+			for (const second of ["", undefined, "tail"]) {
+				const said = joinLines(first, second);
+				expect(said.startsWith("\n")).toBe(false);
+				expect(said.endsWith("\n")).toBe(false);
+			}
+		}
+	});
+
+	it("leaves both halves byte-identical — it joins, it never normalises", () => {
+		expect(joinLines("head.", " tail ")).toBe("head.\n tail ");
 	});
 });

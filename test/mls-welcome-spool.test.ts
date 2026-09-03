@@ -41,14 +41,14 @@ vi.mock("../src/mls-welcome-guard.js", async () => {
 	>("../src/mls-welcome-guard.js");
 	return { ...actual, welcomeRefusal: vi.fn(async () => null) };
 });
-vi.mock("../src/mls-keypackages.js", () => ({
-	replenishMlsKeyPackages: vi.fn(async () => undefined),
+vi.mock("../src/mls-heartbeat.js", () => ({
+	mlsHeartbeat: vi.fn(async () => undefined),
 }));
 
 import { fetchWelcomes } from "../src/crypto/mls-api.js";
 import { loadMlsGroup, openMlsClient } from "../src/crypto/mls.js";
 import { processMlsWelcomes } from "../src/mls-ops-join.js";
-import { replenishMlsKeyPackages } from "../src/mls-keypackages.js";
+import { mlsHeartbeat } from "../src/mls-heartbeat.js";
 import { welcomeRefusal } from "../src/mls-welcome-guard.js";
 import {
 	WelcomeSpool,
@@ -419,7 +419,7 @@ describe("a join failure that is this process failing", () => {
 			"store write failed",
 		);
 
-		expect(replenishMlsKeyPackages).not.toHaveBeenCalled();
+		expect(mlsHeartbeat).not.toHaveBeenCalled();
 		// Nothing final happened, so the bytes stay: the fetch was destructive and
 		// the next attempt is the only way this Welcome ever installs.
 		expect(new WelcomeSpool(dir, AGENT).pending()).toHaveLength(1);
