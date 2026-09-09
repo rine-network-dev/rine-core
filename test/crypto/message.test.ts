@@ -10,6 +10,7 @@ import {
 	getAgentPublicKeys,
 } from "../../src/crypto/message.js";
 import { generateAgentKeys, saveAgentKeys, signingPublicKeyToJWK, toBase64Url } from "../../src/crypto/keys.js";
+import { saveSenderKeyState } from "../../src/crypto/sender-keys-helpers.js";
 import { generateSenderKey } from "../../src/crypto/sender-keys.js";
 import type { AgentKeys } from "../../src/crypto/keys.js";
 
@@ -189,6 +190,10 @@ describe("Group encrypt/decrypt round-trip", () => {
 	it("encrypts and decrypts group message", async () => {
 		const senderState = generateSenderKey(GROUP_ID, SENDER_ID);
 		const payload = { announcement: "meeting at 3pm" };
+		// The sender's own copy, which `encryptGroupMessage` advances in place. A
+		// stand-in sender needs it as much as a real one does: the tail refuses a
+		// state that is on no disk at all rather than discarding the advance.
+		saveSenderKeyState(dir, SENDER_ID, GROUP_ID, [senderState]);
 
 		const { result: encrypted, updatedState } = await encryptGroupMessage(
 			dir, SENDER_ID, GROUP_ID, senderState, payload,
@@ -198,7 +203,6 @@ describe("Group encrypt/decrypt round-trip", () => {
 
 		// Recipient needs the sender's key state to decrypt
 		// Simulate key distribution by writing sender state to recipient's store
-		const { loadSenderKeyStates, saveSenderKeyState } = await import("../../src/crypto/sender-keys-helpers.js");
 		saveSenderKeyState(dir, RECIPIENT_ID, GROUP_ID, [senderState]);
 
 		const client = mockClientWithKeys(senderKeys);
@@ -217,6 +221,7 @@ describe("Group encrypt/decrypt round-trip", () => {
 
 	it("group encrypt produces NO self-blob (groups self-read via cache)", async () => {
 		const senderState = generateSenderKey(GROUP_ID, SENDER_ID);
+		saveSenderKeyState(dir, SENDER_ID, GROUP_ID, [senderState]);
 		const { result: encrypted } = await encryptGroupMessage(
 			dir, SENDER_ID, GROUP_ID, senderState, { announcement: "x" },
 		);
@@ -226,12 +231,12 @@ describe("Group encrypt/decrypt round-trip", () => {
 	it("rejects group message with invalid signature", async () => {
 		const senderState = generateSenderKey(GROUP_ID, SENDER_ID);
 		const payload = { msg: "test" };
+		saveSenderKeyState(dir, SENDER_ID, GROUP_ID, [senderState]);
 
 		const { result: encrypted } = await encryptGroupMessage(
 			dir, SENDER_ID, GROUP_ID, senderState, payload,
 		);
 
-		const { saveSenderKeyState } = await import("../../src/crypto/sender-keys-helpers.js");
 		saveSenderKeyState(dir, RECIPIENT_ID, GROUP_ID, [senderState]);
 
 		// Return wrong keys — signature won't match
@@ -253,6 +258,18 @@ describe("Group encrypt/decrypt round-trip", () => {
 	it("sender can decrypt own group message (self-read key)", async () => {
 		const senderState = generateSenderKey(GROUP_ID, SENDER_ID);
 		const payload = { self: "read" };
+
+		// The state is persisted FIRST because that is what every caller does:
+		// all three of them (`rine-cli`, `rine-mcp`, `rine-ts-sdk`) take it from
+		// `getOrCreateSenderKey`, whose every return path has already saved it —
+		// the rotation branch writes before returning, and the other branch
+		// returns a row it loaded from disk. `encryptGroupMessage`'s tail now
+		// writes this agent's row back only where the file still HAS it, so that
+		// precondition is load-bearing rather than incidental: an unsaved state
+		// is indistinguishable from one a concurrent rotation retired, and the
+		// tail must not put the retired one back. Handing it an unpersisted
+		// state, as this test used to, exercised a shape no caller produces.
+		saveSenderKeyState(dir, SENDER_ID, GROUP_ID, [senderState]);
 
 		const { result: encrypted } = await encryptGroupMessage(
 			dir, SENDER_ID, GROUP_ID, senderState, payload,

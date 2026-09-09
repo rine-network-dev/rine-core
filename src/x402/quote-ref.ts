@@ -13,6 +13,7 @@ import { ACTING_AGENT_HEADER } from "../actor.js";
 import type { MessageRead } from "../api-types.js";
 import { decryptMessage, isRefusedDecrypt } from "../crypto/message.js";
 import type { HttpClient } from "../http.js";
+import { parsesAsUuid } from "../resolve-handle.js";
 import { X402Error, X402_ERROR } from "./errors.js";
 import { X402_MESSAGE_TYPE } from "./message-types.js";
 import { parseX402Payload } from "./parse.js";
@@ -51,6 +52,28 @@ export async function loadReferencedQuote(params: {
 		throw new X402Error(
 			X402_ERROR.NO_QUOTE,
 			`Payment carries no ${X402_QUOTE_REF_KEY} — cannot bind it to a payee-issued quote (fail closed; use explicit expected terms for an out-of-band quote)`,
+		);
+	}
+	// 🔴 Before the first request, not after it: `ref` is the payer's own plaintext
+	// and it is about to be interpolated into a URL path. Every other guard in this
+	// function runs on the RESPONSE, so an unchecked ref decides WHICH endpoint the
+	// payee's own credentials are spent on — and the server has GETs that mutate
+	// (`/agents/{id}/mls/welcomes` consumes what it returns), so a traversal here is
+	// not a read, it is a write the payee is tricked into signing for.
+	//
+	// `parsesAsUuid` and not the strict `UUID_RE`: the server types this path
+	// parameter `uuid.UUID` (`GET /messages/{message_id}`), which has always taken
+	// the dashless, `urn:uuid:` and braced spellings too. A pre-flight is only ever
+	// allowed to refuse what the wire would have refused anyway, so refusing one of
+	// those here would be a capability removal wearing a validation fix. What it
+	// buys is the alphabet: every spelling it admits is hex digits, dashes, braces
+	// and the two prefixes, so none can carry a `/`, a `?` or a `#` — the ref can no
+	// longer name an endpoint other than this one.
+	// Twin: `parses_as_uuid` in `rine-sdk/src/rine/x402/quote_ref.py`.
+	if (!parsesAsUuid(ref)) {
+		throw new X402Error(
+			X402_ERROR.NO_QUOTE,
+			`Referenced quote ${ref} is not a message id — refusing to settle`,
 		);
 	}
 	let quoteMsg: MessageRead;

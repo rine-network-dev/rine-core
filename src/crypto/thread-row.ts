@@ -56,10 +56,12 @@ export interface ThreadRowEntry {
  * One rendered turn, plus the refusal this row would explain if it turns out to
  * be the first in its render to carry the no-sender-key cause.
  *
- * The tiering cannot be decided in here: a render decrypts its rows
- * concurrently, so "the first row" is a fact about the ROW ORDER the caller
- * holds, not about which decrypt settled first. So the row reports its cause and
- * the render spends it in order.
+ * The tiering cannot be decided in here: "the first row" is a fact about the
+ * ROW ORDER the caller holds, and this function sees one row and no order. So
+ * the row reports its cause and the render spends it in order. (The render also
+ * decrypts one row at a time — see `decryptThreadRows` — but the split does not
+ * rest on that: it would be needed just the same if the rows were concurrent,
+ * which is how they used to arrive.)
  */
 export interface ClassifiedRow {
 	readonly entry: ThreadRowEntry;

@@ -41,7 +41,9 @@ const MERCHANT = "0x2B5AD5c4795c026514f8317c7a215E218DcCD6cF";
 const PAYEE = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 const OTHER = "ffffffff-1111-2222-3333-444444444444";
 const CONV = "conv-1111";
-const QUOTE_ID = "quote-9999";
+// A real message id, because `loadReferencedQuote` now refuses a ref the wire
+// could not read as one before it issues the GET (see `quote-ref.ts`).
+const QUOTE_ID = "99999999-0000-4000-8000-000000000009";
 
 const decryptMock = vi.mocked(decryptMessage);
 

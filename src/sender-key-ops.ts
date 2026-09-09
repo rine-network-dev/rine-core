@@ -21,6 +21,10 @@ import {
 	markSenderKeysRetired,
 	saveSenderKeyState,
 } from "./crypto/sender-keys-helpers.js";
+import {
+	statesFromSender,
+	withSenderKeyStates,
+} from "./crypto/sender-keys-store.js";
 import { unseatedGroupSendRefusal } from "./group-words.js";
 import type { HttpClient } from "./http.js";
 import { fetchAgents } from "./resolve-agent.js";
@@ -240,10 +244,15 @@ async function seatedOwnAgents(
  * Get or create a sender key for a group, distributing it to members as needed.
  * Handles rotation on member removal, periodic rotation, and new key generation.
  *
- * This agent keeps at most TWO sending keys per group — the current one and the
- * one it just superseded — so the stored array is bounded by the group's
+ * Each rotation WRITES at most two sending keys for this agent — the current one
+ * and the one it just superseded — so the stored array is bounded by the group's
  * membership instead of growing once per rotation for the life of the group.
- * The cost of that is stated where it lands: a message this agent sent two or
+ * That is a property of the rotation's write and not an invariant of the file: a
+ * file an older client left holding three own rows keeps all three until the next
+ * rotation trims it. `mergeSenderKeyStates` can no longer add one either — it
+ * skips an own state whose (sender, key) pair is not already on disk, so a decrypt
+ * carrying the row a rotation just dropped no longer resurrects it above the new
+ * one. The cost of that is stated where it lands: a message this agent sent two or
  * more rotations ago can no longer be read back by its sender, because the
  * self-read key was cached on a state that has since been dropped. Keeping one
  * superseded key is what makes rotation cheap without making the agent's own
@@ -336,7 +345,13 @@ export async function getOrCreateSenderKey(
 			);
 			if (succeeded.length > 0) {
 				own.distributedTo = [...(own.distributedTo ?? []), ...succeeded];
-				saveSenderKeyState(configDir, senderAgentId, groupId, states);
+				await recordDistribution(
+					configDir,
+					senderAgentId,
+					groupId,
+					own.senderKeyId,
+					succeeded,
+				);
 			}
 		}
 
@@ -366,17 +381,65 @@ export async function getOrCreateSenderKey(
 	// Older own states, including a stack an older client left behind, are
 	// dropped here. On a member removal also drop the states of agents no longer
 	// in the group.
-	const peerStates = states.filter(
-		(s) =>
-			s.senderAgentId.toLowerCase() !== senderIdLower &&
-			(!memberRemoved || currentMemberSet.has(s.senderAgentId.toLowerCase())),
-	);
-	saveSenderKeyState(configDir, senderAgentId, groupId, [
-		...peerStates,
-		...(own ? [own] : []),
-		newState,
-	]);
+	//
+	// 🔴 Re-derived from a FRESH read, not from the `states` array above: the
+	// fan-out is one DM per member, so the file can have moved under this call
+	// several times over — a peer's key ingested meanwhile would be dropped by an
+	// array read before the fan-out started, which is the same lost update as a
+	// racing decrypt's. The predicates are unchanged because their inputs came
+	// from the server, not the file; only the rows they run over are current.
+	await withSenderKeyStates(configDir, senderAgentId, groupId, async () => {
+		const current = loadSenderKeyStates(configDir, senderAgentId, groupId);
+		const currentOwn = current.filter(
+			(s) => s.senderAgentId.toLowerCase() === senderIdLower,
+		);
+		const superseded = currentOwn[currentOwn.length - 1];
+		const peerStates = current.filter(
+			(s) =>
+				s.senderAgentId.toLowerCase() !== senderIdLower &&
+				(!memberRemoved || currentMemberSet.has(s.senderAgentId.toLowerCase())),
+		);
+		saveSenderKeyState(configDir, senderAgentId, groupId, [
+			...peerStates,
+			...(superseded ? [superseded] : []),
+			newState,
+		]);
+	});
 	return { state: newState, groupId };
+}
+
+/**
+ * Record that this agent's current sender key reached `succeeded`, against
+ * whatever the state file holds NOW.
+ *
+ * The distribution that produced this list is a DM per member, so re-asserting
+ * the array read before it would discard every write the fan-out raced. Nothing
+ * here advances a ratchet — the only change is a union onto `distributedTo`, so
+ * applying it to the live row is the same answer, minus the lost updates. A key
+ * rotated away while the fan-out ran has nothing left to record against, and
+ * re-adding it would resurrect a state the rotation retired on purpose.
+ */
+async function recordDistribution(
+	configDir: string,
+	senderAgentId: string,
+	groupId: string,
+	senderKeyId: string,
+	succeeded: string[],
+): Promise<void> {
+	await withSenderKeyStates(configDir, senderAgentId, groupId, async () => {
+		const current = loadSenderKeyStates(configDir, senderAgentId, groupId);
+		// This agent's OWN row for that key. A peer may hold a row under the same
+		// id, and recording a fan-out against it would both mislabel the peer's key
+		// and leave this agent's own distribution unrecorded, so the fan-out repeats.
+		const live = statesFromSender(current, senderAgentId).find(
+			(s) => s.senderKeyId === senderKeyId,
+		);
+		if (!live) return;
+		live.distributedTo = [
+			...new Set([...(live.distributedTo ?? []), ...succeeded]),
+		];
+		saveSenderKeyState(configDir, senderAgentId, groupId, current);
+	});
 }
 
 /**

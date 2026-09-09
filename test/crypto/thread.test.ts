@@ -230,6 +230,10 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 		// catch: an operator doing forensics must not read an active misattribution
 		// as the transient key-lookup miss every other failure here is.
 		const state = generateSenderKey(GROUP_ID, SENDER_ID);
+		// The sender's own copy, which `encryptGroupMessage` advances in place. A
+		// stand-in sender needs it as much as a real one does: the tail refuses a
+		// state that is on no disk at all rather than discarding the advance.
+		saveSenderKeyState(dir, SENDER_ID, GROUP_ID, [state]);
 		const { result: enc } = await encryptGroupMessage(
 			dir,
 			SENDER_ID,
@@ -259,6 +263,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 
 	it("renders a group row from a peer", async () => {
 		const state = generateSenderKey(GROUP_ID, SENDER_ID);
+		saveSenderKeyState(dir, SENDER_ID, GROUP_ID, [state]);
 		const { result: enc } = await encryptGroupMessage(
 			dir,
 			SENDER_ID,
@@ -293,6 +298,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 	 */
 	async function unopenableGroupRow(): Promise<ThreadRow> {
 		const state = generateSenderKey(GROUP_ID, SENDER_ID);
+		saveSenderKeyState(dir, SENDER_ID, GROUP_ID, [state]);
 		const { result: enc } = await encryptGroupMessage(
 			dir,
 			SENDER_ID,
@@ -402,6 +408,68 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 		expect(entries[0]?.text).toBe(THREAD_UNAVAILABLE);
 		expect(entries[1]?.text).toContain("sealed under sender key");
 		expect(entries[2]?.text).toBe(SENDER_KEY_UNAVAILABLE_PREVIEW);
+	});
+
+	it("test_render_when_it_has_many_rows_then_they_decrypt_one_at_a_time", async () => {
+		// The render is sequential, and it is the ONLY thing asserting that. Every
+		// row of a group render opens against one ratchet in one state file, and a
+		// concurrent map over the rows is what produced a mostly-sealed transcript
+		// on the first read and a readable one on the second. The state file now
+		// carries its own lock, which is precisely why this needs a gate of its
+		// own: with the lock in place a parallel render is no longer WRONG, so a
+		// reader who finds this loop slow can restore the fan-out and every other
+		// test in both stacks stays green.
+		const rows: ThreadRow[] = [];
+		for (let i = 0; i < 4; i++) {
+			const enc = await encryptMessage(
+				dir,
+				SENDER_ID,
+				recipientKeys.encryption.publicKey,
+				{ text: `row ${i}` },
+			);
+			rows.push(
+				baseRow({
+					direction: "received",
+					from_agent_id: SENDER_ID,
+					encrypted_payload: enc.encrypted_payload,
+				}),
+			);
+		}
+
+		const client = clientWith(senderKeys);
+		const answer = client.get.getMockImplementation();
+		if (!answer) throw new Error("clientWith must install an implementation");
+		let inFlight = 0;
+		let peak = 0;
+		client.get.mockImplementation(async (path: string) => {
+			inFlight++;
+			peak = Math.max(peak, inFlight);
+			// One immediate round drains the microtask queue, so every row a
+			// concurrent render would already have started is counted before this
+			// answer lands. Counted rounds, not a wall-clock timer.
+			await new Promise((r) => setImmediate(r));
+			inFlight--;
+			return answer(path);
+		});
+
+		const entries = await decryptThreadRows(
+			dir,
+			RECIPIENT_ID,
+			rows,
+			client as never,
+		);
+
+		expect(entries.map((e) => e.text)).toEqual([
+			"row 0",
+			"row 1",
+			"row 2",
+			"row 3",
+		]);
+		// Every row went to the network for its sender's key — so the per-row work
+		// is not the "local AEAD open" it reads like, and the loop is what keeps
+		// those verifies from overlapping.
+		expect(client.get).toHaveBeenCalledTimes(4);
+		expect(peak).toBe(1);
 	});
 
 	it("unwraps the {text} payload shape (parity with the SDK render contract)", async () => {

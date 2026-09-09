@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import { join } from "node:path";
+import { writeAtomic } from "../config.js";
 import { fromBase64Url, toBase64Url, validatePathId } from "./keys.js";
 import type { SenderKeyState } from "./sender-keys.js";
 
@@ -43,6 +44,19 @@ function senderKeysDir(
 	return join(configDir, "keys", agentId, "sender_keys");
 }
 
+/**
+ * Replace one group's whole state file.
+ *
+ * 🔴 The write is temp-then-rename (`writeAtomic`), not a truncating
+ * `writeFileSync`: this file is the only copy of every chain key and cached
+ * message key the agent holds for the group, so a write torn by a crash — or
+ * read by a second process mid-write — would cost real, unrecoverable history.
+ * A reader sees the previous file or the next one, never a half of either.
+ *
+ * 🔴 It asserts the WHOLE array. A caller that derived its array before an
+ * `await` must not use this directly — see `sender-keys-store.ts`, whose
+ * `mergeSenderKeyStates` writes back only the ids the caller touched.
+ */
 export function saveSenderKeyState(
 	configDir: string,
 	agentId: string,
@@ -51,13 +65,11 @@ export function saveSenderKeyState(
 ): void {
 	const dir = senderKeysDir(configDir, agentId, groupId);
 	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-	const filePath = join(dir, `${groupId}.json`);
 	const data: SenderKeyStateJSON[] = states.map((s) => ({
 		...s,
 		chainKey: toBase64Url(s.chainKey),
 	}));
-	fs.writeFileSync(filePath, JSON.stringify(data), "utf-8");
-	fs.chmodSync(filePath, 0o600);
+	writeAtomic(join(dir, `${groupId}.json`), JSON.stringify(data));
 }
 
 /**

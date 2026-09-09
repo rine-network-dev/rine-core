@@ -238,6 +238,10 @@ describe("sender binding on the sender-key group path", () => {
 	/** A group message from the signer, with its key distributed to the victim. */
 	async function groupMessageFromSigner(): Promise<string> {
 		const state = generateSenderKey(GROUP_ID, SIGNER_ID);
+		// The signer's own copy, which `encryptGroupMessage` advances in place. A
+		// stand-in sender needs it as much as a real one does: the tail refuses a
+		// state that is on no disk at all rather than discarding the advance.
+		saveSenderKeyState(dir, SIGNER_ID, GROUP_ID, [state]);
 		const { result } = await encryptGroupMessage(
 			dir,
 			SIGNER_ID,

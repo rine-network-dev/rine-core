@@ -104,6 +104,10 @@ function keyServer(keys: AgentKeys) {
 /** One sender-key row, plus the reader's copy of the key state to open it. */
 async function senderKeyRow(senderKeys: AgentKeys, payload: object) {
 	const state = generateSenderKey(GROUP_ID, SENDER_ID);
+	// The sender's own copy, which `encryptGroupMessage` advances in place. A
+	// stand-in sender needs it as much as a real one does: the tail refuses a
+	// state that is on no disk at all rather than discarding the advance.
+	saveSenderKeyState(dir, SENDER_ID, GROUP_ID, [state]);
 	const { result } = await encryptGroupMessage(
 		dir,
 		SENDER_ID,

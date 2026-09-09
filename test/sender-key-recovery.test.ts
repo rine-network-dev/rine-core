@@ -28,6 +28,7 @@ import { generateSenderKey } from "../src/crypto/sender-keys.js";
 import {
 	loadSenderKeyStates,
 	markSenderKeysRetired,
+	saveSenderKeyState,
 	senderKeysRetired,
 } from "../src/crypto/sender-keys-helpers.js";
 
@@ -325,13 +326,15 @@ describe("decryptGroupMessageWithRecovery", () => {
 		peerKeys = generateAgentKeys();
 		saveAgentKeys(dir, PEER_ID, peerKeys);
 
-		const { result } = await encryptGroupMessage(
-			dir,
-			PEER_ID,
-			GROUP_ID,
-			generateSenderKey(GROUP_ID, PEER_ID),
-			{ announcement: "after you left" },
-		);
+		// The peer's own copy, which `encryptGroupMessage` advances in place. A
+		// stand-in sender needs it as much as a real one does: the tail refuses a
+		// state that is on no disk at all rather than discarding the advance. It
+		// lands under PEER_ID's own directory, so the reader still holds nothing.
+		const peerState = generateSenderKey(GROUP_ID, PEER_ID);
+		saveSenderKeyState(dir, PEER_ID, GROUP_ID, [peerState]);
+		const { result } = await encryptGroupMessage(dir, PEER_ID, GROUP_ID, peerState, {
+			announcement: "after you left",
+		});
 		ciphertext = result.encrypted_payload;
 		// The reader holds no state for this group, so the decrypt misses.
 		client = { get: vi.fn(), post: vi.fn() };

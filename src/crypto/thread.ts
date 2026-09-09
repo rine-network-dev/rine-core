@@ -73,9 +73,26 @@ export async function decryptThreadRow(
  * this yet" would have been hand-rolled once per surface, in packages that
  * cannot see each other. Handing them the plural instead keeps that state
  * created, spent and dropped inside one call: a caller cannot hold it wrong
- * because there is nothing to hold. Rows stay concurrent; only the tiering is
- * ordered, so the paragraph lands on the first row that carries the cause and
- * not on whichever decrypt happened to finish first.
+ * because there is nothing to hold. The paragraph lands on the first row that
+ * carries the cause, which is the row a reader reaches first.
+ *
+ * 🔴 Rows are decrypted ONE AT A TIME, and that is load-bearing rather than
+ * incidental. A group render opens every row against one ratchet in one state
+ * file, so a concurrent map made N recovery scans of the same inbox and then
+ * had them overwrite each other's key material — most of the transcript came
+ * back sealed on the first render after being away, and readable on the
+ * second. Sequential is also what the Python client has always done
+ * (`rine-sdk/src/rine/_client.py`, a plain `for`).
+ *
+ * What a row costs, stated accurately because the number decides whether this
+ * loop looks like an easy optimisation: a local AEAD open, PLUS the inbound
+ * verify's `GET /agents/{id}/keys` — cache-served only for a sender already
+ * fetched inside the client's TTL, so a cold render with K distinct senders
+ * makes K of them, one after another. The recovery is the other network call,
+ * and it is the one that gets cheaper here: one scan for the render instead of
+ * one per row. Sequencing is therefore not free, and it is not being claimed to
+ * be; it is what keeps the render correct on the surfaces that decrypt and send
+ * in one process.
  */
 export async function decryptThreadRows(
 	configDir: string,
@@ -83,9 +100,10 @@ export async function decryptThreadRows(
 	rows: readonly ThreadRow[],
 	client: HttpClient,
 ): Promise<ThreadRowEntry[]> {
-	const classified = await Promise.all(
-		rows.map((row) => classifyThreadRow(configDir, agentId, row, client)),
-	);
+	const classified: ClassifiedRow[] = [];
+	for (const row of rows) {
+		classified.push(await classifyThreadRow(configDir, agentId, row, client));
+	}
 	const explain = senderKeyExplainer();
 	return classified.map((row) => tiered(row, explain));
 }
