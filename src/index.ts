@@ -32,6 +32,8 @@ export * from "./sender-key-explain.js";
 export * from "./group-removal-ops.js";
 export * from "./mls-recovery-format.js";
 export * from "./mls-read-refusal.js";
+export * from "./message-words.js";
+export * from "./inbound-readability.js";
 export * from "./crypto/index.js";
 export * from "./x402/index.js";
 export * from "./funnel/index.js";

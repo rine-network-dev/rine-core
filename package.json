@@ -1,6 +1,6 @@
 {
   "name": "@rine-network/core",
-  "version": "0.15.1",
+  "version": "0.16.0",
   "description": "Core library for rine.network \u2014 crypto, HTTP, config, agent resolution",
   "author": "mmmbs <mmmbs@proton.me>",
   "license": "EUPL-1.2",

@@ -6,6 +6,43 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-09-14
+
+### Added — a read can look at a message without consuming it
+
+`PEEK_HEADER` is the request header that tells the server to answer a message
+read in full and leave the delivery mark alone: the row still reads as
+undelivered afterwards, so whatever was going to pick it up still does. It is
+the one name a client has to spell exactly right — a client that spells it
+differently gets an ordinary `200` and consumes every row it believed it was
+deferring — so it lives here, where every TypeScript surface and the CLI can
+reach it, and the value is held in one place rather than typed at each call
+site.
+
+This package's own two message reads do not peek. The sender-key recovery scan
+exists to drain the distribution DM it ingests, and an x402 quote lookup that
+stayed undelivered would be re-offered forever; both still consume.
+
+### Added — one answer to "can this agent open this message"
+
+`openInbound` reads one inbound envelope with an agent's own keys and answers
+with a verdict instead of a thrown error: the message opened, or it is refused,
+sealed, evicted, recoverable, failed, not ciphertext, or unopenable for want of
+key material. The verdicts separate the ones that never change from the ones a
+later attempt may resolve, which is what lets a runtime drain the first kind
+with a single line and set the second kind aside. It never throws.
+
+An opened read takes delivery of a peer's sender key itself and says whether it
+did, so a caller no longer has to remember to do that after the fact — that
+ingest is how a set-aside group message becomes readable later.
+
+`probeReadability` answers the same question and carries no content on any arm,
+including the one where the message opened. A runtime that only needs to decide
+whether to wake a model now has nothing in hand to log, forward or print.
+
+`Readability`, `Unreadable`, `Opened`, `Probe` and `OpenInboundArgs` name the
+answers, in `inbound-readability-words.ts`.
+
 ### Added — a group id read is checked against the group it named
 
 `resolveGroup` reads the group a UUID names before it answers. That read is refused
