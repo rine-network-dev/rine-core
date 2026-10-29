@@ -115,6 +115,8 @@ export async function loadReferencedQuote(params: {
 			sealed,
 			client,
 			payeeAgentId,
+			quoteMsg.to_agent_id,
+			quoteMsg.created_at,
 		);
 		if (isRefusedDecrypt(decrypted)) {
 			throw new X402Error(

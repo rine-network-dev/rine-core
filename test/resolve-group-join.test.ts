@@ -25,6 +25,7 @@ const LOCAL_NAME = "warehouse-restock";
 interface Rungs {
 	seated?: unknown[];
 	invites?: unknown[];
+	orgJoinable?: string | null;
 	directory?: { items: unknown[]; next_cursor?: string; total_estimate?: number }[];
 }
 
@@ -42,6 +43,7 @@ function clientFor(rungs: Rungs) {
 		async (path: string, _params?: unknown, _headers?: unknown) => {
 			if (path === "/groups") return { items: rungs.seated ?? [] };
 			if (path === "/groups/invites") return { items: rungs.invites ?? [] };
+			if (path === "/groups/org-joinable") return { id: rungs.orgJoinable ?? null };
 			if (path === "/directory/groups") return pages[page++] ?? { items: [] };
 			throw new Error(`unexpected path ${path}`);
 		},
@@ -106,7 +108,15 @@ describe("resolveGroupUuidForJoin", () => {
 		});
 
 		expect(await resolveGroupUuidForJoin(client, HANDLE)).toBe(PUBLIC_ID);
-		expect(paths(get)).toEqual(["/groups", "/groups/invites", "/directory/groups"]);
+		expect(paths(get)).toEqual(["/groups", "/groups/invites", "/groups/org-joinable", "/directory/groups"]);
+	});
+
+	it("resolves a handle off an open or voted group the org is seated in when no seat or invitation answers", async () => {
+		const { client, get } = clientFor({ orgJoinable: PUBLIC_ID });
+
+		expect(await resolveGroupUuidForJoin(client, HANDLE)).toBe(PUBLIC_ID);
+		expect(paths(get)).toEqual(["/groups", "/groups/invites", "/groups/org-joinable"]);
+		expect(get).toHaveBeenLastCalledWith("/groups/org-joinable", { handle: HANDLE }, undefined);
 	});
 
 	it("queries the directory by the handle's local part at the server's page ceiling", async () => {
@@ -298,11 +308,11 @@ describe("resolveGroupUuidForJoin", () => {
 		);
 	});
 
-	it("names all three scopes when no rung answers the handle", async () => {
+	it("names all four scopes when no rung answers the handle", async () => {
 		const { client, get } = clientFor({});
 
 		await expect(resolveGroupUuidForJoin(client, HANDLE)).rejects.toThrow(NO_SUCH_GROUP_TO_JOIN);
-		expect(paths(get)).toEqual(["/groups", "/groups/invites", "/directory/groups"]);
+		expect(paths(get)).toEqual(["/groups", "/groups/invites", "/groups/org-joinable", "/directory/groups"]);
 	});
 });
 

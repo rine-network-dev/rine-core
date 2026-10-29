@@ -68,7 +68,7 @@ describe("withEvictionPointer joins through the seam", () => {
 
 	it("says where to get the uuid the verb it names requires", () => {
 		// 🔴 The verb is named with a UUID because it has to be: both other rungs
-		// reach the group through the org-scoped `GET /groups`, so neither can see
+		// reach the group through the credential-scoped `GET /groups`, so neither can see
 		// a group this agent no longer sits in. A pointer that names the only
 		// spelling that resolves, and then leaves the caller unable to obtain one,
 		// is a dead end — so the store that already holds their ids is named too.

@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { HttpClient } from "../src/http.js";
-import { generateAgentKeys, saveAgentKeys } from "../src/crypto/keys.js";
+import { saveAgentKeys } from "../src/crypto/keys.js";
+import { generateAgentKeys } from "./helpers/keys.js";
 import { verificationWordsForKey } from "../src/crypto/verification-words.js";
 import {
 	buildPeerVerification,

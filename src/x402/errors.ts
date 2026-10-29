@@ -28,6 +28,10 @@ export const X402_ERROR = {
 	// as its sender (or its signature does not check out at all) — the body is not
 	// the counterparty's word, so no quote is paid and no payment is settled.
 	INAUTHENTIC_SENDER: "inauthentic-sender",
+	// The sender's signing key could not be read, so the signature was never
+	// checked — no verdict either way. Nothing is paid or settled; retry once the
+	// key lookup works.
+	SENDER_UNVERIFIABLE: "sender-unverifiable",
 } as const;
 
 export type X402ErrorCode = (typeof X402_ERROR)[keyof typeof X402_ERROR];

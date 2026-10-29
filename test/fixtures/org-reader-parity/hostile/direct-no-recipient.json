@@ -1,0 +1,104 @@
+{
+  "name": "direct-no-recipient",
+  "family": "direct",
+  "note": "a 1:1 row that names no recipient",
+  "api_url": "http://rine.invalid",
+  "org_id": "de4db70f-d37f-8be9-b275-3abdf05aa800",
+  "root_key": "DCoYVE0vnLZwN1n4OUylViWWrvcHOAeyQMsZlVnpcOY",
+  "own_agents": [
+    "0afd1ba5-5498-443b-b706-b64ce0873d1f",
+    "5cccc04e-c097-4a7f-aa8e-62e8eb05f7c5"
+  ],
+  "reader": {
+    "branch": null
+  },
+  "reads": [
+    {
+      "query": {
+        "group_id": "66f3e4e8-d6f4-4c70-926a-f094916082bd",
+        "cursor": null,
+        "limit": 100
+      },
+      "exchanges": [
+        {
+          "method": "POST",
+          "path": "/oauth/token",
+          "query": {},
+          "status": 200,
+          "body": {
+            "access_token": "fixture-token",
+            "token_type": "bearer",
+            "expires_in": 900
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "group_id": "66f3e4e8-d6f4-4c70-926a-f094916082bd",
+            "include": "payload",
+            "limit": "100"
+          },
+          "status": 200,
+          "body": {
+            "items": [
+              {
+                "id": "0e1856e4-97f1-5d3e-bb52-674243e0e909",
+                "created_at": "2026-10-24T12:00:10.000000Z",
+                "type": "rine.v1.dm",
+                "direction": "received",
+                "from": {
+                  "agent_id": "05375eb7-2d92-4fca-91d0-0ce6d7203b12",
+                  "handle": "05375eb7@example.test",
+                  "org_id": "6704b472-471d-8702-b9af-74fe69b09e6f",
+                  "own": false
+                },
+                "to": null,
+                "group": null,
+                "conversation_id": "7eb60027-4ec2-5ec4-af58-3c1aa02c3adf",
+                "encryption_version": "hpke-hybrid-v2",
+                "delivered_at": null,
+                "x402_status": null,
+                "x402_rail": null,
+                "payload": {
+                  "encrypted_payload": "BIARrSa7j8i8vdRsp475rSIEeiyrWqyTQV0o0Xwf7ew3na2jFSThGFxUIUPmAmaEXq3_5WgHZINX8-CnNenWwMLs0QD8d4cRIIWmVW-WFZEzAbnj7gSH3bFGid4_GhDmavu-_SdyMIsM_qlznycNmmnjy7-gM6TcIN_tcr55ryj-ZigYUurgdFqIBSsliPauPtluz6lKbEGUYnSGsb9UBJPgOqNNgaZSae1ybjHcP2o8laJkyXVn-XZKM6EUn1PP0f7OTTTD0z7jmlHfeQCIWAiYi5A4JWtD5mOxsbcihpXOehC55cagk98AwDr4HjR3MTKp1dfjCp61zb_4yvRtx5H_B5-rnhQ12SoSR15SfejrHR2jPgKCrlMJtyRlMZr_0oGu6bW4hVFCljW-Bu64RQU0zrLH8ZI4hruiWNstSnqPQHilyV_KyLEzOl5ZTTeRgJ7tX93hTtTUniEJz_XfNipFYTHoqW_994_lwiAwuVzcxoU6-9oxPrgLlTziaXajMlwpKj5Sp8E2AH2xdbMDkDT8ysiXzuVHwubjABYb00wwssCjR9cZj9ximn5Epcn13rKzD1A76otf9p7mzkEpCX8S2776Ped7UfkJPXikaL_HKcQsGV7LNiVbAVsNw-wtohcxDfRbZFipGDKHy7Idw_yaqP68q93nw6L1q63QSQG1jkh0WDvf4GmXbfYQ0Eo5LLwr8OoorJudSiGjTGfi-jXl2aWL8gADj3aN770687ePUASf1oyQbgmMQW9--pVZqjec-ZmT51AG1tvmFEIlcGybTXsr6L5sYsbTo7Fv18k9mD6aiSlyI_Y-hz4DCYTJox2S3rIUZarHduya3ohm5XPVE9U7udhV2-WP56_9F3SDOshCzPJK4jIafx-pc52EtpxpYQJUf5mfZMUxc-OAb1rqj91ONLbSey1mNCTPBMeCmotBT4SL1Y9gYo28W7_FP4GbWQFc_0xzincFaqNP84p-2P0qbRQzN8En5_x2lG8yNYKolAgBp7091lYEc_yMTZuM2W2yLSOb-8RxdDIrXnwRX_NGS_F6uFyqVbd88fhbykE7ACuJtbiYgt9KdJLQOmG4D4k9YcHG09GGI1dTFo_Mlktc1ECmcIakB4_v1VFB0LcAYTJ0oSi-nsz5xLCIvPKL-5C670O0WO8ppB4-vrEdE8sYoUUL4bhj4sDc4yn_9lZx-WZVzcDGsmYyKLhJhLE_1s0_ofM1_zo82BwN_QGMI81P1XhzXyNZQTMRczCVNy1qqtAPtIOYSSrAZoa_OI507j3LWzfPi-n1EsXdOgKNfAdanC1ZPi8dthm4BXQxjw-M9ATPiqU2VZy_6044gj87A9yvZWRUE-kt6kmLC0chS9uftnbi9vBPl1sKM9I8W42s0E_4x9J6YNcXzUN_wWGJLEwK4QMhbNmSrLQvLTP4-yddYwK2lEMumfdf_hoR2BxDSDSFIMTL5RAVigTBpnnOIXVtz61UHcKGFebwqc7qiyi_P4fxn0EVpikNEphxEfmpBsWBzec8Q7oxcHUnCsC6GatYjcn9cb4UYD-QID5NkolYgR1z86Vbm3TjreBeyTN2WrwG01jdSA8RvPWwg0dokamg7N_s_WvFl8c1QPFhjNASEgtchWHpwdl9Fp-1lhpVZEfSdgYiucQ5SQgLeH4-UPFRhApqcmw4w31vdoGptcvX",
+                  "self_encrypted_payload": null,
+                  "key_gen": 0
+                }
+              }
+            ],
+            "next_cursor": null
+          }
+        }
+      ],
+      "page": {
+        "items": [
+          {
+            "id": "0e1856e4-97f1-5d3e-bb52-674243e0e909",
+            "created_at": "2026-10-24T12:00:10+00:00",
+            "type": "rine.v1.dm",
+            "direction": "received",
+            "from": {
+              "agent_id": "05375eb7-2d92-4fca-91d0-0ce6d7203b12",
+              "handle": "05375eb7@example.test",
+              "own": false
+            },
+            "to": null,
+            "group": null,
+            "conversation_id": "7eb60027-4ec2-5ec4-af58-3c1aa02c3adf",
+            "encryption_version": "hpke-hybrid-v2",
+            "epoch": null,
+            "text": null,
+            "verification": null,
+            "equivocation": false,
+            "gap": {
+              "reason": "Unreadable"
+            }
+          }
+        ],
+        "findings": [],
+        "next_cursor": null
+      }
+    }
+  ]
+}

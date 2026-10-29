@@ -1,4 +1,7 @@
+import { RineApiError } from "../errors.js";
 import type { HttpClient } from "../http.js";
+import { fetchHandshakeFeed } from "./mls-handshake-feed.js";
+import { MLS_ERR_KEY_NOT_CURRENT, MlsKeyNotCurrentError } from "./mls-key-not-current.js";
 
 // MLS server uses standard base64 (not base64url)
 function toBase64(bytes: Uint8Array): string {
@@ -39,8 +42,9 @@ export interface MlsCommitBody {
 export interface MlsCommitResponse {
 	epoch: number | null;
 	delivered_to: number;
-	// False for an open-enrollment tentative commit awaiting a peer ACK.
-	// Observability-only — the client adopts local state after the 200 either way.
+	// False for an open-enrollment tentative commit awaiting a peer ACK. A key
+	// update holds its pending commit until a later read confirms it; every
+	// other commit adopts local state after the 200 either way.
 	confirmed?: boolean;
 }
 
@@ -71,16 +75,32 @@ export interface MlsWelcomeEntry {
 export interface MlsGroupInfoResponse {
 	group_info: string | null;
 	epoch: number | null;
+	/** The epoch a joiner's token points at: the newest peer-confirmed commit. */
+	confirmed_epoch?: number | null;
+	/** The epoch of the newest accepted commit, tentative or not. The server sends it; no client reads it. */
+	latch_epoch?: number | null;
 }
 
+/**
+ * Publish key packages. The server's coded refusal of a package signed by an
+ * earlier key generation becomes {@link MlsKeyNotCurrentError}; every other
+ * failure propagates unchanged.
+ */
 export async function uploadKeyPackages(
-	client: HttpClient,
+	client: Pick<HttpClient, "post">,
 	agentId: string,
 	packages: string[],
 ): Promise<{ stored: number }> {
-	return (await client.post(`/agents/${agentId}/mls/key-packages`, {
-		packages,
-	})) as { stored: number };
+	try {
+		return (await client.post(`/agents/${agentId}/mls/key-packages`, {
+			packages,
+		})) as { stored: number };
+	} catch (err) {
+		if (err instanceof RineApiError && err.code === MLS_ERR_KEY_NOT_CURRENT) {
+			throw new MlsKeyNotCurrentError();
+		}
+		throw err;
+	}
 }
 
 export async function claimKeyPackages(
@@ -196,13 +216,8 @@ export async function fetchHandshakes(
 	sinceEpoch?: number,
 	extraHeaders?: Record<string, string>,
 ): Promise<{ handshakes: MlsHandshakeEntry[] }> {
-	const params: Record<string, string> = {};
-	if (sinceEpoch !== undefined) params["since_epoch"] = String(sinceEpoch);
-	return (await client.get(
-		`/groups/${groupId}/mls/handshakes`,
-		params,
-		extraHeaders,
-	)) as { handshakes: MlsHandshakeEntry[] };
+	const { handshakes } = await fetchHandshakeFeed(client, groupId, sinceEpoch, extraHeaders);
+	return { handshakes };
 }
 
 export async function fetchWelcomes(

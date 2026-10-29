@@ -34,12 +34,8 @@ vi.mock("../src/crypto/mls-api.js", async () => {
 	};
 });
 
-import {
-	agentKeysExist,
-	generateAgentKeys,
-	saveAgentKeys,
-	signingPublicKeyToJWK,
-} from "../src/crypto/keys.js";
+import { agentKeysExist, saveAgentKeys } from "../src/crypto/keys.js";
+import { generateAgentKeys } from "./helpers/keys.js";
 import {
 	claimKeyPackagesBatch,
 	fetchHandshakes,
@@ -53,6 +49,8 @@ import {
 	openMlsClient,
 	openMlsGroup,
 } from "../src/crypto/mls.js";
+import type { AgentKeysResponse } from "../src/api-types.js";
+import { World } from "./crypto/world.js";
 import { RineApiError, rineErrorFromResponse } from "../src/errors.js";
 import type { MlsAdmissionResult } from "../src/mls-ops.js";
 import {
@@ -72,6 +70,7 @@ const GROUP_ID = "c3d4e5f6-a7b8-9012-cdef-123456789012";
 const SERVER_WELCOMES_PER_COMMIT_MAX = 32;
 
 let dir: string;
+let world: World;
 /** Every commit body the server accepted, in order. */
 let posted: MlsCommitBody[];
 /** Agents holding a claimable KeyPackage. */
@@ -92,7 +91,9 @@ let client: never;
 /** An agent with keys on disk and one claimable KeyPackage. */
 function agent(): string {
 	const agentId = randomUUID();
-	saveAgentKeys(dir, agentId, generateAgentKeys());
+	// The keys on disk are the ones the server publishes, as for a real agent: the
+	// admission checks a claimed package against the published key.
+	world.save(dir, world.addAgent({ id: agentId }));
 	pool.add(agentId);
 	return agentId;
 }
@@ -101,14 +102,15 @@ function agents(count: number): string[] {
 	return Array.from({ length: count }, () => agent());
 }
 
-/** The published signing keys `GET /agents/keys` would return for `ids`. */
+/**
+ * The published keys `GET /agents/keys` would return for `ids`: the world's own
+ * responses, so each entry carries the certificate chain the batch consumers verify.
+ */
 function publishedKeys(ids: string[]) {
 	const keys: Record<string, unknown> = {};
 	for (const id of ids) {
 		if (!agentKeysExist(dir, id)) continue;
-		// The MLS basic-credential identity is the agent's raw Ed25519 key.
-		const jwk = signingPublicKeyToJWK(openMlsClient(dir, id).publicKey());
-		keys[id] = { signing_public_key: jwk, encryption_public_key: jwk };
+		keys[id] = world.published(id);
 	}
 	return keys;
 }
@@ -178,6 +180,7 @@ function acceptCommits(): void {
 
 beforeEach(() => {
 	dir = fs.mkdtempSync(join(tmpdir(), "rine-admission-"));
+	world = new World();
 	posted = [];
 	pool = new Set();
 	invited = [];
@@ -249,6 +252,21 @@ beforeEach(() => {
 
 afterEach(() => {
 	fs.rmSync(dir, { recursive: true, force: true });
+});
+
+describe("fetchMlsIdentities", () => {
+	it("test_fetch_identities_when_an_agents_key_chain_is_broken_then_it_reads_as_absent", async () => {
+		const [good, forged] = agents(2) as [string, string];
+		const keys = publishedKeys([good, forged]) as Record<string, AgentKeysResponse>;
+		keys[forged]!.agent_certificate = keys[good]!.agent_certificate;
+
+		const identities = await fetchMlsIdentities(
+			{ get: vi.fn().mockResolvedValue({ keys }) } as never,
+			[good, forged],
+		);
+
+		expect([...identities.keys()]).toEqual([good.toLowerCase()]);
+	});
 });
 
 describe("initMlsGroup", () => {
@@ -548,7 +566,18 @@ describe("addMlsGroupMembers", () => {
 		seedGroup();
 		await addMlsGroupMembers(dir, SELF_ID, GROUP_ID, agents(1), client);
 
-		expect(reads().map((call) => call[0])).toEqual(["/agents/keys"]);
+		// The admission read is unconditional now — the group's peers must be
+		// chain-verified before the Add commit is built — so what this pins is the
+		// PRICING read: `GET /groups/{id}` is skipped, because one member is always
+		// exactly one batch, whatever the tree weighs. The second key read is the
+		// claim check, which compares the claimed package with the published key.
+		expect(reads().map((call) => call[0])).toEqual([
+			`/groups/${GROUP_ID}/members`,
+			`/groups/${GROUP_ID}/requests`,
+			"/agents/keys",
+			"/agents/keys",
+		]);
+		expect(reads().map((call) => call[0])).not.toContain(`/groups/${GROUP_ID}`);
 	});
 });
 
@@ -776,7 +805,19 @@ describe("removeMlsGroupMember", () => {
 			client,
 		);
 
-		expect(result).toEqual({ epoch: 2, removedLeaf: false });
+		expect(result).toEqual({
+			epoch: 2,
+			removedLeaf: false,
+			// No escrow key is mocked in this file, so the drain of the epoch the
+			// commit installed defers and the exports stay queued in the snapshot.
+			escrow: {
+				gaps: [],
+				deferral: "key_unavailable",
+				queued: 3,
+				dropped: 0,
+				backlogged: 0,
+			},
+		});
 		expect(posted.at(-1)?.removes).toEqual([stranger]);
 		expect(posted.at(-1)?.welcomes).toEqual([]);
 	});
@@ -793,7 +834,19 @@ describe("removeMlsGroupMember", () => {
 			client,
 		);
 
-		expect(result).toEqual({ epoch: 2, removedLeaf: true });
+		expect(result).toEqual({
+			epoch: 2,
+			removedLeaf: true,
+			// No escrow key is mocked in this file, so the drain of the epoch the
+			// retried commit installed defers and the exports stay queued.
+			escrow: {
+				gaps: [],
+				deferral: "key_unavailable",
+				queued: 3,
+				dropped: 0,
+				backlogged: 0,
+			},
+		});
 		expect(mlsCommit).toHaveBeenCalledTimes(2);
 	});
 

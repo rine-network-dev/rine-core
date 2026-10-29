@@ -1,9 +1,7 @@
 import type { CommitBundle, MlsClient, MlsGroup } from "@rine-network/mls";
-import { mlsFromBase64 } from "./crypto/mls-api.js";
 import { noteMlsStateChanged } from "./crypto/mls-state.js";
 import { mlsGroupIdBytes } from "./crypto/mls.js";
 import { RineApiError, rejectedAgents } from "./errors.js";
-import type { HttpClient } from "./http.js";
 import {
 	type AdmissionLedger,
 	type AdmitContext,
@@ -14,11 +12,17 @@ import {
 	requireGroup,
 } from "./mls-admission.js";
 import { dropSeatedJoiners } from "./mls-admission-recheck.js";
+import { claimCurrentKeyPackages } from "./mls-claim-check.js";
 import { type Joiner, isEpochConflict, postMlsCommit } from "./mls-commit.js";
+import { whenCommitPending } from "./mls-commit-pending.js";
+import { drainEscrow } from "./mls-escrow-drain.js";
 import {
-	claimFoundingKeyPackages,
-	mlsFoundingBatchSizes,
-} from "./mls-founding.js";
+	type EscrowReport,
+	emptyReport,
+	mergeReports,
+	reportDrain,
+} from "./mls-escrow-report.js";
+import { mlsFoundingBatchSizes } from "./mls-founding.js";
 import { syncMlsGroup } from "./mls-ops-sync.js";
 
 /**
@@ -73,27 +77,6 @@ function buildCommit(
 	return { group, bundle };
 }
 
-/** Claim one KeyPackage per member of this batch, and only this batch. */
-async function claimBatch(
-	client: HttpClient,
-	batch: string[],
-	ledger: AdmissionLedger,
-): Promise<Joiner[]> {
-	const claimed = await claimFoundingKeyPackages(client, batch);
-	const joiners: Joiner[] = [];
-	for (const agentId of batch) {
-		const keyPackage = claimed.get(admissionKey(agentId));
-		// A member whose pool emptied between the readiness report and the claim
-		// is left out, not treated as a failure.
-		if (!keyPackage) {
-			recordOutcome(ledger, agentId, "skipped", "no_key_package");
-			continue;
-		}
-		joiners.push({ agentId, keyPackage: mlsFromBase64(keyPackage) });
-	}
-	return joiners;
-}
-
 /**
  * Post one batch, answering a rejected-recipient 422 by dropping exactly the
  * recipients it named and retrying the remainder ONCE, and a lost epoch race by
@@ -112,7 +95,8 @@ async function claimBatch(
  * operator reaches for is precisely the one running against a group that other
  * members are committing to.
  *
- * Returns the epoch the commit landed at, or null when nothing landed.
+ * Returns the epoch the commit landed at and the escrow report of its drain, or
+ * null when nothing landed.
  */
 async function commitBatch(
 	ctx: AdmitContext,
@@ -120,35 +104,32 @@ async function commitBatch(
 	create: boolean,
 	joiners: Joiner[],
 	ledger: AdmissionLedger,
-): Promise<number | null> {
+): Promise<{ epoch: number; escrow: EscrowReport } | null> {
 	let attempt = joiners;
 	let tries = 0;
 	let caughtUp = false;
 	for (;;) {
-		const { group, bundle } = buildCommit(
-			ctx,
-			mls,
-			create,
-			attempt.map((joiner) => joiner.keyPackage),
+		const { group, bundle } = await whenCommitPending(ctx.groupId, () =>
+			buildCommit(ctx, mls, create, attempt.map((joiner) => joiner.keyPackage)),
 		);
 		try {
 			const epoch = await postMlsCommit(
 				ctx,
 				ctx.groupId,
-				group,
 				bundle,
 				attempt,
 				ctx.extraHeaders,
 			);
 			// Local state is adopted only after the server accepts, and the
 			// invalidation rides at the mutation, so a "this agent holds no MLS
-			// state" answer taken before it cannot survive it.
-			group.save();
+			// state" answer taken before it cannot survive it. The drain saves the
+			// group itself, after sealing this epoch's escrow to disk.
+			const escrow = reportDrain(ctx, ctx.groupId, await drainEscrow(ctx, ctx.groupId, group));
 			noteMlsStateChanged(ctx.configDir, ctx.agentId, ctx.groupId);
 			for (const joiner of attempt) {
 				recordOutcome(ledger, joiner.agentId, "added");
 			}
-			return epoch;
+			return { epoch, escrow };
 		} catch (err) {
 			// A peer's commit won the epoch CAS, so this one was built against a
 			// superseded epoch. Catch up once and rebuild against the epoch the
@@ -232,16 +213,18 @@ export async function runAdmission(
 	let epoch = startEpoch ?? 0;
 	let commits = 0;
 	let taken = 0;
+	let escrow = emptyReport();
 	for (const size of sizes) {
 		const batch = pending.slice(taken, taken + size);
 		taken += size;
-		const joiners = await claimBatch(ctx.client, batch, ledger);
+		const joiners = await claimCurrentKeyPackages(ctx, batch, ledger);
 		if (joiners.length === 0 && founded) continue;
 		const landed = await commitBatch(ctx, mls, !founded, joiners, ledger);
 		if (landed === null) continue;
-		epoch = landed;
+		epoch = landed.epoch;
+		escrow = mergeReports(escrow, landed.escrow);
 		commits += 1;
 		founded = true;
 	}
-	return admissionResult(ledger, epoch, commits);
+	return admissionResult(ledger, epoch, commits, escrow);
 }

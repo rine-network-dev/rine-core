@@ -23,6 +23,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../src/mls-escrow-key.js", () => escrowKeyModule());
+
 vi.mock("../src/crypto/mls.js", async () => {
 	const actual = await vi.importActual<typeof import("../src/crypto/mls.js")>(
 		"../src/crypto/mls.js",
@@ -45,8 +47,11 @@ vi.mock("../src/mls-heartbeat.js", () => ({
 	mlsHeartbeat: vi.fn(async () => undefined),
 }));
 
+import { escrowKeyModule, withPeerReads } from "./mls-escrow-harness.js";
+import { World } from "./crypto/world.js";
 import { fetchWelcomes } from "../src/crypto/mls-api.js";
 import { loadMlsGroup, openMlsClient } from "../src/crypto/mls.js";
+import { RineApiError } from "../src/errors.js";
 import { processMlsWelcomes } from "../src/mls-ops-join.js";
 import { mlsHeartbeat } from "../src/mls-heartbeat.js";
 import { welcomeRefusal } from "../src/mls-welcome-guard.js";
@@ -74,6 +79,28 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 let root: string;
 let dir: string;
+let world: World;
+let client: never;
+const release = vi.fn();
+
+/**
+ * The reads the admission path makes outside the mocked `crypto/mls-api.js`:
+ * the group roster and the world's published keys. Every other path is a bug in
+ * this fixture.
+ */
+const fakeClient = {
+	get: async (path: string) => {
+		// The admission path reads the group's outstanding vouchers; this fixture
+		// has none, so the roster is the world's own agents.
+		if (/^\/groups\/[^/]+\/requests$/.test(path)) return { items: [] };
+		throw new Error(`unexpected GET ${path}`);
+	},
+};
+
+/** The group a mocked `joinFromWelcome` hands back, with the drain's own seam. */
+function fakeGroup() {
+	return { save: () => undefined, takeEscrowExports: () => ({ exports: [], gaps: [] }) };
+}
 
 beforeEach(() => {
 	// The config dir is nested inside an observable root so a traversal out of it
@@ -81,6 +108,9 @@ beforeEach(() => {
 	root = fs.mkdtempSync(join(tmpdir(), "rine-welcome-spool-"));
 	dir = join(root, "config");
 	fs.mkdirSync(dir);
+	world = new World();
+	world.save(dir, world.addAgent({ id: AGENT }));
+	client = withPeerReads(world, fakeClient) as never;
 	vi.clearAllMocks();
 	// `clearAllMocks` clears recorded calls, not implementations, so the fetch is
 	// re-armed empty here rather than leaking one case's batch into the next.
@@ -107,6 +137,24 @@ function spoolPath(id: string): string {
 	return join(welcomeSpoolDir(dir, AGENT), `${id}.json`);
 }
 
+/**
+ * Write one spooled welcome per id, `ageMs` old, in the order given.
+ *
+ * `refused` is what a pass that tried the entry and refused it retryably
+ * leaves behind, and it is the population the count bound holds — so a
+ * fixture that means "retained refusals" has to say so.
+ */
+function fill(names: string[], { ageMs = 0, refused = true } = {}): string[] {
+	const spool = new WelcomeSpool(dir, AGENT);
+	names.forEach((id, i) => {
+		spool.store(delivery(id));
+		if (refused) spool.markRefused(spoolPath(id));
+		const when = new Date(Date.now() - ageMs - (names.length - i));
+		fs.utimesSync(spoolPath(id), when, when);
+	});
+	return names;
+}
+
 describe("the name a spooled welcome is filed under", () => {
 	it("test_spoolable_id_when_it_is_not_a_plain_file_name_then_it_is_refused", () => {
 		expect(isSpoolableId(DELIVERY)).toBe(true);
@@ -115,7 +163,7 @@ describe("the name a spooled welcome is filed under", () => {
 		// name", not "is a UUID".
 		expect(isSpoolableId("welcome-0")).toBe(true);
 
-		expect(isSpoolableId("../../../credentials")).toBe(false);
+		expect(isSpoolableId("../../../profiles")).toBe(false);
 		expect(isSpoolableId(POISON)).toBe(false);
 		expect(isSpoolableId("a/b")).toBe(false);
 		expect(isSpoolableId("a\\b")).toBe(false);
@@ -127,16 +175,18 @@ describe("the name a spooled welcome is filed under", () => {
 
 	it("test_store_when_the_id_escapes_the_spool_dir_then_nothing_is_written", () => {
 		// MEASURED before the check existed: this exact id overwrote
-		// `<configDir>/credentials.json`, which is both the OAuth store and the
-		// file `findConfigDir` locates the config dir by.
-		const credentials = join(dir, "credentials.json");
-		fs.writeFileSync(credentials, '{"client_id":"real"}');
+		// `<configDir>/profiles.json`, which is both the profile store and the
+		// file `resolveConfigDir` locates the config dir by.
+		const profiles = join(dir, "profiles.json");
+		fs.writeFileSync(profiles, '{"default":{"org_id":"real"}}');
 
 		expect(() =>
-			new WelcomeSpool(dir, AGENT).store(delivery("../../../credentials")),
+			new WelcomeSpool(dir, AGENT).store(delivery("../../../profiles")),
 		).toThrow(/plain file name/);
 
-		expect(fs.readFileSync(credentials, "utf-8")).toBe('{"client_id":"real"}');
+		expect(fs.readFileSync(profiles, "utf-8")).toBe(
+			'{"default":{"org_id":"real"}}',
+		);
 	});
 
 	it("test_fetch_when_one_delivery_is_named_a_path_then_the_rest_of_the_batch_survives", async () => {
@@ -155,7 +205,7 @@ describe("the name a spooled welcome is filed under", () => {
 			throw new Error("stop after spooling");
 		});
 
-		await expect(processMlsWelcomes(dir, AGENT, {} as never)).rejects.toThrow(
+		await expect(processMlsWelcomes(dir, AGENT, client)).rejects.toThrow(
 			"stop after spooling",
 		);
 
@@ -182,28 +232,10 @@ describe("the name a spooled welcome is filed under", () => {
 });
 
 describe("what the spool keeps", () => {
-	/**
-	 * Write one spooled welcome per id, `ageMs` old, in the order given.
-	 *
-	 * `refused` is what a pass that tried the entry and refused it retryably
-	 * leaves behind, and it is the population the count bound holds — so a
-	 * fixture that means "retained refusals" has to say so.
-	 */
-	function fill(names: string[], { ageMs = 0, refused = true } = {}): string[] {
-		const spool = new WelcomeSpool(dir, AGENT);
-		names.forEach((id, i) => {
-			spool.store(delivery(id));
-			if (refused) spool.markRefused(spoolPath(id));
-			const when = new Date(Date.now() - ageMs - (names.length - i));
-			fs.utimesSync(spoolPath(id), when, when);
-		});
-		return names;
-	}
-
 	it("test_prune_when_more_refusals_than_the_cap_are_retained_then_the_oldest_go", () => {
 		const names = fill(ids(36));
 
-		expect(new WelcomeSpool(dir, AGENT).prune()).toBe(4);
+		expect(new WelcomeSpool(dir, AGENT).prune(release)).toBe(4);
 
 		// A refusal for a genuinely substituted Welcome can never clear, so
 		// retention without a bound is a permanent, linearly growing tax the
@@ -223,7 +255,7 @@ describe("what the spool keeps", () => {
 		// a Welcome is the only copy of itself.
 		const names = fill(ids(36), { refused: false });
 
-		expect(new WelcomeSpool(dir, AGENT).prune()).toBe(0);
+		expect(new WelcomeSpool(dir, AGENT).prune(release)).toBe(0);
 
 		const kept = new WelcomeSpool(dir, AGENT)
 			.pending()
@@ -238,7 +270,7 @@ describe("what the spool keeps", () => {
 		fill(ids(33, "refused"));
 		const untried = fill(ids(20, "untried"), { refused: false });
 
-		expect(new WelcomeSpool(dir, AGENT).prune()).toBe(1);
+		expect(new WelcomeSpool(dir, AGENT).prune(release)).toBe(1);
 
 		const kept = new WelcomeSpool(dir, AGENT)
 			.pending()
@@ -252,7 +284,7 @@ describe("what the spool keeps", () => {
 		fill(ids(2, "old"), { ageMs: 8 * DAY_MS });
 		fill(ids(1, "new"));
 
-		expect(new WelcomeSpool(dir, AGENT).prune()).toBe(2);
+		expect(new WelcomeSpool(dir, AGENT).prune(release)).toBe(2);
 
 		// 🔴 What the bound costs, stated as a test: an honest Welcome whose
 		// refusal has not cleared in a week is dropped and only a re-invitation
@@ -265,14 +297,14 @@ describe("what the spool keeps", () => {
 		// would corroborate the Welcome, tried or not.
 		fill(ids(1, "stale"), { ageMs: 8 * DAY_MS, refused: false });
 
-		expect(new WelcomeSpool(dir, AGENT).prune()).toBe(1);
+		expect(new WelcomeSpool(dir, AGENT).prune(release)).toBe(1);
 		expect(new WelcomeSpool(dir, AGENT).pending()).toHaveLength(0);
 	});
 
 	it("test_prune_when_nothing_is_past_the_bound_then_it_keeps_everything", () => {
 		fill(ids(5));
 
-		expect(new WelcomeSpool(dir, AGENT).prune()).toBe(0);
+		expect(new WelcomeSpool(dir, AGENT).prune(release)).toBe(0);
 		expect(new WelcomeSpool(dir, AGENT).pending()).toHaveLength(5);
 	});
 
@@ -303,7 +335,7 @@ describe("what the spool keeps", () => {
 		expect(spool.pending().map((e) => e.delivery)).toEqual([
 			{ id: "legacy", group_id: GROUP_ID, blob: "AQI=" },
 		]);
-		expect(spool.prune()).toBe(0);
+		expect(spool.prune(release)).toBe(0);
 	});
 
 	it("test_pending_when_names_disagree_with_write_order_then_write_order_wins", () => {
@@ -319,6 +351,64 @@ describe("what the spool keeps", () => {
 	});
 });
 
+describe("what leaves the spool unopened", () => {
+	const BLOB = Uint8Array.from([1, 2]);
+
+	it("test_prune_when_entries_are_evicted_or_aged_out_then_each_gives_its_key_package_back", () => {
+		fill(ids(36));
+		fill(ids(2, "old"), { ageMs: 8 * DAY_MS });
+
+		const dropped = new WelcomeSpool(dir, AGENT).prune(release);
+
+		expect(dropped).toBe(6);
+		expect(release).toHaveBeenCalledTimes(6);
+		expect(release).toHaveBeenCalledWith(BLOB);
+		expect(new WelcomeSpool(dir, AGENT).pending()).toHaveLength(32);
+	});
+
+	it("test_prune_when_nothing_is_past_the_bound_then_nothing_is_given_back", () => {
+		fill(ids(5));
+
+		new WelcomeSpool(dir, AGENT).prune(release);
+
+		expect(release).not.toHaveBeenCalled();
+	});
+
+	it("test_drop_when_the_entry_is_readable_then_the_key_package_goes_back_before_the_file_goes", () => {
+		const spool = new WelcomeSpool(dir, AGENT);
+		spool.store(delivery("gone"));
+		const stillThere: boolean[] = [];
+		const checking = vi.fn(() => stillThere.push(fs.existsSync(spoolPath("gone"))));
+
+		spool.drop(spoolPath("gone"), checking);
+
+		expect(stillThere).toEqual([true]);
+		expect(fs.existsSync(spoolPath("gone"))).toBe(false);
+	});
+
+	it("test_drop_when_the_release_fails_then_the_entry_stays_for_the_next_pass", () => {
+		const spool = new WelcomeSpool(dir, AGENT);
+		spool.store(delivery("kept"));
+		const failing = vi.fn(() => {
+			throw new Error("store write failed");
+		});
+
+		expect(() => spool.drop(spoolPath("kept"), failing)).toThrow("store write failed");
+
+		expect(fs.existsSync(spoolPath("kept"))).toBe(true);
+	});
+
+	it("test_drop_when_the_entry_is_torn_then_it_is_discarded_without_a_release", () => {
+		fs.mkdirSync(welcomeSpoolDir(dir, AGENT), { recursive: true });
+		fs.writeFileSync(spoolPath("torn"), "{");
+
+		new WelcomeSpool(dir, AGENT).drop(spoolPath("torn"), release);
+
+		expect(release).not.toHaveBeenCalled();
+		expect(fs.existsSync(spoolPath("torn"))).toBe(false);
+	});
+});
+
 describe("what a pass does with the spool", () => {
 	it("test_process_when_the_spool_holds_an_aged_entry_then_the_pass_prunes_it", () => {
 		// The bound is only real if somebody calls it, and nothing pinned that: the
@@ -331,10 +421,21 @@ describe("what a pass does with the spool", () => {
 			fs.utimesSync(spoolPath(id), when, when);
 		}
 
-		return processMlsWelcomes(dir, AGENT, {} as never).then((result) => {
-			expect(result).toEqual({ processed: 0, groupIds: [] });
-			// Pruned before the fetch, so the pass never opened a client for them.
-			expect(openMlsClient).not.toHaveBeenCalled();
+		const discardWelcomeKeyPackage = vi.fn();
+		vi.mocked(openMlsClient).mockReset();
+		vi.mocked(openMlsClient).mockReturnValue({ discardWelcomeKeyPackage } as never);
+
+		return processMlsWelcomes(dir, AGENT, client).then((result) => {
+			expect(result).toEqual({
+				processed: 0,
+				groupIds: [],
+				discarded: 2,
+				escrow: { gaps: [], queued: 0, dropped: 0, backlogged: 0 },
+			});
+			// Pruned before the fetch, and each pruned Welcome gave its key package
+			// back through one client opened for the purpose.
+			expect(openMlsClient).toHaveBeenCalledTimes(1);
+			expect(discardWelcomeKeyPackage).toHaveBeenCalledTimes(2);
 			expect(new WelcomeSpool(dir, AGENT).pending()).toHaveLength(0);
 		});
 	});
@@ -357,15 +458,15 @@ describe("what a pass does with the spool", () => {
 			throw new Error("the store went away mid-pass");
 		});
 
-		await expect(processMlsWelcomes(dir, AGENT, {} as never)).rejects.toThrow(
+		await expect(processMlsWelcomes(dir, AGENT, client)).rejects.toThrow(
 			"the store went away mid-pass",
 		);
 		expect(new WelcomeSpool(dir, AGENT).pending()).toHaveLength(36);
 
 		vi.mocked(openMlsClient).mockReturnValue({
-			joinFromWelcome: () => ({ save: () => undefined }),
+			joinFromWelcome: () => fakeGroup(),
 		} as never);
-		const result = await processMlsWelcomes(dir, AGENT, {} as never);
+		const result = await processMlsWelcomes(dir, AGENT, client);
 
 		expect(result.groupIds).toHaveLength(36);
 		expect(result.groupIds).toEqual(batch.map((w) => w.group_id));
@@ -377,7 +478,7 @@ describe("what a pass does with the spool", () => {
 		// and it is written by the pass, not by the spool.
 		new WelcomeSpool(dir, AGENT).store(delivery(DELIVERY));
 		vi.mocked(openMlsClient).mockReturnValue({
-			joinFromWelcome: () => ({ save: () => undefined }),
+			joinFromWelcome: () => fakeGroup(),
 		} as never);
 		vi.mocked(welcomeRefusal).mockResolvedValue({
 			groupId: GROUP_ID,
@@ -386,7 +487,7 @@ describe("what a pass does with the spool", () => {
 		} as never);
 
 		await expect(
-			processMlsWelcomes(dir, AGENT, {} as never, { forGroup: GROUP_ID }),
+			processMlsWelcomes(dir, AGENT, client, { forGroup: GROUP_ID }),
 		).rejects.toMatchObject({ reason: "roster_uncorroborated" });
 
 		// Kept — the bytes are the only copy — and now carrying the flag, so a
@@ -395,6 +496,80 @@ describe("what a pass does with the spool", () => {
 		expect(
 			JSON.parse(fs.readFileSync(spoolPath(DELIVERY), "utf-8")).refused,
 		).toBe(true);
+	});
+
+	it("test_process_when_a_welcome_installs_then_its_key_package_is_not_given_back", async () => {
+		new WelcomeSpool(dir, AGENT).store(delivery(DELIVERY));
+		const discardWelcomeKeyPackage = vi.fn();
+		vi.mocked(openMlsClient).mockReset();
+		vi.mocked(openMlsClient).mockReturnValue({
+			joinFromWelcome: () => fakeGroup(),
+			discardWelcomeKeyPackage,
+		} as never);
+
+		const result = await processMlsWelcomes(dir, AGENT, client);
+
+		expect(result.groupIds).toEqual([GROUP_ID]);
+		expect(discardWelcomeKeyPackage).not.toHaveBeenCalled();
+	});
+
+	it("test_process_when_the_group_is_gone_then_the_welcome_gives_its_key_package_back", async () => {
+		new WelcomeSpool(dir, AGENT).store(delivery(DELIVERY));
+		const discardWelcomeKeyPackage = vi.fn();
+		vi.mocked(openMlsClient).mockReset();
+		vi.mocked(openMlsClient).mockReturnValue({ discardWelcomeKeyPackage } as never);
+		const goneClient = {
+			get: async () => {
+				throw new RineApiError(404, "group not found");
+			},
+		} as never;
+
+		const result = await processMlsWelcomes(dir, AGENT, goneClient);
+
+		expect(result.discarded).toBe(1);
+		expect(discardWelcomeKeyPackage).toHaveBeenCalledTimes(1);
+		expect(new WelcomeSpool(dir, AGENT).pending()).toHaveLength(0);
+	});
+
+	it("test_process_when_the_release_fails_then_the_pass_fails_and_the_welcome_stays", async () => {
+		new WelcomeSpool(dir, AGENT).store(delivery(DELIVERY));
+		vi.mocked(openMlsClient).mockReset();
+		vi.mocked(openMlsClient).mockReturnValue({
+			discardWelcomeKeyPackage: () => {
+				throw Object.assign(new Error("store write failed"), { code: "RINE_MLS_STORE" });
+			},
+		} as never);
+		const goneClient = {
+			get: async () => {
+				throw new RineApiError(404, "group not found");
+			},
+		} as never;
+
+		await expect(processMlsWelcomes(dir, AGENT, goneClient)).rejects.toThrow(
+			"store write failed",
+		);
+
+		expect(new WelcomeSpool(dir, AGENT).pending()).toHaveLength(1);
+	});
+
+	it("test_process_when_a_blob_has_nothing_to_release_then_it_is_dropped_anyway", async () => {
+		new WelcomeSpool(dir, AGENT).store(delivery(DELIVERY));
+		vi.mocked(openMlsClient).mockReset();
+		vi.mocked(openMlsClient).mockReturnValue({
+			discardWelcomeKeyPackage: () => {
+				throw Object.assign(new Error("not a welcome"), { code: "RINE_MLS_PROTOCOL" });
+			},
+		} as never);
+		const goneClient = {
+			get: async () => {
+				throw new RineApiError(404, "group not found");
+			},
+		} as never;
+
+		const result = await processMlsWelcomes(dir, AGENT, goneClient);
+
+		expect(result.discarded).toBe(1);
+		expect(new WelcomeSpool(dir, AGENT).pending()).toHaveLength(0);
 	});
 });
 
@@ -415,7 +590,7 @@ describe("a join failure that is this process failing", () => {
 		} as never);
 		vi.mocked(loadMlsGroup).mockReturnValue({} as never);
 
-		await expect(processMlsWelcomes(dir, AGENT, {} as never)).rejects.toThrow(
+		await expect(processMlsWelcomes(dir, AGENT, client)).rejects.toThrow(
 			"store write failed",
 		);
 

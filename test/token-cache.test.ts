@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getOrRefreshToken } from "../src/http.js";
+import { TEST_SIGNER } from "./signer-fixture.js";
 
 // Mock only loadTokenCache so the cache always appears empty (forces fresh fetch).
 // cacheToken is kept real so we exercise the actual best-effort fix in config.ts.
@@ -84,12 +85,7 @@ describe("getOrRefreshToken — cache write failure resilience", () => {
 
 		let result: string;
 		try {
-			result = await getOrRefreshToken(
-				dir,
-				"https://api.test",
-				{ client_id: "id", client_secret: "secret" },
-				"default",
-			);
+			result = await getOrRefreshToken(dir, "https://api.test", TEST_SIGNER);
 		} finally {
 			if (chmodEffective) fs.chmodSync(dir, 0o755);
 		}

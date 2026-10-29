@@ -17,10 +17,9 @@
  * caller that paid for it is told so — {@link MlsRecoveryResult} names the rung
  * and how far behind the member was.
  *
- * What this is NOT: a way back for an agent whose local state is gone. The
- * stale leaf index comes from the stale handle and from nowhere else, so state
- * that will not load has no resync — {@link MlsResyncUnavailableError} says so
- * by name rather than surfacing a protocol error from a join that cannot work.
+ * No state means no stale leaf and no ladder: {@link reseatStrandedSeat} takes
+ * back the leaf of a seated member that holds none, and anyone else gets
+ * {@link MlsResyncUnavailableError}.
  */
 import { fetchGroupInfo, mlsFromBase64 } from "./crypto/mls-api.js";
 import {
@@ -32,10 +31,23 @@ import { noteMlsStateChanged } from "./crypto/mls-state.js";
 import { loadMlsGroup, openMlsClient } from "./crypto/mls.js";
 import { RineApiError } from "./errors.js";
 import type { HttpClient } from "./http.js";
+import { openPeerMlsClient } from "./mls-allowed.js";
+import { admitGroupPeers } from "./mls-allowed-tree.js";
 import { isEpochConflict, postMlsCommit } from "./mls-commit.js";
+import { type EscrowReport, emptyReport, mergeReports } from "./mls-escrow-report.js";
+import { fetchGroupEpochs } from "./mls-group-epochs.js";
 import type { KeyPackageTopUp } from "./mls-keypackage-topup.js";
 import { syncMlsGroup } from "./mls-ops-sync.js";
-import { joinLines, keyPackageTopUpLine } from "./mls-recovery-format.js";
+import { reseatStrandedSeat } from "./mls-stranded-seat.js";
+import { MlsResyncUnavailableError } from "./mls-resync-unavailable.js";
+import { admitRefusingRotatedLeaf, isMlsRotatedLeaf } from "./mls-rotated-leaf.js";
+import { settleAfterJoin } from "./mls-escrow-settle.js";
+
+export {
+	MLS_RESYNC_UNAVAILABLE_CODE,
+	MlsResyncUnavailableError,
+	isMlsResyncUnavailable,
+} from "./mls-resync-unavailable.js";
 
 /**
  * The server's answer when a replay cannot carry this agent to the group: it
@@ -47,63 +59,6 @@ export const MLS_RESYNC_REQUIRED_CODE = "mls_resync_required";
 /** True when the server refused a replay it could not serve. */
 export function isMlsResyncRequired(err: unknown): boolean {
 	return err instanceof RineApiError && err.code === MLS_RESYNC_REQUIRED_CODE;
-}
-
-/** The stable code {@link MlsResyncUnavailableError} carries. */
-export const MLS_RESYNC_UNAVAILABLE_CODE = "mls_resync_unavailable";
-
-/**
- * This agent holds no loadable MLS state for the group, so there is no resync.
- *
- * A resync replaces the agent's **own** leaf, and the leaf index it names can
- * only come from the stale state. Absent state therefore has no recovery path
- * at this end: the remedy is an admin removing the agent and inviting it again,
- * which mints a new leaf and a fresh Welcome.
- *
- * Deliberately not a fallback to a plain external join. MLS refuses that for an
- * agent the tree already holds — `duplicate signature key, hpke key or identity
- * found at index N` — so the fallback would replace an actionable refusal with a
- * protocol error about a leaf the operator never asked about.
- *
- * 🔴 It carries the recovery's key-package top-up, and that is not decoration.
- * This refusal IS the answer an agent gets when a carried vote seated it with no
- * Welcome — the exact population whose published pool has run out — so the one
- * thing that unblocks the re-admission it asks for is the pool the top-up just
- * refilled. Reporting the top-up only on the returned result would report it
- * everywhere except the case it was built for.
- */
-export class MlsResyncUnavailableError extends Error {
-	readonly code = MLS_RESYNC_UNAVAILABLE_CODE;
-
-	/** What the top-up that ran ahead of this refusal did, when one ran. */
-	readonly keyPackages?: KeyPackageTopUp;
-
-	constructor(
-		public readonly groupId: string,
-		options?: { cause?: unknown; keyPackages?: KeyPackageTopUp },
-	) {
-		super(
-			joinLines(
-				`Cannot resync MLS group ${groupId}: this agent's local group state ` +
-					`will not load, and a resync needs it — the leaf a resync replaces is ` +
-					`named by the stale state itself and by nothing the server knows. Ask ` +
-					`an admin to remove this agent from the group and invite it again; ` +
-					`re-admission mints a new leaf and a fresh Welcome.`,
-				keyPackageTopUpLine(options?.keyPackages),
-			),
-			options,
-		);
-		this.name = "MlsResyncUnavailableError";
-		this.keyPackages = options?.keyPackages;
-	}
-}
-
-/** True for {@link MlsResyncUnavailableError}, matched on its code. */
-export function isMlsResyncUnavailable(err: unknown): boolean {
-	return (
-		(err as { code?: unknown } | null | undefined)?.code ===
-		MLS_RESYNC_UNAVAILABLE_CODE
-	);
 }
 
 /**
@@ -199,6 +154,11 @@ export interface MlsRecoveryResult {
 	 */
 	evicted: boolean;
 	/**
+	 * The escrow work this recovery did: the merge of every rung that ran, in
+	 * the order they ran.
+	 */
+	escrow: EscrowReport;
+	/**
 	 * What the key-package top-up that rode along with this recovery did.
 	 *
 	 * Absent when the recovery was not driven through `recoverGroup` — the
@@ -222,7 +182,7 @@ async function confirmedEpoch(
 	extraHeaders?: Record<string, string>,
 ): Promise<number | null> {
 	try {
-		return (await fetchGroupInfo(client, groupId, extraHeaders)).epoch;
+		return (await fetchGroupEpochs(client, groupId, extraHeaders))?.confirmed ?? null;
 	} catch {
 		return null;
 	}
@@ -244,11 +204,10 @@ async function resyncOnce(
 	configDir: string,
 	agentId: string,
 	groupId: string,
-	cipherSuite: number,
 	staleLeaf: number,
 	client: HttpClient,
 	extraHeaders?: Record<string, string>,
-): Promise<{ epoch: number; target: number | null }> {
+): Promise<{ epoch: number; target: number | null; escrow: EscrowReport }> {
 	const info = await fetchGroupInfo(client, groupId, extraHeaders);
 	if (!info.group_info) {
 		throw new Error(
@@ -256,10 +215,14 @@ async function resyncOnce(
 				"commit against. An existing member must publish one first.",
 		);
 	}
-	const mls = openMlsClient(configDir, agentId, cipherSuite);
-	const group = mls.resyncByExternalCommit(
-		mlsFromBase64(info.group_info),
-		staleLeaf,
+	// The external commit meets every current leaf, so the chain-verified peers
+	// must be admitted before it is built.
+	const actor = { configDir, agentId, client, extraHeaders };
+	await admitGroupPeers(actor, groupId);
+	const mls = openPeerMlsClient(actor);
+	const groupInfo = info.group_info;
+	const group = await admitRefusingRotatedLeaf(actor, mls, groupId, () =>
+		mls.resyncByExternalCommit(mlsFromBase64(groupInfo), staleLeaf),
 	);
 	const bundle = group.lastCommit();
 	if (!bundle) {
@@ -268,14 +231,13 @@ async function resyncOnce(
 	const epoch = await postMlsCommit(
 		{ configDir, agentId, client },
 		groupId,
-		group,
 		bundle,
 		[],
 		extraHeaders,
 	);
-	group.save();
+	const escrow = await settleAfterJoin(actor, groupId, group);
 	noteMlsStateChanged(configDir, agentId, groupId);
-	return { epoch, target: info.epoch };
+	return { epoch, target: info.epoch, escrow };
 }
 
 /**
@@ -295,17 +257,15 @@ async function resyncWithRetry(
 	configDir: string,
 	agentId: string,
 	groupId: string,
-	cipherSuite: number,
 	staleLeaf: number,
 	client: HttpClient,
 	extraHeaders?: Record<string, string>,
-): Promise<{ epoch: number; target: number | null }> {
+): Promise<{ epoch: number; target: number | null; escrow: EscrowReport }> {
 	try {
 		return await resyncOnce(
 			configDir,
 			agentId,
 			groupId,
-			cipherSuite,
 			staleLeaf,
 			client,
 			extraHeaders,
@@ -313,10 +273,10 @@ async function resyncWithRetry(
 	} catch (err) {
 		// Not a lost CAS: the resync itself was refused, and that refusal is the
 		// operator's answer rather than a race to rebuild against. It gets rine's
-		// words instead of the core's. An eviction keeps its own vocabulary,
-		// because a surface already translates it into a membership fact.
+		// words instead of the core's. An eviction and a rotated leaf keep their
+		// own vocabulary, because each already says what the operator can do.
 		if (!isEpochConflict(err)) {
-			if (mlsErrorCode(err) === MLS_ERR_GROUP_INACTIVE) throw err;
+			if (mlsErrorCode(err) === MLS_ERR_GROUP_INACTIVE || isMlsRotatedLeaf(err)) throw err;
 			throw resyncFailure(groupId, err);
 		}
 		try {
@@ -324,7 +284,6 @@ async function resyncWithRetry(
 				configDir,
 				agentId,
 				groupId,
-				cipherSuite,
 				staleLeaf,
 				client,
 				extraHeaders,
@@ -343,18 +302,15 @@ async function resyncWithRetry(
 
 /**
  * Catch this agent's MLS state up with its group, taking the cheapest rung that
- * works.
+ * works. Escalates to the resync rung on exactly three signals, and on nothing
+ * else: the server refusing the replay it cannot serve
+ * ({@link isMlsResyncRequired}), a protocol-level refusal escaping the replay
+ * itself ({@link replayExhausted}), and a replay that ran but left this agent
+ * short of the epoch the group was at when recovery started. The last is
+ * measured against the epoch read **before** the replay, so a busy group
+ * advancing underneath a healthy catch-up is not billed an O(N) commit for it.
  *
- * Escalates to the resync rung on exactly three signals, and on nothing else:
- * the server refusing the replay it cannot serve ({@link isMlsResyncRequired}),
- * a protocol-level refusal escaping the replay itself
- * ({@link replayExhausted}), and a replay that ran but left this agent short of
- * the epoch the group was at when recovery started. The last is measured
- * against the epoch read **before** the replay, so a busy group advancing
- * underneath a healthy catch-up is not mistaken for a wedge and billed an O(N)
- * commit for it.
- *
- * @throws MlsResyncUnavailableError when local state will not load at all.
+ * @throws MlsResyncUnavailableError when there is no state and no leaf to take back.
  */
 export async function recoverMlsGroup(
 	configDir: string,
@@ -363,10 +319,15 @@ export async function recoverMlsGroup(
 	client: HttpClient,
 	extraHeaders?: Record<string, string>,
 ): Promise<MlsRecoveryResult> {
-	const stale = loadMlsGroup(openMlsClient(configDir, agentId), groupId);
-	if (stale === null) throw new MlsResyncUnavailableError(groupId);
+	const mls = openMlsClient(configDir, agentId);
+	let stale = loadMlsGroup(mls, groupId);
+	if (stale === null) {
+		const reseated = await reseatStrandedSeat(configDir, agentId, groupId, client);
+		if (reseated !== null) return reseated;
+		stale = loadMlsGroup(mls, groupId);
+		if (stale === null) throw new MlsResyncUnavailableError(groupId);
+	}
 	const fromEpoch = stale.epoch();
-	const cipherSuite = stale.cipherSuite();
 	// The ONLY source of the stale leaf. Never `GET /groups/{id}/members`,
 	// never a server-supplied index — the server does not know MLS leaf indices.
 	const staleLeaf = stale.currentMemberIndex();
@@ -374,6 +335,7 @@ export async function recoverMlsGroup(
 	const target = await confirmedEpoch(client, groupId, extraHeaders);
 	let behind = target === null ? null : Math.max(0, target - fromEpoch);
 	let processed = 0;
+	let escrow = emptyReport();
 
 	try {
 		const replayed = await syncMlsGroup(
@@ -382,8 +344,10 @@ export async function recoverMlsGroup(
 			groupId,
 			client,
 			extraHeaders,
+			{ carryUnreported: true },
 		);
 		processed = replayed.processed;
+		escrow = replayed.escrow;
 		// An eviction is a settled answer, not a gap: this agent has no leaf to
 		// re-seat, so a resync would build a commit about a leaf that is gone.
 		if (replayed.evicted || target === null || replayed.epoch >= target) {
@@ -395,21 +359,22 @@ export async function recoverMlsGroup(
 				behind,
 				processed,
 				evicted: replayed.evicted,
+				escrow,
 			};
 		}
 	} catch (err) {
 		if (!replayExhausted(err)) throw err;
 	}
 
-	const { epoch, target: resyncTarget } = await resyncWithRetry(
-		configDir,
-		agentId,
-		groupId,
-		cipherSuite,
-		staleLeaf,
-		client,
-		extraHeaders,
-	);
+	const { epoch, target: resyncTarget, escrow: resyncEscrow } =
+		await resyncWithRetry(
+			configDir,
+			agentId,
+			groupId,
+			staleLeaf,
+			client,
+			extraHeaders,
+		);
 	// The up-front measurement is the honest one; this only fills a distance that
 	// was unmeasurable before the resync's own GroupInfo read answered it.
 	if (behind === null && resyncTarget !== null) {
@@ -423,5 +388,6 @@ export async function recoverMlsGroup(
 		behind,
 		processed,
 		evicted: false,
+		escrow: mergeReports(escrow, resyncEscrow),
 	};
 }

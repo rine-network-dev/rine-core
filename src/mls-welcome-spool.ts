@@ -28,6 +28,8 @@ import * as fs from "node:fs";
 import { join } from "node:path";
 import { writeAtomic } from "./config.js";
 import { validatePathId } from "./crypto/keys.js";
+import { mlsFromBase64 } from "./crypto/mls-api.js";
+import type { WelcomeRelease } from "./mls-welcome-release.js";
 
 const SPOOL_SUFFIX = ".json";
 
@@ -69,8 +71,8 @@ const SPOOL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
  * Whether a server-chosen delivery id may be used as a spool file name.
  *
  * 🔴 The id IS the file name and the server chooses it. Without this a delivery
- * id of `../../../credentials` writes `<configDir>/credentials.json` — MEASURED
- * as an overwrite of the OAuth store, which is also the file `findConfigDir`
+ * id of `../../../profiles` writes `<configDir>/profiles.json` — MEASURED
+ * as an overwrite of the profile store, which is also the file `resolveConfigDir`
  * locates the config dir by. Callers ask before storing so that one poisoned id
  * costs its own Welcome and not the rest of the batch.
  *
@@ -156,7 +158,8 @@ export class WelcomeSpool {
 	}
 
 	/**
-	 * Record that a pass tried this Welcome and refused it retryably.
+	 * Record that a pass kept this Welcome without opening it: a refusal a later
+	 * attempt could clear, or an invitation the agent has not accepted yet.
 	 *
 	 * What moves an entry into the population {@link prune}'s count bound holds.
 	 * A no-op once the flag is set, so the entry is rewritten at most once and its
@@ -181,8 +184,11 @@ export class WelcomeSpool {
 	 * honest, installable Welcomes to make room for nothing (MEASURED, 4 of 36).
 	 * The age bound reaches everything — a week is past the invitation that would
 	 * corroborate any of it.
+	 *
+	 * Every entry it drops gives its key package back through `release`, because
+	 * none of them was opened.
 	 */
-	prune(): number {
+	prune(release: WelcomeRelease): number {
 		const files = this.files();
 		const cutoff = Date.now() - SPOOL_MAX_AGE_MS;
 		const refused = files.filter((file) => readEntry(file.path)?.refused);
@@ -191,7 +197,7 @@ export class WelcomeSpool {
 		let dropped = 0;
 		for (const file of files) {
 			if (!evicted.has(file.path) && file.mtimeMs >= cutoff) continue;
-			this.discard(file.path);
+			this.drop(file.path, release);
 			dropped += 1;
 		}
 		return dropped;
@@ -220,6 +226,20 @@ export class WelcomeSpool {
 		} catch {
 			// Idempotent by contract: nothing to remove is the success case.
 		}
+	}
+
+	/**
+	 * Drop a spooled Welcome that leaves unopened, giving back the key package it
+	 * was sealed to. Use {@link discard} where the half is already consumed or
+	 * unknowable: an installed Welcome and a torn entry.
+	 *
+	 * A throw from `release` propagates and leaves the file in place, so a
+	 * failure of this process keeps the entry for the next pass.
+	 */
+	drop(path: string, release: WelcomeRelease): void {
+		const entry = readEntry(path);
+		if (entry !== null) release(mlsFromBase64(entry.delivery.blob));
+		this.discard(path);
 	}
 
 	/**

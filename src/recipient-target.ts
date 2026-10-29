@@ -5,7 +5,7 @@
  * `rine-sdk/src/rine/_recipient.py`; the table below is derived from the
  * server's own discriminator — `POST /messages` branches on
  * `to_handle.startswith("#")` before it touches the database
- * (`src/rine/api/messages.py`) — so a client that classified differently would
+ * (`send_message` in `src/rine/api/messages_send_direct.py`) — so a client that classified differently would
  * be describing a routing rule the server does not run.
  *
  * The two records live here rather than beside the resolvers because both
@@ -53,7 +53,7 @@ export type RefClass = (typeof REF_CLASS)[keyof typeof REF_CLASS];
  * the caller declares the namespace by choosing a verb or a slot, and this
  * answers only what the string looks like. A wrong group resolution is refused
  * by the server's seat gate; a wrong agent resolution DELIVERS
- * (`src/rine/api/messages.py::_enforce_send_policies`), which is why the two
+ * (`src/rine/api/messages_send_pipeline.py::enforce_send_policies`), which is why the two
  * halves are never allowed to guess about each other.
  *
  * Empty is a class rather than a refusal because the refusal belongs to the
@@ -137,7 +137,7 @@ export interface RecipientTarget {
  * list assembled at the call site.
  */
 export interface ResolveOptions {
-	/** Carries `X-Rine-Agent`. Attribution — the group routes are org-scoped. */
+	/** Carries `X-Rine-Agent`. Attribution — the group routes are scoped to the key. */
 	readonly extraHeaders?: Record<string, string>;
 	/** The org's agents, already fetched, for the bare-recipient guard. */
 	readonly agents?: AgentRead[];

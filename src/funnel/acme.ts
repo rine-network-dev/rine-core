@@ -11,13 +11,15 @@
 import * as fs from "node:fs";
 import { dirname } from "node:path";
 import { Client, crypto as acmeCrypto } from "acme-client";
+import { writeAtomic } from "../config.js";
 import { RineApiError } from "../errors.js";
 import type { HttpClient } from "../http.js";
 import { retryAfterMsFromError } from "../retry.js";
+import { sleep } from "../timing.js";
 import { type AcmeOptions, accountKeyPath } from "./cert-cache.js";
 import { acmeDirectoryUrl, agentWildcardFqdn } from "./csr.js";
 import type { DnsChallengeResult, IssueCertDeps } from "./issue.js";
-import { sleep, waitForTxtPropagation } from "./propagation.js";
+import { waitForTxtPropagation } from "./propagation.js";
 
 // Re-exported so the relay-facing barrel keeps a single import surface.
 export { waitForTxtPropagation } from "./propagation.js";
@@ -147,10 +149,7 @@ export async function buildAcmeClient(
 	} catch {
 		accountKey = (await acmeCrypto.createPrivateEcdsaKey("P-256")).toString();
 		fs.mkdirSync(dirname(keyPath), { recursive: true, mode: 0o700 });
-		const tmp = `${keyPath}.tmp`;
-		fs.writeFileSync(tmp, accountKey, { mode: 0o600 });
-		fs.renameSync(tmp, keyPath);
-		fs.chmodSync(keyPath, 0o600);
+		writeAtomic(keyPath, accountKey);
 	}
 	const client = new Client({
 		directoryUrl: acmeDirectoryUrl(options),

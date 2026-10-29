@@ -6,8 +6,9 @@
 // wildcard FQDN — burning the LE duplicate-certificate budget (5 / 7d). This
 // module adds the cross-process guards that make the sharing safe:
 //
-//  - a cross-process OS file-lock held across newOrder->download so only one
-//    hook-relay of an agent issues at a time (the other skips, reuses the cert);
+//  - a cross-process lock file (the `file-lock.ts` protocol) held across
+//    newOrder->download so only one hook-relay of an agent issues at a time (the
+//    other skips, reuses the cert);
 //  - a separate attempt-ledger persisted at the funnel ROOT (NOT inside the
 //    wiped per-agent subtree) so a cache wipe does NOT reset the crash-loop
 //    backoff counter and re-burn the duplicate-cert budget.
@@ -17,18 +18,23 @@
 
 import * as fs from "node:fs";
 import { join } from "node:path";
+import { writeAtomic } from "../config.js";
+import { type FileLockTiming, withFileLock } from "../file-lock.js";
 import { type AcmeOptions, funnelCacheDir } from "./cert-cache.js";
 
 // A lock older than this is treated as stale (its holder crashed without
 // releasing). Sized above the worst-case cold issuance (propagation grace +
 // bounded poll + ACME round-trips, a few minutes) so a SLOW-but-live holder is
 // never stolen from mid-order, but a dead holder never wedges an agent forever.
-const LOCK_STALE_MS = 15 * 60_000; // 15 minutes
+// A held lock is never waited for: the run that finds a sibling mid-order skips.
+const LOCK_TIMING: FileLockTiming = {
+	staleMs: 15 * 60_000,
+	timeoutMs: 0,
+	pollMs: 0,
+};
 
-interface LockFile {
-	pid: number;
-	acquired_at: number;
-}
+/** Acquiring found a live sibling's lock; private, so `fn` can never throw it. */
+class HeldBySibling extends Error {}
 
 /** Persisted across the wiped subtree so a cache wipe never resets backoff. */
 export interface AttemptLedger {
@@ -52,50 +58,6 @@ function ledgerPath(
 	return join(funnelCacheDir(configDir, opts), `${certKey}.attempts.json`);
 }
 
-function readLock(path: string): LockFile | null {
-	try {
-		return JSON.parse(fs.readFileSync(path, "utf-8")) as LockFile;
-	} catch {
-		return null;
-	}
-}
-
-/**
- * Try to ATOMICALLY create the lock file (O_EXCL). Returns true on success. If it
- * already exists, returns true only after stealing a STALE lock (crashed holder),
- * false while a fresh lock is held by a (presumed-live) sibling.
- */
-function tryAcquire(path: string, nowMs: number): boolean {
-	fs.mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
-	const body = `${JSON.stringify({ pid: process.pid, acquired_at: nowMs })}\n`;
-	try {
-		const fd = fs.openSync(path, "wx", 0o600); // wx = O_CREAT|O_EXCL — atomic
-		fs.writeSync(fd, body);
-		fs.closeSync(fd);
-		return true;
-	} catch {
-		// Lock exists — steal it ONLY if it is stale (its holder crashed). A fresh
-		// lock means a sibling is mid-issuance for the identical wildcard; back off.
-		const existing = readLock(path);
-		if (existing && nowMs - existing.acquired_at < LOCK_STALE_MS) return false;
-		// Stale (or unparseable): overwrite in place and take ownership.
-		try {
-			fs.writeFileSync(path, body, { mode: 0o600 });
-			return true;
-		} catch {
-			return false;
-		}
-	}
-}
-
-function release(path: string): void {
-	try {
-		fs.rmSync(path, { force: true });
-	} catch {
-		// best-effort: a stale lock self-heals after LOCK_STALE_MS.
-	}
-}
-
 /**
  * Run `fn` under the per-agent cross-process issuance lock. The
  * lock is held for the WHOLE callback (newOrder->download) so two concurrent
@@ -103,7 +65,11 @@ function release(path: string): void {
  * `*.{agentLabel}.hook.rine.network`. If the lock is already held by a live
  * sibling, `fn` is SKIPPED and `{ acquired: false }` is returned — the caller
  * reuses whatever the sibling installs (no duplicate ACME order). The lock is
- * always released in `finally`. `now` is injectable for deterministic tests.
+ * always released in `finally`; a crashed holder's lock is taken over once
+ * it is stale. The acquire budget is zero, so a lock that is released between
+ * the failed create and the check also returns `{ acquired: false }`: the run
+ * skips rather than racing a new holder, and the next pass takes the lock.
+ * `now` is injectable for deterministic tests.
  */
 export async function withAgentIssuanceLock<T>(
 	args: {
@@ -115,13 +81,19 @@ export async function withAgentIssuanceLock<T>(
 	fn: () => Promise<T>,
 ): Promise<{ acquired: true; result: T } | { acquired: false }> {
 	const { configDir, certKey, opts } = args;
-	const nowMs = (args.now ?? Date.now)();
 	const path = lockPath(configDir, certKey, opts);
-	if (!tryAcquire(path, nowMs)) return { acquired: false };
 	try {
-		return { acquired: true, result: await fn() };
-	} finally {
-		release(path);
+		const result = await withFileLock(
+			path,
+			LOCK_TIMING,
+			fn,
+			() => new HeldBySibling(),
+			{ now: args.now },
+		);
+		return { acquired: true, result };
+	} catch (err) {
+		if (err instanceof HeldBySibling) return { acquired: false };
+		throw err;
 	}
 }
 
@@ -155,8 +127,5 @@ export function saveAttemptLedger(
 ): void {
 	const path = ledgerPath(configDir, certKey, opts);
 	fs.mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
-	const tmp = `${path}.tmp`;
-	fs.writeFileSync(tmp, `${JSON.stringify(ledger)}\n`, { mode: 0o600 });
-	fs.renameSync(tmp, path);
-	fs.chmodSync(path, 0o600);
+	writeAtomic(path, `${JSON.stringify(ledger)}\n`);
 }

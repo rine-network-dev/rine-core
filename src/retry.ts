@@ -1,9 +1,7 @@
-// Shared rate-limit / retry primitives for the token and request paths.
-// The Retry-After parser was
-// previously duplicated in funnel/acme.ts and ts-sdk; this is the single canonical
-// copy. Full-jitter backoff mirrors funnel/backoff.ts's formula but with
-// token-appropriate constants (small base, bounded total wait) rather than the
-// ACME-tuned 30s-base / 1h-cap schedule.
+// Shared rate-limit / retry primitives for the token and request paths; the
+// funnel ACME client reads Retry-After through here too. Full-jitter backoff
+// follows funnel/backoff.ts's formula with token-appropriate constants (small
+// base, bounded total wait) instead of the ACME schedule (30 s base, 1 h cap).
 import type { RineApiError } from "./errors.js";
 
 /** Max attempts for the OAuth token POST (initial + retries). */

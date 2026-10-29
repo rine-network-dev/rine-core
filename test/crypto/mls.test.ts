@@ -2,16 +2,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-	fromBase64Url,
-	generateAgentKeys,
-	saveAgentKeys,
-	signingPublicKeyToJWK,
-} from "../../src/crypto/keys.js";
-import {
-	decryptGroupMessage,
-	encryptMlsGroupMessage,
-} from "../../src/crypto/message.js";
+import { fromBase64Url } from "../../src/crypto/keys.js";
+import { decryptGroupMessage } from "../../src/message-group.js";
+import { encryptMlsGroupMessage } from "../../src/message-mls.js";
 import {
 	isMlsError,
 	isUnprocessableCommit,
@@ -19,8 +12,6 @@ import {
 } from "../../src/crypto/mls-errors.js";
 import { deleteMlsState, loadMlsState } from "../../src/crypto/mls-state.js";
 import {
-	MLS_CIPHER_SUITE_CLASSICAL,
-	MLS_CIPHER_SUITE_DEFAULT,
 	MLS_CIPHER_SUITE_XWING,
 	VERSION_MLS,
 	isNoMlsStateError,
@@ -31,16 +22,19 @@ import {
 	openMlsClient,
 	openMlsGroup,
 } from "../../src/crypto/mls.js";
-import { MLS_KEY_PACKAGE_MAX_BATCH } from "../../src/mls-keypackages.js";
+import { KEY_PACKAGE_MAX_BATCH } from "@rine-network/mls";
+import { World, type WorldAgent } from "./world.js";
 
 const CREATOR_ID = "11111111-1111-4111-8111-111111111111";
 const JOINER_ID = "22222222-2222-4222-8222-222222222222";
 const GROUP_ID = "33333333-3333-4333-8333-333333333333";
 
 let tmpDir: string;
+let world: World;
 
 beforeEach(() => {
 	tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rine-mls-"));
+	world = new World();
 	delete process.env["RINE_MLS_EPOCH_RETENTION"];
 });
 
@@ -49,10 +43,10 @@ afterEach(() => {
 	delete process.env["RINE_MLS_EPOCH_RETENTION"];
 });
 
-function agent(agentId: string) {
-	const keys = generateAgentKeys();
-	saveAgentKeys(tmpDir, agentId, keys);
-	return keys;
+function agent(agentId: string): WorldAgent {
+	const seated = world.addAgent({ id: agentId });
+	world.save(tmpDir, seated);
+	return seated;
 }
 
 /**
@@ -61,12 +55,17 @@ function agent(agentId: string) {
  * decrypt that cannot be recovered surfaces its own MLS error rather than a
  * stub-shaped one.
  */
-function keyServer(signingPublicKey: Uint8Array) {
+function keyServer() {
+	const base = world.client();
 	return {
-		get: vi.fn(async (path: string) =>
-			path.includes("/keys")
-				? { signing_public_key: signingPublicKeyToJWK(signingPublicKey) }
-				: { welcomes: [], handshakes: [] },
+		get: vi.fn(
+			async (
+				path: string,
+				params?: Record<string, string | number | boolean>,
+			) =>
+				path.includes("/keys")
+					? base.get(path, params)
+					: { welcomes: [], handshakes: [] },
 		),
 		post: vi.fn(),
 	};
@@ -79,13 +78,8 @@ describe("MLS wire constants", () => {
 		expect(VERSION_MLS).toBe(0x04);
 	});
 
-	it("defaults new groups to the post-quantum X-Wing suite", () => {
-		expect(MLS_CIPHER_SUITE_DEFAULT).toBe(MLS_CIPHER_SUITE_XWING);
+	it("is the post-quantum X-Wing suite", () => {
 		expect(MLS_CIPHER_SUITE_XWING).toBe(0xf057);
-	});
-
-	it("keeps the classical RFC 9420 suite reachable", () => {
-		expect(MLS_CIPHER_SUITE_CLASSICAL).toBe(0x0001);
 	});
 });
 
@@ -120,18 +114,17 @@ describe("openMlsClient", () => {
 	it("mints with the post-quantum default suite", () => {
 		agent(CREATOR_ID);
 		expect(openMlsClient(tmpDir, CREATOR_ID).cipherSuite()).toBe(
-			MLS_CIPHER_SUITE_DEFAULT,
+			MLS_CIPHER_SUITE_XWING,
 		);
 	});
 
-	it("mints with the classical suite when one is asked for", () => {
-		agent(CREATOR_ID);
-		const client = openMlsClient(
-			tmpDir,
-			CREATOR_ID,
-			MLS_CIPHER_SUITE_CLASSICAL,
+	it("opens under the agent's derived mls key and its id as the credential", () => {
+		const seated = agent(CREATOR_ID);
+		const client = openMlsClient(tmpDir, CREATOR_ID);
+		expect(Buffer.from(client.leafPublicKey())).toEqual(
+			Buffer.from(seated.derived.mlsEd25519.publicKey),
 		);
-		expect(client.cipherSuite()).toBe(MLS_CIPHER_SUITE_CLASSICAL);
+		expect(Buffer.from(client.agentId()).toString("ascii")).toBe(CREATOR_ID);
 	});
 
 	it("keeps the full epoch backlog when the retention knob is unset", () => {
@@ -178,7 +171,7 @@ describe("key package pool", () => {
 		const client = openMlsClient(tmpDir, CREATOR_ID);
 		let raised: unknown;
 		try {
-			client.generateKeyPackages(MLS_KEY_PACKAGE_MAX_BATCH + 1);
+			client.generateKeyPackages(KEY_PACKAGE_MAX_BATCH + 1);
 		} catch (err) {
 			raised = err;
 		}
@@ -238,7 +231,7 @@ describe("MLS local state", () => {
 		).toBeNull();
 	});
 
-	it("reports the group's epoch, suite and membership once founded", () => {
+	it("reports the group's epoch and membership once founded", () => {
 		agent(CREATOR_ID);
 		const client = openMlsClient(tmpDir, CREATOR_ID);
 		client.createGroup(mlsGroupIdBytes(GROUP_ID)).save();
@@ -246,7 +239,6 @@ describe("MLS local state", () => {
 		expect(loadMlsState(tmpDir, CREATOR_ID, GROUP_ID)).toEqual({
 			groupId: GROUP_ID,
 			epoch: 1,
-			cipherSuite: MLS_CIPHER_SUITE_DEFAULT,
 		});
 	});
 
@@ -274,7 +266,7 @@ describe("MLS local state", () => {
 
 describe("MLS group messages", () => {
 	function foundGroupWithJoiner() {
-		const creatorKeys = agent(CREATOR_ID);
+		agent(CREATOR_ID);
 		agent(JOINER_ID);
 
 		const joinerClient = openMlsClient(tmpDir, JOINER_ID);
@@ -290,17 +282,16 @@ describe("MLS group messages", () => {
 		group.save();
 
 		joinerClient.joinFromWelcome(bundle.welcomes[0]!).save();
-		return creatorKeys;
 	}
 
 	it("round-trips a signed envelope from the founder to a welcomed member", async () => {
-		const creatorKeys = foundGroupWithJoiner();
+		foundGroupWithJoiner();
 
 		const enc = await encryptMlsGroupMessage(tmpDir, CREATOR_ID, GROUP_ID, {
 			hello: "world",
 		});
 		expect(enc.encryption_version).toBe("mls-v1");
-		expect(enc.sender_signing_kid).toBe(`rine:${CREATOR_ID}`);
+		expect(enc.sender_signing_kid).toBe(`rine:${CREATOR_ID}#0`);
 		expect(fromBase64Url(enc.encrypted_payload)[0]).toBe(VERSION_MLS);
 
 		const dec = await decryptGroupMessage(
@@ -308,7 +299,7 @@ describe("MLS group messages", () => {
 			JOINER_ID,
 			GROUP_ID,
 			enc.encrypted_payload,
-			keyServer(creatorKeys.signing.publicKey) as never,
+			keyServer() as never,
 			CREATOR_ID,
 		);
 		expect(JSON.parse(dec.plaintext)).toEqual({ hello: "world" });
@@ -317,7 +308,7 @@ describe("MLS group messages", () => {
 	});
 
 	it("lets the sender read its own message back, which MLS forward secrecy alone would not", async () => {
-		const creatorKeys = foundGroupWithJoiner();
+		foundGroupWithJoiner();
 
 		const enc = await encryptMlsGroupMessage(tmpDir, CREATOR_ID, GROUP_ID, {
 			mine: true,
@@ -327,15 +318,15 @@ describe("MLS group messages", () => {
 			CREATOR_ID,
 			GROUP_ID,
 			enc.encrypted_payload,
-			keyServer(creatorKeys.signing.publicKey) as never,
+			keyServer() as never,
 			CREATOR_ID,
 		);
 		expect(JSON.parse(dec.plaintext)).toEqual({ mine: true });
-		expect(dec.senderKid).toBe(`rine:${CREATOR_ID}`);
+		expect(dec.senderKid).toBe(`rine:${CREATOR_ID}#0`);
 	});
 
 	it("refuses a message whose envelope names an agent other than the row's sender", async () => {
-		const creatorKeys = foundGroupWithJoiner();
+		foundGroupWithJoiner();
 
 		const enc = await encryptMlsGroupMessage(tmpDir, CREATOR_ID, GROUP_ID, {
 			hello: "world",
@@ -349,7 +340,7 @@ describe("MLS group messages", () => {
 				JOINER_ID,
 				GROUP_ID,
 				enc.encrypted_payload,
-				keyServer(creatorKeys.signing.publicKey) as never,
+				keyServer() as never,
 				JOINER_ID,
 			),
 		).rejects.toThrow("Envelope sender does not match the message sender");
@@ -364,14 +355,14 @@ describe("MLS group messages", () => {
 				JOINER_ID,
 				GROUP_ID,
 				enc.encrypted_payload,
-				keyServer(creatorKeys.signing.publicKey) as never,
+				keyServer() as never,
 				CREATOR_ID,
 			),
 		).rejects.toThrow(/key not available/);
 	});
 
 	it("accepts the same message when the row's sender is the envelope's signer", async () => {
-		const creatorKeys = foundGroupWithJoiner();
+		foundGroupWithJoiner();
 
 		const enc = await encryptMlsGroupMessage(tmpDir, CREATOR_ID, GROUP_ID, {
 			hello: "world",
@@ -382,7 +373,7 @@ describe("MLS group messages", () => {
 			JOINER_ID,
 			GROUP_ID,
 			enc.encrypted_payload,
-			keyServer(creatorKeys.signing.publicKey) as never,
+			keyServer() as never,
 			CREATOR_ID.toUpperCase(),
 		);
 

@@ -32,20 +32,11 @@
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-	type AgentKeys,
-	generateAgentKeys,
-	saveAgentKeys,
-	signingPublicKeyToJWK,
-	toBase64Url,
-} from "../../src/crypto/keys.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ingestSenderKeyDistribution } from "../../src/crypto/ingest.js";
-import {
-	type DecryptResult,
-	decryptGroupMessage,
-	encryptGroupMessage,
-} from "../../src/crypto/message.js";
+import { type DecryptResult } from "../../src/crypto/message.js";
+import { encryptGroupMessage } from "../../src/crypto/sender-key-seal.js";
+import { decryptGroupMessage } from "../../src/message-group.js";
 import {
 	loadSenderKeyStates,
 	saveSenderKeyState,
@@ -54,6 +45,8 @@ import {
 	type SenderKeyState,
 	generateSenderKey,
 } from "../../src/crypto/sender-keys.js";
+import { toBase64Url } from "../../src/crypto/keys.js";
+import { World, type WorldAgent } from "./world.js";
 
 /** The agent under attack — the one taking delivery of the distributions. */
 const READER_ID = "77777777-8888-4999-8aaa-bbbbbbbbbbbb";
@@ -71,7 +64,7 @@ const DISTRIBUTION = "rine.v1.sender_key_distribution";
 function fromSigner(signerId: string, payload: unknown): DecryptResult {
 	return {
 		plaintext: JSON.stringify(payload),
-		senderKid: `rine:${signerId}`,
+		senderKid: `rine:${signerId}#0`,
 		verified: true,
 		verificationStatus: "verified",
 	};
@@ -102,38 +95,21 @@ function distributionFor(state: SenderKeyState, groupId = GROUP_ID) {
 	};
 }
 
-/** Answers `GET /agents/{id}/keys` for the agents it was given, and no others. */
-function keyServer(published: Record<string, AgentKeys>) {
-	const get = vi.fn(async (path: string) => {
-		const match = /^\/agents\/([^/]+)\/keys$/.exec(path);
-		const keys = match ? published[match[1] as string] : undefined;
-		if (!match || !keys) throw new Error(`unexpected GET ${path}`);
-		return {
-			agent_id: match[1],
-			signing_public_key: signingPublicKeyToJWK(keys.signing.publicKey),
-			encryption_public_key: {
-				kty: "OKP",
-				crv: "X25519",
-				x: toBase64Url(keys.encryption.publicKey),
-			},
-		};
-	});
-	return { get, post: vi.fn() };
-}
-
 describe("sender-key distribution ingest — the payload is not evidence", () => {
 	/** The reader's own config dir. */
 	let dir: string;
 	/** Member A's dir. Its private signing key is one no attacker holds. */
 	let foreignDir: string;
-	let memberKeys: AgentKeys;
+	let world: World;
+	let member: WorldAgent;
 
 	beforeEach(() => {
 		dir = fs.mkdtempSync(join(tmpdir(), "rine-ingest-guard-"));
 		foreignDir = fs.mkdtempSync(join(tmpdir(), "rine-ingest-guard-foreign-"));
-		memberKeys = generateAgentKeys();
-		saveAgentKeys(foreignDir, MEMBER_A_ID, memberKeys);
-		saveAgentKeys(dir, READER_ID, generateAgentKeys());
+		world = new World();
+		member = world.addAgent({ id: MEMBER_A_ID });
+		world.save(foreignDir, member);
+		world.save(dir, world.addAgent({ id: READER_ID }));
 	});
 	afterEach(() => {
 		fs.rmSync(dir, { recursive: true, force: true });
@@ -187,7 +163,7 @@ describe("sender-key distribution ingest — the payload is not evidence", () =>
 				READER_ID,
 				GROUP_ID,
 				ciphertext,
-				keyServer({ [MEMBER_A_ID]: memberKeys }) as never,
+				world.client() as never,
 				MEMBER_A_ID,
 			);
 			expect(JSON.parse(opened.plaintext as string)).toEqual({ text: "ship it" });
@@ -212,8 +188,9 @@ describe("sender-key distribution ingest — the payload is not evidence", () =>
 			const { distribution } = await memberPost("ship it");
 			expect(ingest(dir, MEMBER_A_ID, distribution)).toBe(true);
 
-			// `agentIdFromKid` preserves whatever case the signer put in its kid, so a
-			// case-sensitive compare would hand one sender a fresh slot per spelling.
+			// A kid is canonical: `parseSigningKid` accepts only a lower-case UUID, so
+			// a differently-cased spelling is refused outright rather than handed a
+			// fresh slot per spelling.
 			expect(
 				ingest(dir, MEMBER_A_ID.toUpperCase(), distribution),
 			).toBe(false);

@@ -29,6 +29,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../src/mls-escrow-key.js", () => escrowKeyModule());
+
 vi.mock("../src/crypto/mls-api.js", async () => {
 	const actual = await vi.importActual<
 		typeof import("../src/crypto/mls-api.js")
@@ -50,12 +52,8 @@ vi.mock("../src/crypto/mls-api.js", async () => {
 	};
 });
 
-import {
-	agentKeysExist,
-	generateAgentKeys,
-	saveAgentKeys,
-	signingPublicKeyToJWK,
-} from "../src/crypto/keys.js";
+import { World } from "./crypto/world.js";
+import { escrowKeyModule, withPeerReads } from "./mls-escrow-harness.js";
 import {
 	claimKeyPackages,
 	claimKeyPackagesBatch,
@@ -68,12 +66,34 @@ import {
 } from "../src/crypto/mls-api.js";
 import { mlsGroupIdBytes, openMlsClient } from "../src/crypto/mls.js";
 import * as groupRecovery from "../src/group-recovery.js";
+import * as mlsAllowed from "../src/mls-allowed.js";
+import * as mlsAllowedTree from "../src/mls-allowed-tree.js";
+import * as mlsEscrowDrain from "../src/mls-escrow-drain.js";
+import * as mlsEscrowKey from "../src/mls-escrow-key.js";
+import * as mlsEscrowSend from "../src/mls-escrow-send.js";
+import * as mlsEscrowGap from "../src/mls-escrow-gap.js";
+import * as mlsEscrowGapList from "../src/mls-escrow-gap-list.js";
+import * as mlsEscrowMarkers from "../src/mls-escrow-markers.js";
+import * as mlsEscrowReport from "../src/mls-escrow-report.js";
+import * as mlsEscrowSettle from "../src/mls-escrow-settle.js";
+import * as mlsEscrowSweep from "../src/mls-escrow-sweep.js";
+import * as mlsGroupSend from "../src/mls-group-send.js";
+import * as mlsJoinEstablish from "../src/mls-join-establish.js";
+import * as mlsJoinSeat from "../src/mls-join-seat.js";
 import * as topUp from "../src/mls-keypackage-topup.js";
+import * as mlsWelcomeAdmission from "../src/mls-welcome-admission.js";
+import * as messageMls from "../src/message-mls.js";
 import * as mlsCommitModule from "../src/mls-commit.js";
 import * as mlsOps from "../src/mls-ops.js";
 import * as mlsResync from "../src/mls-ops-resync.js";
 import * as readRefusal from "../src/mls-read-refusal.js";
+import * as rotatedLeaf from "../src/mls-rotated-leaf.js";
 import * as recoveryFormat from "../src/mls-recovery-format.js";
+import * as seatSentences from "../src/mls-seat-sentences.js";
+import * as seatSweep from "../src/mls-seat-sweep.js";
+import * as seatUpdate from "../src/mls-seat-update.js";
+import * as selfUpdate from "../src/mls-self-update.js";
+import * as packageRoot from "../src/index.js";
 import {
 	externalJoinMlsGroup,
 	initMlsGroup,
@@ -84,7 +104,7 @@ import {
 } from "../src/mls-ops.js";
 // Off the module and not off the barrel: both gates are test seams that defeat
 // a rate limit, so neither is on the published surface of @rine-network/core.
-import { resetKeyPackageRescueGate } from "../src/mls-keypackage-topup.js";
+import { resetProcessGates } from "../src/process-gate.js";
 import { resetMlsHeartbeatGate } from "../src/mls-heartbeat.js";
 
 const SELF_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
@@ -95,25 +115,21 @@ const OTHER_GROUP_ID = "d4e5f6a7-b8c9-0123-def1-234567890123";
 const HEADERS = { "X-Rine-Agent": SELF_ID };
 
 let dir: string;
+let world: World;
+let client: never;
 
-const client = {
-	get: async (path: string, params?: Record<string, string>) => {
-		if (path === "/agents/keys") return { keys: publishedKeys(params) };
+/**
+ * The reads the admission path makes outside `crypto/mls-api.js`: the group's
+ * size and its outstanding vouchers. The roster and the published keys are
+ * answered by `withPeerReads` from the world, so every peer's chain verifies.
+ */
+const readsOnly = {
+	get: async (path: string) => {
 		if (path === `/groups/${GROUP_ID}`) return { member_count: 2 };
 		if (path === `/groups/${GROUP_ID}/requests`) return { items: [] };
 		throw new Error(`unexpected GET ${path}`);
 	},
-} as never;
-
-function publishedKeys(params?: Record<string, string>) {
-	const keys: Record<string, unknown> = {};
-	for (const id of String(params?.ids ?? "").split(",")) {
-		if (!id || !agentKeysExist(dir, id)) continue;
-		const jwk = signingPublicKeyToJWK(openMlsClient(dir, id).publicKey());
-		keys[id] = { signing_public_key: jwk, encryption_public_key: jwk };
-	}
-	return keys;
-}
+};
 
 /** Every agent id an upload was posted for, in order. */
 function uploadedFor(): string[] {
@@ -122,11 +138,13 @@ function uploadedFor(): string[] {
 
 beforeEach(() => {
 	dir = fs.mkdtempSync(join(tmpdir(), "rine-heartbeat-"));
+	world = new World();
+	client = withPeerReads(world, readsOnly) as never;
 	vi.clearAllMocks();
 	// Per process by design, so a test that inherited the previous test's stamp
 	// would measure the gate rather than the beat.
 	resetMlsHeartbeatGate();
-	resetKeyPackageRescueGate();
+	resetProcessGates();
 	vi.mocked(uploadKeyPackages).mockImplementation(async (_c, _a, p) => ({
 		stored: p.length,
 	}));
@@ -138,7 +156,7 @@ beforeEach(() => {
 	}));
 	vi.mocked(fetchWelcomes).mockResolvedValue({ welcomes: [] });
 	for (const id of [SELF_ID, MEMBER_ID]) {
-		saveAgentKeys(dir, id, generateAgentKeys());
+		world.save(dir, world.addAgent({ id }));
 	}
 });
 
@@ -376,46 +394,136 @@ const HEARTBEAT_SEAMS: Record<HeartbeatSeam, readonly string[]> = {
 		"externalJoinMlsGroup",
 		"reclaimOrphanLeaves",
 		"removeMlsGroupMember",
+		// The bundle poster beats inside the settlement hold, and the self-update
+		// builds its commit through it.
+		"postMlsCommitBundle",
+		"selfUpdateGroup",
+		"selfUpdateStaleLeaves",
 	],
-	sync: ["syncMlsGroup", "catchUpMlsGroup", "recoverMlsGroup", "recoverGroup"],
-	forced: ["processMlsWelcomes"],
+	sync: [
+		"syncMlsGroup",
+		"catchUpMlsGroup",
+		"recoverMlsGroup",
+		"recoverGroup",
+		// The group send syncs to the current epoch before it seals, and installs
+		// a pending Welcome only through `processMlsWelcomes`, which beats forced.
+		"sealAndPostMlsGroupMessage",
+		// The MLS group read: a read that opens runs the catch-up, and one that
+		// cannot recovers through the scoped Welcome pass (forced), an external
+		// join (a commit) and a sync.
+		"readMlsGroupMessage",
+	],
+	forced: [
+		"processMlsWelcomes",
+		// Runs the scoped Welcome pass first, which beats forced, and every commit
+		// it posts beats inside `postMlsCommit`.
+		"establishMlsMembership",
+		// Reads local state, then runs the establishment above.
+		"establishAfterAlreadyAMember",
+		// Answers an `already_a_member` 409 through the establishment above.
+		"seatedMemberAfterConflict",
+	],
 	"key-packages": [
 		"cutoverMlsKeyPackages",
 		"drainAndRepublishMlsKeyPackages",
 		"ensureMlsKeyPackages",
-		"isInventoryFull",
-		"mlsHeartbeat",
 		"needsMlsKeyPackageCutover",
 		"publishMlsKeyPackages",
 		"replenishMlsKeyPackages",
-		"resetKeyPackageRescueGate",
 		"topUpKeyPackages",
+		"topUpFromServerCount",
+		// The settlement runs ahead of the top-up on a beat and replaces the
+		// published packages itself when a rotation superseded them.
+		"settleRotation",
 		"NO_KEY_PACKAGE_TOP_UP",
-		"MLS_HEARTBEAT_MIN_INTERVAL_MS",
-		"MLS_KEY_PACKAGE_LOW_WATER",
-		"MLS_KEY_PACKAGE_MAX_BATCH",
-		"MLS_KEY_PACKAGE_TARGET",
 	],
 	"no-mls-state": [
 		// The predicate beside the commit poster: it reads an error and mints
 		// nothing.
 		"isEpochConflict",
+		// Hands a failed establishment to the caller's renderer and mints nothing.
+		"reportFailedSetup",
+		// The once-only retry around it: it runs the caller's attempt and posts
+		// nothing of its own, so the caller's attempt carries any heartbeat.
+		"retryOnEpochConflict",
 		// Tree and roster readers: they answer questions about other agents'
 		// leaves and mint nothing.
 		"fetchMlsIdentities",
 		"isSeated",
 		"orphanLeaves",
-		// The catch-up's own floor, and the refusal vocabulary. No MLS work.
-		"MLS_CATCHUP_MIN_INTERVAL_MS",
-		"resetMlsCatchUpGate",
+		// The admission helpers: they read the roster and the chain-verified keys
+		// and insert into the allowed set. None of them opens an MLS store or
+		// spends a key package.
+		"allowedFor",
+		"admitPeers",
+		"admitGroupPeers",
+		"admitTree",
+		"admitWelcomePeers",
+		"openPeerMlsClient",
+		"openPeerMlsGroup",
+		// The read escrow: it seals and uploads what a group already yielded, and
+		// the send helpers drain it and read back the head. None of them spends a
+		// key package or posts a commit.
+		"drainEscrow",
+		"takeAndSeal",
+		// Settle a group's old state before a wipe or a replace discards it
+		// (local only), and the join's escrow tail that settles and then drains
+		// the joined group: neither spends a key package or posts a commit.
+		"settleEscrow",
+		"settleAfterJoin",
+		// The cross-group sweep and the typed report every result carries.
+		"hasEscrowWork",
+		"sweepPendingEscrow",
+		"startupEscrowSweep",
+		"inBackground",
+		"EscrowDeferral",
+		// The gap markers: files naming epochs the sweep gave up on. Local
+		// bookkeeping, nothing spends a key package.
+		"EscrowLoss",
+		"writeGap",
+		"clearGap",
+		"fileGaps",
+		"lostGaps",
+		"toDrainGap",
+		"giveUpPending",
+		"readGap",
+		"groupMarkers",
+		"asGapReason",
+		"listGapMarkers",
+		"describeGapMarkers",
+		"deferralFor",
+		"describeEscrowGaps",
+		"emptyOutcome",
+		"emptyReport",
+		"mergeReports",
+		"reportDrain",
+		"reportOf",
+		"resolveEscrowKey",
+		"cachedEscrowKey",
+		"forgetEscrowKey",
+		"dropEscrowKeys",
+		"BranchRevokedError",
+		"ESCROW_KEY_REVOKED",
+		"prepareEscrowForSend",
+		"postWithEscrowRetry",
+		"isEscrowMissing",
+		"EscrowUnavailableError",
+		"ESCROW_MISSING_CODE",
+		// The refusal vocabulary. No MLS work.
 		"MlsWelcomeRefusedError",
-		"WELCOME_REFUSED_CODE",
 		"isMlsWelcomeRefusedError",
 		"MLS_RESYNC_REQUIRED_CODE",
 		"MLS_RESYNC_UNAVAILABLE_CODE",
 		"MlsResyncUnavailableError",
 		"isMlsResyncRequired",
 		"isMlsResyncUnavailable",
+		// The rotated-leaf outcome: a typed refusal and the wrapper that raises it
+		// around a resync attempt the caller supplies. The wrapper admits peers and
+		// runs that attempt; it opens no store and mints no key package itself.
+		"MlsRotatedLeafError",
+		"isMlsRotatedLeaf",
+		"rotatedLeafMessage",
+		"admitRefusingRotatedLeaf",
 		// The recovery's sentence renderers. They read a result and return prose;
 		// none of them opens an MLS store, so none of them can spend a key package.
 		"MLS_EVICTED_BY_COMMIT",
@@ -433,6 +541,25 @@ const HEARTBEAT_SEAMS: Record<HeartbeatSeam, readonly string[]> = {
 		// nothing that could spend one.
 		"cliSyncRemedy",
 		"mlsReadRefusal",
+		"sdkSyncRemedy",
+		// The join's outcome vocabulary and the predicates beside it: they read a
+		// result or an error and open no store.
+		"ALREADY_A_MEMBER_CODE",
+		"isAlreadyAMember",
+		"MlsEstablishStep",
+		"MlsMembershipOutcome",
+		"mlsStateEstablished",
+		// The rotation report's vocabulary and the sentence that renders it:
+		// words about a leaf, reading no store.
+		"SeatUpdateStatus",
+		"SeatDeferReason",
+		"SeatFailReason",
+		"KeyPackageRotation",
+		"seatUpdateLine",
+		// The MLS application-message seal: it ratchets a group this agent
+		// already holds, spends no key package and posts no commit, and the send
+		// that calls it syncs first.
+		"encryptMlsGroupMessage",
 	],
 };
 
@@ -448,11 +575,59 @@ const CENSUS_MODULES = {
 	"mls-ops.js": mlsOps,
 	"mls-commit.js": mlsCommitModule,
 	"mls-ops-resync.js": mlsResync,
+	"mls-rotated-leaf.js": rotatedLeaf,
+	"mls-allowed.js": mlsAllowed,
+	"mls-allowed-tree.js": mlsAllowedTree,
+	"mls-welcome-admission.js": mlsWelcomeAdmission,
+	"mls-escrow-drain.js": mlsEscrowDrain,
+	"mls-escrow-key.js": mlsEscrowKey,
+	"mls-escrow-send.js": mlsEscrowSend,
+	"mls-escrow-gap.js": mlsEscrowGap,
+	"mls-escrow-gap-list.js": mlsEscrowGapList,
+	"mls-escrow-markers.js": mlsEscrowMarkers,
+	"mls-escrow-report.js": mlsEscrowReport,
+	"mls-escrow-settle.js": mlsEscrowSettle,
+	"mls-escrow-sweep.js": mlsEscrowSweep,
+	"mls-group-send.js": mlsGroupSend,
+	"mls-join-establish.js": mlsJoinEstablish,
+	"mls-join-seat.js": mlsJoinSeat,
 	"mls-keypackage-topup.js": topUp,
 	"mls-recovery-format.js": recoveryFormat,
+	"mls-seat-sentences.js": seatSentences,
+	"mls-seat-sweep.js": seatSweep,
+	"mls-seat-update.js": seatUpdate,
+	"mls-self-update.js": selfUpdate,
 	"mls-read-refusal.js": readRefusal,
 	"group-recovery.js": groupRecovery,
+	"message-mls.js": messageMls,
 };
+
+/** A module path the census is answerable for, as `index.ts` names it. */
+const MLS_MODULE = /^(mls-[\w-]+|message-mls|group-recovery)\.js$/;
+
+const BARREL_SOURCE = fs.readFileSync(
+	new URL("../src/index.ts", import.meta.url),
+	"utf8",
+);
+
+/**
+ * The package barrel's explicit lines: every module it publishes from, and the
+ * VALUE names each `export { … } from "./….js"` line lists (an `export type`
+ * line counts its module but names nothing that exists at runtime).
+ */
+const BARREL = new Map<string, string[]>();
+// Both groups always take part in a match; the defaults only satisfy the type.
+for (const [, typeOnly, list = "", mod = ""] of BARREL_SOURCE.matchAll(
+	/^export (type )?\{([^}]*)\} from "\.\/([\w./-]+\.js)";$/gm,
+)) {
+	const names = typeOnly
+		? []
+		: list
+				.split(",")
+				.map((n) => n.trim())
+				.filter(Boolean);
+	BARREL.set(mod, [...(BARREL.get(mod) ?? []), ...names]);
+}
 
 describe("every MLS name is answerable for its heartbeat", () => {
 	const exported = Object.values(CENSUS_MODULES)
@@ -471,26 +646,56 @@ describe("every MLS name is answerable for its heartbeat", () => {
 		expect(classified).toHaveLength(new Set(classified).size);
 	});
 
-	it("counts every MLS module the package barrel re-exports from", () => {
+	it("counts every MLS module the package barrel publishes from", () => {
 		// 🔴 The census is a set of MODULES, so a name can reach the public
-		// surface without entering it — `index.ts` re-exports `isEpochConflict`
+		// surface without entering it — `index.ts` publishes `isEpochConflict`
 		// straight off `mls-commit.js`, which is exactly that door. This is the
 		// door's own gate: an MLS module `index.ts` publishes from and this table
 		// does not read is a name nobody has been asked to answer for.
-		const index = fs.readFileSync(
-			new URL("../src/index.ts", import.meta.url),
-			"utf8",
-		);
-		const published = new Set(
-			[...index.matchAll(/from "\.\/(mls-[\w-]+|group-recovery)\.js"/g)].map(
-				(m) => `${m[1]}.js`,
-			),
-		);
-		for (const mod of published) {
+		for (const mod of BARREL.keys()) {
+			if (!MLS_MODULE.test(mod)) continue;
 			expect(
 				Object.hasOwn(CENSUS_MODULES, mod),
 				`${mod} reaches the barrel but no seam table reads it`,
 			).toBe(true);
+		}
+	});
+
+	it("reads the barrel as the package publishes it", () => {
+		// The door above reads `index.ts` as source, so it is only as good as
+		// the parse. Two ways it could see less than the package publishes: an
+		// `export *` line, which names nothing to read, and a line in a shape the
+		// parse does not know. The first is refused outright; the second is
+		// caught at runtime, where every root export that is an MLS module's own
+		// binding must have been read off a line naming that module.
+		expect(BARREL_SOURCE).not.toMatch(/^export \*/m);
+		const parsed = new Set(
+			[...BARREL.entries()]
+				.filter(([mod]) => MLS_MODULE.test(mod))
+				.flatMap(([, names]) => names),
+		);
+		const root: Record<string, unknown> = packageRoot;
+		for (const [mod, exports] of Object.entries(CENSUS_MODULES)) {
+			const own: Record<string, unknown> = exports;
+			for (const name of Object.keys(own)) {
+				if (Object.hasOwn(root, name) && root[name] === own[name]) {
+					expect(
+						parsed.has(name),
+						`${name} (${mod}) is published off no parsed line`,
+					).toBe(true);
+				}
+			}
+		}
+		for (const [mod, names] of BARREL) {
+			if (!Object.hasOwn(CENSUS_MODULES, mod)) continue;
+			const own: Record<string, unknown> =
+				CENSUS_MODULES[mod as keyof typeof CENSUS_MODULES];
+			for (const name of names) {
+				expect(
+					Object.hasOwn(own, name),
+					`${name} is parsed off ${mod}, which does not export it`,
+				).toBe(true);
+			}
 		}
 	});
 

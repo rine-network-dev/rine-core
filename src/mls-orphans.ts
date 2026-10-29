@@ -34,14 +34,13 @@ import { bytesToHex } from "@noble/curves/utils.js";
  * legitimately invited and has not accepted yet as an orphan, and evicts all of
  * them.
  *
- * 🔴 **The subtraction is keyed by the signing key each entitled agent
- * publishes right now, and that is a narrower instrument than it looks.** Two
+ * 🔴 **The subtraction is keyed by each entitled agent's credential identity,
+ * its agent id, and that is a narrower instrument than it looks.** Two
  * populations break it, and only one of them is detectable from here:
  *
- * * An entitled agent whose published key occupies no leaf — a key rotation is
- *   the ordinary cause. Detectable, and {@link reclaimOrphanLeaves} declines
- *   the whole pass and names them rather than reclaiming a seated member's
- *   leaf.
+ * * An entitled agent that occupies no leaf. Detectable, and
+ *   {@link reclaimOrphanLeaves} declines the whole pass and names them rather
+ *   than reclaiming a leaf it cannot attribute.
  * * A **revoked** member. `DELETE /agents/{id}` sets `revoked_at` and leaves
  *   both the `GroupMember` row and the ratchet-tree leaf where they are, and
  *   the row is then invisible to every read this pass has: `GET
@@ -55,8 +54,9 @@ import { bytesToHex } from "@noble/curves/utils.js";
  *   claim this pass covers the revoked case.
  */
 import type { MlsGroup } from "@rine-network/mls";
-import { openMlsGroup } from "./crypto/mls.js";
 import type { HttpClient } from "./http.js";
+import { openPeerMlsGroup } from "./mls-allowed.js";
+import { admitGroupPeers } from "./mls-allowed-tree.js";
 import {
 	fetchGroupTree,
 	fetchMlsIdentities,
@@ -64,14 +64,27 @@ import {
 	leafIndexOf,
 } from "./mls-admission-tree.js";
 import { type MlsReclamationResult, admissionKey } from "./mls-admission.js";
-import { isEpochConflict, postMlsCommit } from "./mls-commit.js";
+import { admitRefusedPeers, removedAgents } from "./mls-commit-admission.js";
+import {
+	isEpochConflict,
+	postMlsCommit,
+	retryOnEpochConflict,
+} from "./mls-commit.js";
+import { whenCommitPending } from "./mls-commit-pending.js";
+import { drainEscrow } from "./mls-escrow-drain.js";
+import {
+	type EscrowReport,
+	emptyReport,
+	mergeReports,
+	reportDrain,
+} from "./mls-escrow-report.js";
 import { syncMlsGroup } from "./mls-ops-sync.js";
 
 /** A ratchet-tree leaf no membership and no live voucher entitles. */
 export interface OrphanLeaf {
 	/** The leaf's index at the epoch it was enumerated at. */
 	index: number;
-	/** Its occupant's MLS basic-credential identity — a raw Ed25519 key. */
+	/** Its occupant's MLS basic-credential identity — the agent id as ASCII bytes. */
 	identity: Uint8Array;
 }
 
@@ -110,17 +123,17 @@ export function orphanLeaves(
 
 /**
  * Post one Remove commit for the leaf `identity` holds **right now**, and report
- * the epoch it landed at. `null` when that identity holds no leaf any more.
+ * the epoch it landed at and the escrow report of its drain. `null` when that
+ * identity holds no leaf any more.
  *
  * State and leaf index are both re-read here rather than carried in: a leaf
  * index is only true of the epoch it was read at, and each removal in a pass
  * moves the epoch.
  *
- * Deliberately declares nothing. `removes` names **agent ids**, and an
- * orphan's leaf is precisely the one no server route can name — it holds no
- * member row and no live voucher, and there is no identity → agent lookup. A
- * commit that declares nothing can authorise no `DELETE`, which is the correct
- * answer here: an orphan has no member row to delete.
+ * Declares the leaf's agent in `removes` (the credential identity is the agent
+ * id as ASCII), so the server closes that agent's seat span and a later join is
+ * not refused over it. A leaf whose identity is not an agent id is removed with
+ * nothing declared. The declaration deletes nothing: an orphan has no member row.
  */
 async function commitOrphanRemoval(
 	configDir: string,
@@ -129,23 +142,30 @@ async function commitOrphanRemoval(
 	identity: Uint8Array,
 	client: HttpClient,
 	extraHeaders?: Record<string, string>,
-): Promise<number | null> {
-	const group = openMlsGroup(configDir, agentId, groupId);
+): Promise<{ epoch: number; escrow: EscrowReport } | null> {
+	const actor = { configDir, agentId, client, extraHeaders };
+	// The Remove commit meets the other members' leaves, so the group's
+	// chain-verified peers must be admitted before it is built.
+	await admitGroupPeers(actor, groupId);
+	const group = openPeerMlsGroup(actor, groupId);
 	const leafIndex = leafIndexOf(group, identity);
 	if (leafIndex === null) return null;
-	const bundle = group.removeMember(leafIndex);
+	const bundle = await whenCommitPending(groupId, () =>
+		admitRefusedPeers(actor, group, () => group.removeMember(leafIndex)),
+	);
 	const epoch = await postMlsCommit(
 		{ configDir, agentId, client },
 		groupId,
-		group,
 		bundle,
 		[],
 		extraHeaders,
+		removedAgents(identity),
 	);
 	// Adopted only after the server accepted it, so a refused commit leaves no
-	// forked local state for the next leaf in the pass to build on.
-	group.save();
-	return epoch;
+	// forked local state for the next leaf in the pass to build on. The drain
+	// saves the group itself, after sealing this epoch's escrow to disk.
+	const escrow = reportDrain(actor, groupId, await drainEscrow(actor, groupId, group));
+	return { epoch, escrow };
 }
 
 /** The first three of a named set, plus a count for the rest. */
@@ -176,28 +196,20 @@ function unreadableDetail(unreadable: string[]): string {
 }
 
 /**
- * The sentence a member whose published key occupies no leaf earns.
+ * The sentence a member that occupies no leaf earns.
  *
  * A member always holds a leaf — that is what admission committed. So a member
- * whose published signing key matches none of them means the two have come
- * apart, and the ordinary cause is a key rotation: `POST /agents/{id}/keys` has
- * no MLS guard, so `rine keys rotate` changes what this pass subtracts while
- * the leaf keeps carrying the credential the group was founded on. Reclaiming
- * then evicts a seated member — the epoch advances, the group stops opening for
- * them, their member row is untouched, and the pass reports only a count.
- *
- * So the pass declines and names them, exactly as {@link unreadableDetail}
- * does, and for the same reason: an ambiguity between a member's leaf and an
- * orphan's is not a licence to remove either.
+ * whose agent id matches none of them means the membership and the tree have
+ * come apart, and the pass cannot tell a member's leaf from an orphan's. So it
+ * declines and names them, exactly as {@link unreadableDetail} does, and for
+ * the same reason: an ambiguity between a member's leaf and an orphan's is not
+ * a licence to remove either.
  */
 function unseatedDetail(unseated: string[]): string {
 	return (
-		`Reclaimed nothing: ${unseated.length} member(s) of this group publish a ` +
-		`signing key that occupies no leaf in its ratchet tree ` +
-		`(${namedFew(unseated)}), so this group's membership and its tree have ` +
-		"come apart and no leaf can be attributed. A member that rotated its " +
-		"signing key looks exactly like this; its leaf still carries the key it " +
-		"published before, and removing that leaf would evict a seated member. " +
+		`Reclaimed nothing: ${unseated.length} member(s) of this group occupy no ` +
+		`leaf in its ratchet tree (${namedFew(unseated)}), so this group's ` +
+		"membership and its tree have come apart and no leaf can be attributed. " +
 		"Have them rejoin the group, or remove them and invite them again, and " +
 		"run this pass afterwards."
 	);
@@ -219,7 +231,7 @@ function unseatedDetail(unseated: string[]): string {
  *
  * 🔴 It refuses to act at all on either ambiguity between a member's leaf and
  * an orphan's: an entitled agent whose signing key is unreadable
- * ({@link unreadableDetail}), and a member whose published key occupies no leaf
+ * ({@link unreadableDetail}), and a member that occupies no leaf
  * ({@link unseatedDetail}). Both mean a leaf cannot be attributed, and a
  * destructive pass that cannot attribute a leaf must decline rather than guess.
  * The one ambiguity it CANNOT see is a revoked member — see this module's
@@ -250,13 +262,16 @@ export async function reclaimOrphanLeaves(
 	const unreadable = entitledIds.filter(
 		(id) => !identities.has(admissionKey(id)),
 	);
-	const group = openMlsGroup(configDir, agentId, groupId);
+	// Reads only — leaf lookups and the tree enumeration — so the peer-aware
+	// opener alone is enough here; no admission read is needed.
+	const group = openPeerMlsGroup({ configDir, agentId, client, extraHeaders }, groupId);
 	if (unreadable.length > 0) {
 		return {
 			found: 0,
 			reclaimed: 0,
 			commits: 0,
 			epoch: group.epoch(),
+			escrow: emptyReport(),
 			declined: {
 				reason: "identity_unknown",
 				detail: unreadableDetail(unreadable),
@@ -277,6 +292,7 @@ export async function reclaimOrphanLeaves(
 			reclaimed: 0,
 			commits: 0,
 			epoch: group.epoch(),
+			escrow: emptyReport(),
 			declined: {
 				reason: "identity_unseated",
 				detail: unseatedDetail(unseated),
@@ -288,10 +304,10 @@ export async function reclaimOrphanLeaves(
 	let epoch = group.epoch();
 	let commits = 0;
 	let reclaimed = 0;
+	let escrow = emptyReport();
 	for (const orphan of orphans) {
-		let landed: number | null;
-		try {
-			landed = await commitOrphanRemoval(
+		const removal = () =>
+			commitOrphanRemoval(
 				configDir,
 				agentId,
 				groupId,
@@ -299,29 +315,23 @@ export async function reclaimOrphanLeaves(
 				client,
 				extraHeaders,
 			);
+		let landed: { epoch: number; escrow: EscrowReport } | null;
+		try {
+			landed = await retryOnEpochConflict(removal, () =>
+				syncMlsGroup(configDir, agentId, groupId, client, extraHeaders),
+			);
 		} catch (err) {
+			// A second lost race ends the pass: the group is moving under it.
 			if (!isEpochConflict(err)) throw err;
-			await syncMlsGroup(configDir, agentId, groupId, client, extraHeaders);
-			try {
-				landed = await commitOrphanRemoval(
-					configDir,
-					agentId,
-					groupId,
-					orphan.identity,
-					client,
-					extraHeaders,
-				);
-			} catch (retryErr) {
-				if (!isEpochConflict(retryErr)) throw retryErr;
-				break;
-			}
+			break;
 		}
 		// null means somebody else's commit already took this leaf — an answer,
 		// not a failure, and the pass simply owes one fewer commit.
 		if (landed === null) continue;
-		epoch = landed;
+		epoch = landed.epoch;
+		escrow = mergeReports(escrow, landed.escrow);
 		commits += 1;
 		reclaimed += 1;
 	}
-	return { found: orphans.length, reclaimed, commits, epoch };
+	return { found: orphans.length, reclaimed, commits, epoch, escrow };
 }

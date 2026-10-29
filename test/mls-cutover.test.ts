@@ -22,15 +22,23 @@ vi.mock("../src/crypto/mls-api.js", async () => {
 	};
 });
 
-import { generateAgentKeys, saveAgentKeys } from "../src/crypto/keys.js";
+// The pre-check that the disk key is the agent's published one is pinned against
+// the real predicate in the seat-sweep suites; the cutover mechanics are what is
+// under test here, so the check answers yes.
+vi.mock("../src/mls-key-current.js", () => ({
+	diskKeyIsCurrent: vi.fn(async () => true),
+}));
+
+import { saveAgentKeys } from "../src/crypto/keys.js";
+import { generateAgentKeys } from "./helpers/keys.js";
 import { claimKeyPackages, uploadKeyPackages } from "../src/crypto/mls-api.js";
 import { mlsFromBase64, mlsToBase64 } from "../src/crypto/mls-api.js";
 import { MLS_ERR_UNREADABLE_KEY_PACKAGE } from "../src/crypto/mls-errors.js";
 import { mlsErrorCode } from "../src/crypto/mls-errors.js";
 import { mlsGroupIdBytes, openMlsClient } from "../src/crypto/mls.js";
 import { RineApiError } from "../src/errors.js";
+import { MLS_KEY_PACKAGE_TARGET } from "../src/mls-keypackages.js";
 import {
-	MLS_KEY_PACKAGE_TARGET,
 	cutoverMlsKeyPackages,
 	drainAndRepublishMlsKeyPackages,
 	ensureMlsKeyPackages,

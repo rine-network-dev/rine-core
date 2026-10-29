@@ -24,8 +24,9 @@ import {
 	NOT_A_MEMBER_CLAUSE,
 	SEATED_SIBLING_CLAUSE,
 	namesASeatedSibling,
-	unseatedGroupSendRefusal,
 } from "../src/index.js";
+// Not on the package root: no surface composes this refusal itself.
+import { unseatedGroupSendRefusal } from "../src/group-words.js";
 
 /** The refusals the server actually sends, as `group_member_words` builds them. */
 const ARM_ONE_SIBLING =

@@ -66,15 +66,9 @@ vi.mock("../src/crypto/mls-api.js", async () => {
 	};
 });
 
-import type { AgentKeys } from "../src/crypto/keys.js";
-import {
-	agentKeysExist,
-	generateAgentKeys,
-	saveAgentKeys,
-	signingPublicKeyToJWK,
-} from "../src/crypto/keys.js";
-import { encryptMlsGroupMessage } from "../src/crypto/message.js";
-import { decryptGroupMessage } from "../src/crypto/message.js";
+import { World } from "./crypto/world.js";
+import { encryptMlsGroupMessage } from "../src/message-mls.js";
+import { decryptGroupMessage } from "../src/message-group.js";
 import type { MlsCommitBody, MlsWelcomeEntry } from "../src/crypto/mls-api.js";
 import {
 	claimKeyPackages,
@@ -86,8 +80,8 @@ import {
 	uploadKeyPackages,
 } from "../src/crypto/mls-api.js";
 import { openMlsClient } from "../src/crypto/mls.js";
+import { MLS_KEY_PACKAGE_TARGET } from "../src/mls-keypackages.js";
 import {
-	MLS_KEY_PACKAGE_TARGET,
 	addMlsGroupMembers,
 	initMlsGroup,
 	processMlsWelcomes,
@@ -108,7 +102,7 @@ const CARL_ID = "c3d4e5f6-a7b8-9012-cdef-123456789012";
 const VOTED_GROUP_ID = "d4e5f6a7-b8c9-0123-def1-234567890123";
 
 let dir: string;
-let keys: Map<string, AgentKeys>;
+let world: World;
 /** Unclaimed key packages the server holds, per agent, in publish order. */
 let serverPool: Map<string, string[]>;
 /** Welcomes the server holds for an agent, delivered once, per agent. */
@@ -146,14 +140,15 @@ function headers(agentId: string): Record<string, string> {
 	return { "X-Rine-Agent": agentId };
 }
 
-/** The published signing keys `GET /agents/keys` would return for `ids`. */
+/** The published keys `GET /agents/keys` would return for `ids`. */
 function publishedKeys(ids: string[]) {
 	const map: Record<string, unknown> = {};
 	for (const id of ids) {
-		if (!id || !agentKeysExist(dir, id)) continue;
-		// The MLS basic-credential identity is the agent's raw Ed25519 key.
-		const jwk = signingPublicKeyToJWK(openMlsClient(dir, id).publicKey());
-		map[id] = { signing_public_key: jwk, encryption_public_key: jwk };
+		if (!id) continue;
+		const generations = world.agents.get(id);
+		if (!generations?.length) continue;
+		const newest = generations.reduce((a, b) => (b.gen > a.gen ? b : a));
+		map[id] = newest.response;
 	}
 	return map;
 }
@@ -163,15 +158,12 @@ function publishedKeys(ids: string[]) {
  * answers are empty because recovery is not this file's subject: a decrypt that
  * needs it has already failed the thing being asserted.
  */
-function keyServer(agentId: string) {
+function keyServer() {
+	const base = world.client();
 	return {
-		get: vi.fn(async (path: string) =>
+		get: vi.fn(async (path: string, params?: Record<string, string>) =>
 			path.includes("/keys")
-				? {
-						signing_public_key: signingPublicKeyToJWK(
-							(keys.get(agentId) as AgentKeys).signing.publicKey,
-						),
-					}
+				? base.get(path, params)
 				: { welcomes: [], handshakes: [] },
 		),
 		post: vi.fn(),
@@ -180,7 +172,7 @@ function keyServer(agentId: string) {
 
 beforeEach(async () => {
 	dir = fs.mkdtempSync(join(tmpdir(), "rine-vote-decrypt-"));
-	keys = new Map();
+	world = new World();
 	serverPool = new Map();
 	inbox = new Map();
 	posted = [];
@@ -191,9 +183,7 @@ beforeEach(async () => {
 	// would measure the gate rather than the beat.
 	resetMlsHeartbeatGate();
 	for (const id of [ADMIN_ID, BOB_ID, CARL_ID]) {
-		const generated = generateAgentKeys();
-		keys.set(id, generated);
-		saveAgentKeys(dir, id, generated);
+		world.save(dir, world.addAgent({ id }));
 	}
 
 	// A pool that is a queue, not a boolean: an upload lengthens it, a claim pops
@@ -355,7 +345,7 @@ describe("a drained key-package pool", () => {
 			BOB_ID,
 			VOTED_GROUP_ID,
 			enc.encrypted_payload,
-			keyServer(ADMIN_ID),
+			keyServer(),
 			ADMIN_ID,
 		);
 		expect(JSON.parse(dec.plaintext)).toEqual({ carried: "the vote" });

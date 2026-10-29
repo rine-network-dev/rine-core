@@ -4,6 +4,9 @@ import type {
 } from "./group-recovery.js";
 import type { MlsReclamationResult } from "./mls-admission.js";
 import type { KeyPackageTopUp } from "./mls-keypackage-topup.js";
+import { MLS_EVICTED_BY_COMMIT, seatUpdateLine } from "./mls-seat-sentences.js";
+
+export { MLS_EVICTED_BY_COMMIT };
 
 /**
  * Two blocks of operator prose, joined by exactly one newline, where either
@@ -302,23 +305,6 @@ export function notAnMlsGroupResume(groupRef: string): string {
 }
 
 /**
- * What an agent is told when a commit it just applied removed it from the group.
- *
- * One sentence, one home: the explicit recovery verbs report it through
- * {@link describeMlsRecovery}, and a plain read reports it too — the catch-up
- * behind a read applies the same commits, so an agent could be evicted by a
- * message it opened successfully. Both must say the same thing, and a second
- * copy of this sentence is how they would stop.
- *
- * Both matrix harnesses regex the rungs this is appended to, so its bytes are
- * pinned: change the wording and re-run them.
- */
-export const MLS_EVICTED_BY_COMMIT =
-	"This agent was removed from the group by a commit it just replayed: " +
-	"messages that already arrived still open, and nothing committed after the " +
-	"Remove ever will.";
-
-/**
  * What to do once the sync is over, on every arm where the scan actually ran.
  *
  * 🔴 The answer used to end on a description of state, and a model reading it
@@ -494,11 +480,13 @@ export function describeMlsRecovery(
 		result.regime === "sender-key"
 			? describeSenderKeyRecovery(groupRef, result)
 			: describeMlsRung(groupRef, result);
+	const seat =
+		result.regime === "mls" ? seatUpdateLine(result.seat) : "";
 	const topUp = keyPackageTopUpLine(result.keyPackages);
 	// 🔴 APPENDED, never prepended. Two matrix drivers match this answer's head
 	// with `^`-anchored regexes and read a miss as the surface refusing — a
 	// successful recovery graded as a broken surface.
-	return joinLines(body, topUp);
+	return joinLines(joinLines(body, seat), topUp);
 }
 
 /**

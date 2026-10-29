@@ -32,7 +32,7 @@ import type { SenderKeyState } from "./sender-keys.js";
  *   its save, in the window the holder is awaiting the network.
  *
  * 🔴 TWO writers take no lock, not one: `ingestSenderKeyDistribution`
- * (`crypto/ingest.ts`) and the tail of `encryptGroupMessage` (`crypto/message.ts`).
+ * (`crypto/ingest.ts`) and the tail of `encryptGroupMessage` (`crypto/sender-key-seal.ts`).
  * Both are sound only because their load and save have no `await` between them,
  * both say so at the site, and both would silently reopen a lost update the day
  * one grows an await. Anyone reading "the file's writes are serialised" should
@@ -163,7 +163,7 @@ export function withSenderKeyStates<T>(
  * permanently, with no error anywhere.
  *
  * Agent ids compare case-insensitively, exactly as the ingest compares them:
- * `agentIdFromKid` preserves whatever case the signer put in its kid, and the
+ * `parseSigningKid` preserves whatever case the signer put in its kid, and the
  * ingest files the row under that spelling. Key ids need no folding — the ingest
  * canonicalises them and every local mint is a lower-case UUID — but a pair is
  * only as good as its weaker half, so both halves are decided here and nowhere

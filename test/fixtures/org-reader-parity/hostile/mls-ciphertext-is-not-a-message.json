@@ -1,0 +1,110 @@
+{
+  "name": "mls-ciphertext-is-not-a-message",
+  "family": "escrow",
+  "note": "the row's ciphertext does not parse as an MLS message",
+  "api_url": "http://rine.invalid",
+  "org_id": "de4db70f-d37f-8be9-b275-3abdf05aa800",
+  "root_key": "DCoYVE0vnLZwN1n4OUylViWWrvcHOAeyQMsZlVnpcOY",
+  "own_agents": [
+    "0afd1ba5-5498-443b-b706-b64ce0873d1f",
+    "5cccc04e-c097-4a7f-aa8e-62e8eb05f7c5"
+  ],
+  "reader": {
+    "branch": null
+  },
+  "reads": [
+    {
+      "query": {
+        "group_id": "66f3e4e8-d6f4-4c70-926a-f094916082bd",
+        "cursor": null,
+        "limit": 100
+      },
+      "exchanges": [
+        {
+          "method": "POST",
+          "path": "/oauth/token",
+          "query": {},
+          "status": 200,
+          "body": {
+            "access_token": "fixture-token",
+            "token_type": "bearer",
+            "expires_in": 900
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "group_id": "66f3e4e8-d6f4-4c70-926a-f094916082bd",
+            "include": "payload",
+            "limit": "100"
+          },
+          "status": 200,
+          "body": {
+            "items": [
+              {
+                "id": "adb1ae88-44b5-4f71-ac31-5a908793d66b",
+                "created_at": "2026-10-24T20:36:28.481849Z",
+                "type": "rine.v1.dm",
+                "direction": "sent",
+                "from": {
+                  "agent_id": "5cccc04e-c097-4a7f-aa8e-62e8eb05f7c5",
+                  "handle": "mx-ts-sdk@mx-ts-sdk-874177.rine.network",
+                  "org_id": "de4db70f-d37f-8be9-b275-3abdf05aa800",
+                  "own": true
+                },
+                "to": null,
+                "group": {
+                  "id": "66f3e4e8-d6f4-4c70-926a-f094916082bd",
+                  "handle": "#mx-orgread-closed-874177@mx-ts-sdk-874177.rine.network"
+                },
+                "conversation_id": "8340796a-4561-4282-ae46-dda318c3e84d",
+                "encryption_version": "mls-v1",
+                "delivered_at": null,
+                "x402_status": null,
+                "x402_rail": null,
+                "payload": {
+                  "encrypted_payload": "AWbz5OjW",
+                  "self_encrypted_payload": null,
+                  "key_gen": 0
+                }
+              }
+            ],
+            "next_cursor": null
+          }
+        }
+      ],
+      "page": {
+        "items": [
+          {
+            "id": "adb1ae88-44b5-4f71-ac31-5a908793d66b",
+            "created_at": "2026-10-24T20:36:28.481849+00:00",
+            "type": "rine.v1.dm",
+            "direction": "sent",
+            "from": {
+              "agent_id": "5cccc04e-c097-4a7f-aa8e-62e8eb05f7c5",
+              "handle": "mx-ts-sdk@mx-ts-sdk-874177.rine.network",
+              "own": true
+            },
+            "to": null,
+            "group": {
+              "id": "66f3e4e8-d6f4-4c70-926a-f094916082bd",
+              "handle": "#mx-orgread-closed-874177@mx-ts-sdk-874177.rine.network"
+            },
+            "conversation_id": "8340796a-4561-4282-ae46-dda318c3e84d",
+            "encryption_version": "mls-v1",
+            "epoch": null,
+            "text": null,
+            "verification": null,
+            "equivocation": false,
+            "gap": {
+              "reason": "Unreadable"
+            }
+          }
+        ],
+        "findings": [],
+        "next_cursor": null
+      }
+    }
+  ]
+}

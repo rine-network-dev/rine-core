@@ -47,6 +47,11 @@ import {
 	groupMlsNeverFounded,
 } from "./crypto/group-predicates.js";
 import type { GroupRegimeFields } from "./crypto/group-predicates.js";
+import {
+	type MlsGroupRecovery,
+	recoveredWithSeat,
+	topUpField,
+} from "./group-recovery-seat.js";
 import type { HttpClient } from "./http.js";
 import {
 	NO_KEY_PACKAGE_TOP_UP,
@@ -58,7 +63,6 @@ import {
 	isMlsResyncUnavailable,
 	recoverMlsGroup,
 } from "./mls-ops-resync.js";
-import type { MlsRecoveryResult } from "./mls-ops-resync.js";
 import {
 	mlsInitInFlightSync,
 	mlsNeverFoundedSync,
@@ -138,7 +142,7 @@ export interface SenderKeyRecoveryResult {
 }
 
 /** What recovering a group did, whichever encryption it runs. */
-export type GroupRecoveryResult = MlsRecoveryResult | SenderKeyRecoveryResult;
+export type GroupRecoveryResult = MlsGroupRecovery | SenderKeyRecoveryResult;
 
 /**
  * Catch one group up, on whichever recovery that group actually has.
@@ -157,8 +161,8 @@ export type GroupRecoveryResult = MlsRecoveryResult | SenderKeyRecoveryResult;
  *
  * @throws Error while the group's MLS init is in flight — there is no epoch
  *   chain to catch up with yet and no sender keys to install.
- * @throws MlsResyncUnavailableError when the group is MLS and this agent's
- *   local state will not load at all.
+ * @throws MlsResyncUnavailableError when the group is MLS, this agent's local
+ *   state will not load and it has no leaf it can take back.
  */
 export async function recoverGroup(
 	configDir: string,
@@ -219,7 +223,12 @@ export async function recoverGroup(
 				client,
 				extraHeaders,
 			);
-			return { ...recovered, ...topUpField(keyPackages) };
+			return await recoveredWithSeat(
+				{ configDir, agentId, client, extraHeaders },
+				group.id,
+				recovered,
+				keyPackages,
+			);
 		} catch (err) {
 			// Re-minted rather than mutated, the `resyncFailure` precedent: the
 			// message is composed in the constructor, so a refusal that learned
@@ -279,15 +288,4 @@ export async function recoverGroup(
 		...(mlsNeverFoundedNote ? { mlsNeverFoundedNote } : {}),
 		...topUpField(keyPackages),
 	};
-}
-
-/**
- * The top-up, spread rather than assigned — the `mlsNeverFoundedNote` rule. A
- * group that runs sender keys has no key packages to report on, so it reports
- * no key, not a `healthy` nobody asked about.
- */
-function topUpField(
-	keyPackages: KeyPackageTopUp,
-): { keyPackages?: KeyPackageTopUp } {
-	return keyPackages.outcome === "healthy" ? {} : { keyPackages };
 }

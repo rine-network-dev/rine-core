@@ -215,7 +215,7 @@ export function sigiledGroupRef(reference: string): string {
  * ⚠️ **On every group this server has minted they are the same string**, so the
  * `name` half matches nothing the local part did not already match. `POST
  * /groups` builds the handle as `#${name}@${org}` unconditionally
- * (`src/rine/api/groups.py`), `name` must pass `validate_slug`, and
+ * (`src/rine/api/group_routes_crud.py`), `name` must pass `validate_slug`, and
  * `GroupUpdate` carries no `name` field at all — a group name is its handle's
  * local part, and immutable. Say that plainly rather than implying the two
  * columns carry different information: they do not, and a reader who believes
@@ -294,17 +294,17 @@ export function normalizeGroupRef(value: string): string {
  *
  * A blank recipient is deliberately NOT one of them. It names nothing in either
  * namespace, and the agent resolver's *"expected a UUID or handle"* says that
- * far better than a hunt through the org's groups ending in *"no group is
+ * far better than a hunt through the groups the key can see ending in *"no group is
  * called ''"* would.
  *
  * Re-expressed over {@link classifyReference} rather than restating its four
- * tests: `bare` is defined as the class those four tests leave, so the two can
- * no longer answer differently about one string.
+ * tests: `bare` is defined as the class those four tests leave, so the two
+ * cannot answer differently about one string.
  *
  * 🔴 **No production caller, and kept on purpose — do not sweep it.** The
- * send path moved onto `resolveRecipient`, which asks `classifyReference`
- * directly, so every remaining reference to this function is a test or this
- * file. Two things depend on it anyway. It is a published export of
+ * send path is `resolveRecipient`, which asks `classifyReference` directly, so
+ * every reference to this function is a test or this file. Two things depend
+ * on it anyway. It is a published export of
  * `@rine-network/core` (`index.ts` re-exports this module whole), so deleting
  * it breaks an out-of-repo consumer's build in a non-major release. And it is
  * the reference definition the classifier is checked AGAINST:
@@ -332,13 +332,10 @@ export function isBareReference(value: string): boolean {
  * routing either set to the group ladder can still take nothing away.
  *
  * 🔴 The two sets are NOT interchangeable, and the difference is the
- * collision guard. Since the send path moved onto `resolveRecipient` the
- * comparison is between the classifier's ARMS rather than between two live call
- * sites — `refuseIfABareAgentName` now stands in front of the `bare` arm, not
- * in front of a call to {@link isBareReference} — but the rule is the same one
- * and the arms are what enforce it. A bare `ops` may be a caller who meant `ops@acme` and
- * dropped the org, so {@link refuseIfABareAgentName} stands in front of it. A
- * sigiled `#ops` cannot be: `#` is the group sigil throughout this product's
+ * collision guard. On the send path (`resolveRecipient`) the classifier's ARMS
+ * enforce it: {@link refuseIfABareAgentName} stands in front of the `bare`
+ * arm, because a bare `ops` may be a caller who meant `ops@acme` and dropped
+ * the org. A sigiled `#ops` cannot be: `#` is the group sigil throughout this product's
  * addressing, no agent handle carries one, and an agent `name` is a DNS slug
  * that can never contain one. The caller has said which namespace it means, so
  * the guard is skipped — running it anyway would refuse a correct group send
@@ -480,7 +477,7 @@ function groupReferenceMatches(
  * The empty-field arms are a guard against a wire that contradicts its own
  * type, and are worth naming precisely so nobody reads them as a fact about
  * groups: `groups.name` and `groups.handle` are both `nullable=False`
- * (`src/rine/db/models.py`) and `GroupRead` types them `string`, so unlike
+ * (`src/rine/db/models/groups.py`) and `GroupRead` types them `string`, so unlike
  * `agents.handle` — genuinely nullable, and the reason `bob (null)` once
  * shipped on the actor side — no row the server can mint reaches them. They
  * cost two `||` and they are what stands between a bad row and a refusal that
@@ -509,7 +506,7 @@ function formatGroupList(groups: readonly GroupRead[]): string {
  *
  * The two sentences and the rows are this module's; the JOINS are
  * {@link composeGroupRefusal}'s, so the group roster and the agent roster
- * cannot drift apart in their punctuation the way the two stacks once did.
+ * cannot drift apart in their punctuation.
  */
 function groupCandidates(groups: readonly GroupRead[]): RefusalCandidates {
 	return {
@@ -576,7 +573,7 @@ export function unknownGroupRefusal(
  * The verb is named with a UUID and not with the reference the caller actually
  * typed, which reads like a mismatch and is not one: {@link resolveGroupByHandle}
  * and {@link resolveGroupByName} both reach the group through `GET /groups`,
- * which is org-scoped, so neither rung can see a group this agent no longer
+ * which is key-scoped, so neither rung can see a group this agent no longer
  * holds a seat in. `readableGroupById` reads the row directly. For an evicted
  * caller the UUID is the only spelling that resolves at all.
  *
@@ -634,7 +631,7 @@ function ambiguousGroupRefusal(
  *
  * The server's `GET /groups?handle=` matches a *full* `#name@org` handle only,
  * so a bare `ops` finds nothing there however many groups carry that name.
- * Listing the org's groups and running the ladder over them is what lets every
+ * Listing the groups the key can see and running the ladder over them is what lets every
  * group verb take the name a caller says out loud.
  *
  * `spelling` is what a refusal quotes, and it exists because of the handle
@@ -681,7 +678,7 @@ export function matchGroupByName(
  * is the guard the safety argument rests on: a reference Python folds onto an
  * agent's name and this side does not is one this side does not refuse. It is
  * unreachable today — an agent's `name` is a DNS slug
- * (`src/rine/api/schemas.py`), so only the caller's spelling can carry a folding
+ * (`src/rine/api/schemas_org.py`), so only the caller's spelling can carry a folding
  * case, and a caller who types `STRASSE` at an agent named `strasse` falls
  * through to the group ladder here, where nothing answers to it either.
  * Reachability would change the day an agent name stops being a slug.
@@ -700,21 +697,19 @@ export function refuseIfABareAgentName(
 	// prints, so the second half is a reference they can paste rather than a
 	// form with `org` left standing in it.
 	//
-	// 🔴 A slugless org mints no handles and has nothing to derive from,
-	// and that arm used to print `#logistics@acme.rine.network` and label it an
-	// example — a placeholder domain inside a refusal, which is banned.
-	// It answers with the sigil form of the caller's own word
-	// instead. `#ops` is not a hedge and not a shape: it is a first-class
-	// recipient spelling ({@link isSigilGroupReference}), it is the one spelling
-	// this guard is deliberately SKIPPED for — so it turns this very refusal off
-	// — and it needs no org half, which is the entire content of "slugless". The
-	// sentence it replaces was worse than a placeholder: it offered a handle
-	// spelling to the one caller who provably cannot construct one.
+	// 🔴 A slugless org mints no handles and has nothing to derive from, and a
+	// placeholder domain inside a refusal is banned. It answers with the sigil
+	// form of the caller's own word instead. `#ops` is not a hedge and not a
+	// shape: it is a first-class recipient spelling
+	// ({@link isSigilGroupReference}), it is the one spelling this guard is
+	// deliberately SKIPPED for — so it turns this very refusal off — and it
+	// needs no org half, which is the entire content of "slugless". A handle
+	// spelling is the one thing this caller provably cannot construct.
 	//
 	// 🔴 `folded`, never the caller's own spelling, and it is the paste that
 	// depends on it: a group name is a lowercase DNS slug on the server
 	// (`validate_slug`, `src/rine/api/group_schemas.py`), the handle is minted
-	// verbatim from it (`groups.py`), and the handle lookup is an exact match —
+	// verbatim from it (`group_routes_crud.py`), and the handle lookup is an exact match —
 	// so `#OPS@acme.rine.network` is a reference no group can ever carry. The
 	// twin folds here too (`_group_spelling_for`, `rine-sdk/_group_ref.py`).
 	const org = named.map((a) => a.handle).find(Boolean)?.split("@")[1];
@@ -741,21 +736,19 @@ export function refuseIfABareAgentName(
  * Run only after {@link refuseIfABareAgentName} has cleared the name, and only
  * for a spelling the agent namespace has already declined on syntax.
  *
- * 🔴 **The zero-match arm no longer opens with a GROUP verdict.** It used
- * to lead with {@link GROUP_NOT_FOUND_LEAD}, and that was half an answer to a
- * question the caller had not asked in either namespace: by the time this arm
- * fires the reference cannot be an agent identifier AND no agent of this org
- * carries the name, so both halves have said no and only the group half was
- * reported. It opens with {@link NEITHER_NAMESPACE_LEAD} instead — the caller's
- * spelling, then both verdicts at once — and still names both spellings, because
- * the caller's next attempt has to pick one of them.
+ * 🔴 **The zero-match arm does not open with a GROUP verdict.**
+ * {@link GROUP_NOT_FOUND_LEAD} would be half an answer to a question the caller
+ * had not asked in either namespace: by the time this arm fires the reference
+ * cannot be an agent identifier AND no agent of this org carries the name, so
+ * both halves have said no. It opens with {@link NEITHER_NAMESPACE_LEAD} — the
+ * caller's spelling, then both verdicts at once — and still names both
+ * spellings, because the caller's next attempt has to pick one of them.
  *
- * 🔴 The lead swap is the whole of this arm's user-visible change; the roster
- * still comes last, and the six surfaces that branch on a lead were widened in
- * the same commit. Landing this in `rine-core` alone is the silent reroute the
+ * 🔴 The six surfaces that branch on a lead recognise this one; the roster
+ * comes last. Changing the lead in `rine-core` alone is the silent reroute the
  * `_client.py` docblocks name.
  *
- * 🔴 What it must never say is what it used to: *"a bare name is neither"*.
+ * 🔴 What it must never say: *"a bare name is neither"*.
  * A bare name **is** read as a group — that is this function — and every tool
  * description on every surface now teaches a caller to write one. A refusal
  * that contradicts the instruction the caller has just followed teaches them
@@ -763,14 +756,12 @@ export function refuseIfABareAgentName(
  * what was looked for and where instead, and the roster tail names what there
  * was to find.
  *
- * 🔴 **The placeholder ban, second rung: the two spellings are DESCRIBED and no
- * longer shown.** This arm used to print `kofi@acme.rine.network` and
- * `#logistics@acme.rine.network`, and both were baked into the LEAD, so the
- * suppression rule could never take them back out when the roster below is
- * appended — a placeholder domain in a refusal, twice, under a list of the
- * caller's real handles. A model given a printed domain moves the local part
- * with the conversation and leaves the domain
- * untouched. Rung 1 (the caller's own org, derived from a handle the sentence
+ * 🔴 **The placeholder ban, second rung: the two spellings are DESCRIBED, never
+ * shown.** An example handle baked into the LEAD could never be taken back out
+ * by the suppression rule when the roster below is appended — a placeholder
+ * domain in a refusal, under a list of the caller's real handles. A model
+ * given a printed domain moves the local part with the conversation and leaves
+ * the domain untouched. Rung 1 (the caller's own org, derived from a handle the sentence
  * already prints) is unreachable here — this function holds groups and no
  * agents, and the arm fires precisely when NO group answered — so it takes rung
  * 2, a structural description with nothing in it to paste. Not a `<slot>`
@@ -793,8 +784,8 @@ export function recipientGroupForBareName(
 	throw new Error(
 		andTheGroupsThereAre(
 			(said) =>
-				`'${said}' ${NEITHER_NAMESPACE_LEAD}. A bare name is read as a group this ` +
-				"org is seated in, and none of them answers to it. An agent is " +
+				`'${said}' ${NEITHER_NAMESPACE_LEAD}. A bare name is read as a group you ` +
+				"hold a seat in, and none of them answers to it. An agent is " +
 				"addressed in full — its name, an at sign, and its org's domain — " +
 				"and a group by its whole handle, which is a leading hash and the " +
 				"same three parts.",

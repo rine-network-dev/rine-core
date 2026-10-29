@@ -5,26 +5,25 @@
  * caller is NOT in.** Every other verb — read, send, invite, vote, leave — asks
  * about a group this org already holds a seat in, so `resolveGroupUuid`
  * (`resolve-group.ts`) is right for them: every rung it takes is scoped to a
- * group the org owns or is seated in — `GET /groups/{id}` for a UUID,
- * `GET /groups` for a handle or a name — and a stranger's reference
- * answering nothing there is the server's answer rather than a defect in the
- * lookup.
+ * group the caller is seated in, and a stranger's reference answering nothing
+ * there is the server's answer rather than a defect in the lookup.
  *
  * For join that same ladder is exactly backwards. It searches the one set that
- * cannot contain the target, so a handle a caller had just read off
- * `discoverGroups()` came back `Group not found` with the server never having
- * refused anything. This module is the join-scoped ladder that replaces it; the
- * matchers and every sentence it refuses with are `group-join-words.ts`.
+ * cannot contain the target, so a handle read off `discoverGroups()` came back
+ * `Group not found` with the server never having refused anything. This is the
+ * join-scoped ladder; the matchers and every refusal are `group-join-words.ts`.
  *
- * **A handle walks three rungs.**
+ * **A handle walks four rungs.**
  *
- * 1. `GET /groups?handle=` — the group this org is already seated in. It
+ * 1. `GET /groups?handle=` — a group the caller already holds a seat in. It
  *    resolves so the server can answer the honest `409 Agent is already a
  *    member` instead of a client-side "not found" about a group the caller is
  *    standing in.
  * 2. `GET /groups/invites` — the group that invited or nominated this agent. An
  *    invitation mints no membership row, so rung 1 structurally cannot see it.
- * 3. `GET /directory/groups?q=` — a public group with no relationship at all.
+ * 3. `GET /groups/org-joinable?handle=` — an open or voted group the org owns and holds a seat in
+ *    (existence only); rung 1 shows an agent its own seats alone.
+ * 4. `GET /directory/groups?q=` — a public group with no relationship at all.
  *
  * **A bare name walks one, and only one.** It is looked for among this agent's
  * pending invitations and nowhere else — see
@@ -42,9 +41,8 @@
  * the caller named. A wrong match is not reachable. The identifier is resolved;
  * a different group is never joined.
  *
- * The limitations are real and are said in the refusals rather than hidden: the
- * directory is filtered to `visibility == "public"`, and it is read under a page
- * budget, so a refusal states which of those two it ran into.
+ * The directory is filtered to `visibility == "public"` and read under a page
+ * budget; a refusal states which of those two it ran into.
  */
 
 import {
@@ -59,6 +57,7 @@ import {
 } from "./group-join-words.js";
 import { listMyInvites } from "./group-invite-ops.js";
 import type { HttpClient } from "./http.js";
+import { orgJoinableGroupIdByHandle } from "./org-joinable-group.js";
 import { seatedGroupByHandle } from "./resolve-group.js";
 import { UUID_RE } from "./resolve-handle.js";
 
@@ -197,10 +196,11 @@ export async function resolveGroupUuidForJoin(
 	if (seated) return seated.id;
 
 	const invites = await listMyInvites(client, extraHeaders);
-	const invited = invites.find((row) =>
-		isExactGroupHandle(row.group_handle, ref),
-	);
+	const invited = invites.find((row) => isExactGroupHandle(row.group_handle, ref));
 	if (invited) return invited.group_id;
+
+	const orgJoinable = await orgJoinableGroupIdByHandle(client, ref, extraHeaders);
+	if (orgJoinable) return orgJoinable;
 
 	const listed = await searchPublicDirectory(client, ref);
 	if (listed.id) return listed.id;

@@ -1,0 +1,189 @@
+[
+  {
+    "id": "malformed-activity-row",
+    "decision": "malformed-input",
+    "python": "Row.parse raises; the page read aborts",
+    "typescript": "parseRow returns a ParseFailure: the row becomes an Unreadable gap carrying its id, or is dropped with a page-level count when it has none",
+    "reason": "a malformed server row must not stop a polling TUI for good",
+    "cases": [
+      "malformed-row-ciphertext-a-number",
+      "malformed-row-ciphertext-missing",
+      "malformed-row-conversation-id-missing",
+      "malformed-row-created-at-a-number",
+      "malformed-row-created-at-missing",
+      "malformed-row-created-at-not-a-time",
+      "malformed-row-direction-missing",
+      "malformed-row-encryption-version-missing",
+      "malformed-row-from-a-string",
+      "malformed-row-from-agent-id-missing",
+      "malformed-row-from-missing",
+      "malformed-row-from-org-id-missing",
+      "malformed-row-from-own-missing",
+      "malformed-row-group-a-string",
+      "malformed-row-id-missing",
+      "malformed-row-payload-a-string",
+      "malformed-row-payload-missing",
+      "malformed-row-type-missing"
+    ]
+  },
+  {
+    "id": "malformed-escrow-row",
+    "decision": "malformed-input",
+    "python": "EscrowCopy.parse raises; the group load aborts",
+    "typescript": "the row counts as forged at its epoch when the epoch is usable, and is dropped when it names none",
+    "reason": "one bad escrow row must not hide the rest of the group",
+    "cases": [
+      "malformed-escrow-branch-missing",
+      "malformed-escrow-created-at-missing",
+      "malformed-escrow-epoch-missing",
+      "malformed-escrow-fp-missing",
+      "malformed-escrow-sealed-missing",
+      "malformed-escrow-signature-missing",
+      "malformed-escrow-uploader-key-gen-missing",
+      "malformed-escrow-uploader-missing"
+    ]
+  },
+  {
+    "id": "malformed-page-envelope",
+    "decision": "malformed-input",
+    "python": "the unparsed page raises",
+    "typescript": "the feed reports error code malformed_page and the poll retries",
+    "reason": "a bad envelope is a transient server fault, not a reason to end the poll",
+    "cases": [
+      "malformed-page-a-list",
+      "malformed-page-escrow-row-null",
+      "malformed-page-escrow-rows-null",
+      "malformed-page-escrow-without-rows",
+      "malformed-page-item-a-string",
+      "malformed-page-item-null",
+      "malformed-page-items-null",
+      "malformed-page-without-items"
+    ]
+  },
+  {
+    "id": "strict-row-fields",
+    "decision": "malformed-input",
+    "python": "tolerates a created_at without a UTC offset, a key_gen or uploader_key_gen beyond the safe-integer range, an uploader_key_gen with a fraction, and base64url with a stray character, which its decoder discards",
+    "typescript": "each is a parse failure: created_at needs an RFC3339 offset, key_gen and uploader_key_gen must be safe integers, a base64url field with a stray character is refused (trailing = padding is accepted, as in Python)",
+    "reason": "Node's decoder and Number are lenient where Python raises, and Python is lenient where the TS reader cannot represent the value exactly; the reader refuses what it cannot represent exactly",
+    "cases": [
+      "malformed-escrow-created-at-without-offset",
+      "malformed-escrow-uploader-key-gen-beyond-safe-integer",
+      "malformed-escrow-uploader-key-gen-fraction",
+      "malformed-row-ciphertext-not-base64",
+      "malformed-row-created-at-without-offset",
+      "malformed-row-key-gen-beyond-safe-integer"
+    ]
+  },
+  {
+    "id": "direct-generation-walk",
+    "decision": "resource-bound",
+    "python": "tries every key generation down to 0",
+    "typescript": "tries at most 64 generations (MAX_GENERATIONS); beyond that the row is Unreadable",
+    "reason": "key_gen is network-controlled and bounds the number of key derivations",
+    "bound": {
+      "name": "MAX_GENERATIONS",
+      "value": 64
+    },
+    "pinnedBy": {
+      "file": "org-reader-direct.test.ts",
+      "test": "walks_at_most_the_last_64_generations",
+      "because": "a recorded case would hold Python's unbounded answer, which the reader is ruled not to reproduce; the bound is pinned by a unit test at its edge instead"
+    }
+  },
+  {
+    "id": "mls-signer-generation-walk",
+    "decision": "resource-bound",
+    "python": "reads the signer's mls key at every generation from 0 to key_gen",
+    "typescript": "reads the newest 64 generations (MAX_GENERATIONS); a signer older than that matches no key",
+    "reason": "key_gen is network-controlled and sets the number of key requests",
+    "pinnedBy": {
+      "file": "org-reader-mls-attempt.test.ts",
+      "test": "reads_at_most_the_newest_generations_however_high_the_key_generation_claims",
+      "because": "a recorded case would hold Python's unbounded answer, which the reader is ruled not to reproduce; the bound is pinned by a unit test at its edge instead"
+    }
+  },
+  {
+    "id": "escrow-page-cap",
+    "decision": "resource-bound",
+    "python": "follows the escrow cursor until the server ends it",
+    "typescript": "stops after 20 pages (ESCROW_MAX_PAGES) or on a repeated cursor; epochs not covered are unreadable",
+    "reason": "pagination is driven by the server",
+    "bound": {
+      "name": "ESCROW_MAX_PAGES",
+      "value": 20
+    },
+    "pinnedBy": {
+      "file": "org-reader-budget.test.ts",
+      "test": "stops_after_the_page_cap",
+      "because": "a recorded case would hold Python's unbounded answer, which the reader is ruled not to reproduce; the bound is pinned by a unit test at its edge instead"
+    }
+  },
+  {
+    "id": "escrow-row-cap",
+    "decision": "resource-bound",
+    "python": "reads every escrow row the server sends",
+    "typescript": "stops after 10,000 rows (ESCROW_MAX_ROWS); epochs not covered are unreadable",
+    "reason": "memory is bounded against a hostile server",
+    "bound": {
+      "name": "ESCROW_MAX_ROWS",
+      "value": 10000
+    },
+    "pinnedBy": {
+      "file": "org-reader-budget.test.ts",
+      "test": "stops_at_the_row_cap_even_when_a_page_overshoots_it",
+      "because": "a recorded case would hold Python's unbounded answer, which the reader is ruled not to reproduce; the bound is pinned by a unit test at its edge instead"
+    }
+  },
+  {
+    "id": "response-body-cap",
+    "decision": "resource-bound",
+    "python": "reads a response body of any size",
+    "typescript": "refuses a body over 8 MiB (MAX_BODY_BYTES)",
+    "reason": "memory is bounded against a hostile server",
+    "bound": {
+      "name": "MAX_BODY_BYTES",
+      "value": 8388608
+    },
+    "pinnedBy": {
+      "file": "org-reader-budget.test.ts",
+      "test": "refuses_a_body_whose_declared_length_is_over_the_cap",
+      "because": "a recorded case would hold Python's unbounded answer, which the reader is ruled not to reproduce; the bound is pinned by a unit test at its edge instead"
+    }
+  },
+  {
+    "id": "float-literal-message-index",
+    "decision": "malformed-input",
+    "python": "a sender key distribution whose message_index is spelled 5.0 parses as a float and is refused",
+    "typescript": "JSON.parse reads 5.0 as the integer 5 before the parser sees it, so the distribution is accepted at index 5",
+    "reason": "the source spelling is gone once the payload is parsed; the accepted index is the one the sender meant",
+    "pinnedBy": {
+      "file": "sk-distribution.test.ts",
+      "test": "accepts a float-literal index that Python refuses",
+      "because": "the float spelling is erased by JSON.parse before any parser runs, so a scripted server cannot serve the spelling Python refuses; a unit test parses the payload text directly"
+    }
+  },
+  {
+    "id": "closed-direction-set",
+    "decision": "malformed-input",
+    "python": "reads a direction of any string and carries it through",
+    "typescript": "a direction other than sent, received or internal is a parse failure: the row becomes an Unreadable gap carrying its id",
+    "reason": "the reader keeps a closed set of directions so every row it shows has one it can name; a direction the server adds later is surfaced as an unreadable row rather than shown unnamed",
+    "pinnedBy": {
+      "file": "org-reader-rows.test.ts",
+      "test": "treats_a_direction_outside_the_servers_closed_set_as_malformed",
+      "because": "no hostile case was recorded with an unknown direction; a unit test pins the refusal instead"
+    }
+  },
+  {
+    "id": "branch-key-reader",
+    "decision": "not-built",
+    "python": "reads with a branch-scoped key and answers OutOfScope for every row whose recipient or escrow copies lie outside that branch",
+    "typescript": "reads with the org key only; a branch key or an agent key gets one sentence saying the view needs the org key",
+    "reason": "the founder ruled that the view reads with the org key only, so a branch-scoped reader does not exist to compare; the recorded cases are checked as a set but never replayed",
+    "cases": [
+      "direct-reader-branch-does-not-reach",
+      "mls-reader-branch-does-not-reach"
+    ]
+  }
+]

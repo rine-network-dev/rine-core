@@ -19,7 +19,6 @@ import {
   encryptMessage,
   decryptMessage,
   fetchRecipientKeys,
-  generateSigningKeyPair,
 } from "@rine-network/core";
 
 // Resolve config directory (RINE_CONFIG_DIR > ~/.config/rine > cwd/.rine)
@@ -29,13 +28,10 @@ const configDir = resolveConfigDir();
 // tokenFn: (force?: boolean) => Promise<string> — returns a Bearer token
 const client = new HttpClient({ apiUrl: "https://rine.network", tokenFn });
 
-// Key generation
-const signingKeys = generateSigningKeyPair(); // Ed25519
-
-// E2EE messaging: HPKE for 1:1, auto-upgrading to PQ hybrid when the recipient publishes an ML-KEM key.
+// E2EE messaging: post-quantum hybrid HPKE (X25519 + ML-KEM-768) for 1:1.
 // Groups run on MLS (RFC 9420) via `mls-ops`, or on sender keys when MLS is off.
-const { encryption, pqEncryption } = await fetchRecipientKeys(client, recipientAgentId);
-const encrypted = await encryptMessage(configDir, senderAgentId, encryption, payload, pqEncryption);
+const recipientKeys = await fetchRecipientKeys(client, recipientAgentId);
+const encrypted = await encryptMessage(configDir, senderAgentId, recipientAgentId, recipientKeys, payload);
 const decrypted = await decryptMessage(configDir, recipientAgentId, encrypted.encrypted_payload, client, senderAgentId);
 ```
 
@@ -43,25 +39,34 @@ const decrypted = await decryptMessage(configDir, recipientAgentId, encrypted.en
 
 | Module | Key exports |
 |--------|------------|
-| `config` | `resolveConfigDir`, `resolveApiUrl`, `DEFAULT_API_URL`, `loadCredentials`, `saveCredentials`, `cacheToken`, `getCredentialEntry` |
-| `http` | `HttpClient` (class), `fetchOAuthToken`, `getOrRefreshToken` |
-| `onboard` | `performRegistration`, `performAgentCreation`, `validateSlug` |
+| `config` | `resolveConfigDir`, `resolveApiUrl`, `DEFAULT_API_URL`, `PROFILES_FILE`, `cacheToken` |
+| `http` | `HttpClient` (class), `fetchOAuthToken`, `getOrRefreshToken` (private_key_jwt assertions) |
+| `onboard` | `performRegistration`, `validateSlug` |
+| `agent-create` / `agent-rotate` / `agent-body` | `performAgentCreation`, `performKeyRotation`, `persistCreatedAgent`, `agentCreateRequest`, `agentRotateRequest` |
+| `recover` | `performRecovery` (rebuild an org's profiles and leaf keys from the recovery phrase, then reseat each restored agent in its closed groups: `reseatClosedGroups`, `ReseatStatus`) |
+| `owner` / `profiles` / `custody` | the owner dir (`root.key`, phrase), runtime `profiles.json`, and `resolveAuth` (which principal a dir acts as) |
+| `assertion` / `principal` | `buildAssertion`, the `AssertionSigner` builders, `principalString`, `parsePrincipal` |
 | `errors` | `RineApiError`, `formatError` |
 | `resolve-handle` | `resolveHandleViaWebFinger`, `resolveToUuid` |
 | `timelock` | `solveTimeLockWithProgress` |
-| `crypto/keys` | `generateSigningKeyPair`, `generateEncryptionKeyPair`, `generateAgentKeys`, `saveAgentKeys`, `loadAgentKeys`, `validateSigningKey`, `validateEncryptionKey`, `agentKeysExist`, `toBase64Url`, `fromBase64Url` |
-| `crypto/message` | `encryptMessage`, `decryptMessage`, `encryptGroupMessage`, `decryptGroupMessage`, `fetchRecipientKeys`, `getAgentPublicKeys` |
-| `crypto/sign` | `signPayload`, `verifySignature` |
+| `crypto/keys` | `agentKeysFromDerived`, `saveAgentKeys`, `loadAgentKeys`, `validateSigningKey`, `validateEncryptionKey`, `agentKeysExist`, `toBase64Url`, `fromBase64Url` |
+| `crypto/message` | `sealForAgent`, `encryptMessage`, `decryptMessage`, `encryptGroupMessage`, `decryptGroupMessage`, `fetchRecipientKeys` |
 | `crypto/wallet` | `createWallet`, `getWalletAddress`, `loadWalletKey`, `walletKeyExists` (secp256k1 x402 payment key) |
 | `x402` | `buildPaymentMessage`, `buildPaymentPayload`, `buildReceiptMessage`, `parseX402Payload`, `selectRequirement`, `loadPolicy`, `savePolicy`, `reserveSpend`, `readDailySpent`, `X402_MESSAGE_TYPE`, `X402Error` |
 | `x402` (facilitator) | `verifyPayment`, `settlePayment`, `facilitatorRequestBody`, `FACILITATOR_PRESET` (`cdp` / `payai` / `x402-rs`), `X402FacilitatorError` — the single facilitator HTTP client (plain external HTTP; the TypeScript SDK delegates to it). |
 | `sender-key-ops` | `getOrCreateSenderKey`, `distributeSenderKey`, `ingestSenderKeyDistribution`, `deleteSenderKey` |
 | `mls-ops` | `initMlsGroup`, `externalJoinMlsGroup`, `processMlsWelcomes`, `addMlsGroupMember(s)`, `resumeMlsGroupAdmission`, `removeMlsGroupMember`, `syncMlsGroup`, `catchUpMlsGroup`, `orphanLeaves`, `reclaimOrphanLeaves`, `fetchMlsIdentities`, `isSeated` |
 | `mls-ops` (key packages) | `ensureMlsKeyPackages`, `publishMlsKeyPackages`, `replenishMlsKeyPackages`, `cutoverMlsKeyPackages`, `drainAndRepublishMlsKeyPackages`, `needsMlsKeyPackageCutover` |
+| `mls-allowed` | `admitPeers`, `admitGroupPeers`, `openPeerMlsClient`, `openPeerMlsGroup`, `allowedFor` — the chain-verified `(agent id, leaf key)` pairs the native core accepts; peers are admitted before an operation meets their leaf |
+| `mls-escrow-drain` | `drainEscrow` — seal and upload each epoch's read escrow after the group is saved; a crash before the save re-yields the exports |
+| `mls-escrow-send` | `prepareEscrowForSend`, `postWithEscrowRetry`, `EscrowUnavailableError` — the `escrow_fp` an `mls-v1` send carries and the one retry on 409 `escrow_missing` |
+| `mls-escrow-key` | `resolveEscrowKey`, `BranchRevokedError` — the verified branch escrow key, cached per agent; a revoked branch (410) is never sent to |
+| `own-identity` | `ownIdentityFor`, `orgIdOfAgent` — the org and agent ids that pin an `HttpClient`'s key chain |
 | `mls-ops-resync` | `recoverMlsGroup`, `MlsResyncUnavailableError`, `isMlsResyncUnavailable`, `isMlsResyncRequired` |
 | `group-enrollment` | `inviteNominates`, `VOTING_ENROLLMENT_POLICIES` — whether an invite on this policy seats or nominates |
 | `group-admission` | `GroupAdmissionReport`, `admittedAgentIds`, `admissionHeadline`, `groupAdmissionSkipSentence` |
-| `group-invite-ops` | `sendGroupInviteNotification`, `listMyInvites`, `GROUP_INVITE_TYPE` |
+| `group-invite-ops` | `sendGroupInviteNotification`, `listMyInvites` |
+| `control-frames` | `GROUP_INVITE_TYPE`, `SENDER_KEY_DISTRIBUTION_TYPE`, `isControlFrameType`, `controlFrameReplyRefusal` — the machine-parsed frame types, the predicate a reply path checks before it answers, and the sentence it refuses with |
 | `group-removal-ops` | `deleteGroupMember`, `retireLocalGroupState`, `retirementMessage`, `evictionMessage` |
 | `group-format` | `groupEncryption`, `encryptionLine` |
 | `group-create-format` | `createdGroupMls`, `MLS_FOUNDING_FAILED_MODE`, `MLS_FOUNDING_FAILED_NOTE` — what a client says about the group it has just CREATED, decided from the create result rather than the row, because a founded group and an unfounded one leave the same row |
@@ -71,7 +76,7 @@ const decrypted = await decryptMessage(configDir, recipientAgentId, encrypted.en
 | `funnel` | Inbound webhook Funnel relay primitives |
 | `resolve-agent` | `resolveActor`, `resolveAgent`, `fetchAgents` |
 | `actor` | `ACTING_AGENT_HEADER`, `ACTING_AGENT_ENV`, `ACTOR_SURFACES`, `normalizeActor`, `actorFromEnv`, `actorRefusal`, `unknownActorRefusal`, `unknownHandleRefusal`, `ambiguousActorRefusal`, `singleActorValue` — the acting-agent contract every surface shares |
-| `types` | `AgentKeys`, `KeyPair`, `JWK`, `AgentRead`, `CredentialEntry`, ... |
+| `types` | `AgentKeys`, `KeyPair`, `JWK`, `AgentRead`, `ProfileEntry`, ... |
 
 ### Which agent is acting
 
@@ -81,7 +86,7 @@ An acting agent is always an agent the caller owns, so every spelling of it — 
 
 `actorFromEnv()` is the only `RINE_AGENT` read in this package, and only a surface calls it. `resolveAgent()` never reads the environment: a client built for an operator-fixed agent must not inherit an ambient one.
 
-Config directory resolution (`resolveConfigDir`) uses a smart fallback: `RINE_CONFIG_DIR` env > first candidate with existing `credentials.json` > first writable candidate. This means reads find existing credentials automatically, and writes go to the preferred location.
+Config directory resolution (`resolveConfigDir`) uses a smart fallback: `RINE_CONFIG_DIR` env > first candidate with an existing `profiles.json` > first writable candidate. Reads find an existing profile automatically, and writes go to the preferred location. The org root key lives apart from the runtime dir, in the owner dir (`RINE_OWNER_DIR`, else `~/.config/rine-owner`), and is refused inside a git checkout.
 
 ## Requirements
 

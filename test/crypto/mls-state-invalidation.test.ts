@@ -16,6 +16,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../../src/mls-escrow-key.js", async () =>
+	(await import("../mls-escrow-harness.js")).escrowKeyModule(),
+);
+
 vi.mock("../../src/crypto/mls-api.js", async () => {
 	const actual = await vi.importActual<
 		typeof import("../../src/crypto/mls-api.js")
@@ -36,7 +40,6 @@ vi.mock("../../src/crypto/mls-api.js", async () => {
 });
 
 import { MlsDowngradeError } from "../../src/crypto/downgrade-error.js";
-import { generateAgentKeys, saveAgentKeys } from "../../src/crypto/keys.js";
 import type { MlsCommitBody } from "../../src/crypto/mls-api.js";
 import {
 	claimKeyPackages,
@@ -60,19 +63,21 @@ import {
 	initMlsGroup,
 	processMlsWelcomes,
 } from "../../src/mls-ops.js";
+import { withPeerReads } from "../mls-escrow-harness.js";
+import { World } from "./world.js";
 
 const SELF_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
 const MEMBER_ID = "b2c3d4e5-f6a7-8901-bcde-f12345678901";
 const THIRD_ID = "d4e5f6a7-b8c9-0123-def1-234567890123";
 const GROUP_ID = "c3d4e5f6-a7b8-9012-cdef-123456789012";
 
-const client = {} as never;
-
+let client: never;
 let dir: string;
 let posted: MlsCommitBody[];
+let world: World;
 
 function agent(agentId: string): void {
-	saveAgentKeys(dir, agentId, generateAgentKeys());
+	world.save(dir, world.addAgent({ id: agentId }));
 }
 
 /** One claimable key package for `agentId`, minted by that agent's own client. */
@@ -127,6 +132,13 @@ function askGuard(agentId: string): () => void {
 beforeEach(() => {
 	dir = fs.mkdtempSync(join(tmpdir(), "rine-memo-"));
 	posted = [];
+	world = new World();
+	client = withPeerReads(world, {
+		get: async (path: string) => {
+			if (path === `/groups/${GROUP_ID}/requests`) return { items: [] };
+			throw new Error(`unexpected GET ${path}`);
+		},
+	}) as never;
 	vi.clearAllMocks();
 	vi.mocked(uploadKeyPackages).mockImplementation(async (_c, _a, p) => ({
 		stored: p.length,

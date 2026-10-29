@@ -42,7 +42,7 @@ function makeDecryptResult(opts?: {
 }): DecryptResult {
 	return {
 		plaintext: opts?.plaintext ?? makeDistribution(),
-		senderKid: `rine:${SENDER_ID}`,
+		senderKid: `rine:${SENDER_ID}#0`,
 		verified: opts?.verified ?? true,
 		verificationStatus: opts?.verified === false ? "invalid" : "verified",
 	};

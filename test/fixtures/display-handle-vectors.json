@@ -1,0 +1,224 @@
+[
+  {
+    "name": "own_agent_bare",
+    "handle": "sales@acme.rine.network",
+    "ownSlug": "acme",
+    "want": "sales"
+  },
+  {
+    "name": "other_org_short",
+    "handle": "buyer@fjord21735.rine.network",
+    "ownSlug": "acme",
+    "want": "buyer@fjord21735"
+  },
+  {
+    "name": "own_group_bare",
+    "handle": "#ops@acme.rine.network",
+    "ownSlug": "acme",
+    "want": "#ops"
+  },
+  {
+    "name": "other_group_short",
+    "handle": "#ops@beta.rine.network",
+    "ownSlug": "acme",
+    "want": "#ops@beta"
+  },
+  {
+    "name": "null_slug_agent",
+    "handle": "sales@acme.rine.network",
+    "ownSlug": null,
+    "want": "sales@acme"
+  },
+  {
+    "name": "null_slug_group",
+    "handle": "#ops@acme.rine.network",
+    "ownSlug": null,
+    "want": "#ops@acme"
+  },
+  {
+    "name": "empty_own_slug_never_matches",
+    "handle": "sales@acme.rine.network",
+    "ownSlug": "",
+    "want": "sales@acme"
+  },
+  {
+    "name": "uppercase_suffix_own",
+    "handle": "Sales@ACME.RINE.NETWORK",
+    "ownSlug": "acme",
+    "want": "Sales"
+  },
+  {
+    "name": "mixed_case_suffix_other",
+    "handle": "Sales@ACME.Rine.Network",
+    "ownSlug": "beta",
+    "want": "Sales@acme"
+  },
+  {
+    "name": "other_domain_unchanged",
+    "handle": "sales@example.com",
+    "ownSlug": "acme",
+    "want": "sales@example.com"
+  },
+  {
+    "name": "lookalike_suffix_unchanged",
+    "handle": "x@acme.rine.network.evil.io",
+    "ownSlug": "acme",
+    "want": "x@acme.rine.network.evil.io"
+  },
+  {
+    "name": "lookalike_domain_unchanged",
+    "handle": "x@acme.evilrine.network",
+    "ownSlug": "acme",
+    "want": "x@acme.evilrine.network"
+  },
+  {
+    "name": "subdomain_unchanged",
+    "handle": "x@a.b.rine.network",
+    "ownSlug": "acme",
+    "want": "x@a.b.rine.network"
+  },
+  {
+    "name": "apex_unchanged",
+    "handle": "x@rine.network",
+    "ownSlug": "acme",
+    "want": "x@rine.network"
+  },
+  {
+    "name": "empty_slug_unchanged",
+    "handle": "x@.rine.network",
+    "ownSlug": "acme",
+    "want": "x@.rine.network"
+  },
+  {
+    "name": "no_domain_unchanged",
+    "handle": "sales",
+    "ownSlug": "acme",
+    "want": "sales"
+  },
+  {
+    "name": "agent_id_fallback_unchanged",
+    "handle": "3f9a1c07-0000-4000-8000-000000000001",
+    "ownSlug": "acme",
+    "want": "3f9a1c07-0000-4000-8000-000000000001"
+  },
+  {
+    "name": "empty_string_unchanged",
+    "handle": "",
+    "ownSlug": "acme",
+    "want": ""
+  },
+  {
+    "name": "empty_local_unchanged",
+    "handle": "@acme.rine.network",
+    "ownSlug": "acme",
+    "want": "@acme.rine.network"
+  },
+  {
+    "name": "one_char_slug_unchanged",
+    "handle": "x@a.rine.network",
+    "ownSlug": "acme",
+    "want": "x@a.rine.network"
+  },
+  {
+    "name": "two_char_slug_short",
+    "handle": "x@ab.rine.network",
+    "ownSlug": "acme",
+    "want": "x@ab"
+  },
+  {
+    "name": "leading_hyphen_slug_unchanged",
+    "handle": "x@-acme.rine.network",
+    "ownSlug": "acme",
+    "want": "x@-acme.rine.network"
+  },
+  {
+    "name": "trailing_hyphen_slug_unchanged",
+    "handle": "x@acme-.rine.network",
+    "ownSlug": "acme",
+    "want": "x@acme-.rine.network"
+  },
+  {
+    "name": "inner_hyphen_slug_short",
+    "handle": "x@my-org-1.rine.network",
+    "ownSlug": "acme",
+    "want": "x@my-org-1"
+  },
+  {
+    "name": "slug_32_chars_short",
+    "handle": "x@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.rine.network",
+    "ownSlug": "acme",
+    "want": "x@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "name": "slug_33_chars_unchanged",
+    "handle": "x@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.rine.network",
+    "ownSlug": "acme",
+    "want": "x@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.rine.network"
+  },
+  {
+    "name": "two_at_signs_unchanged",
+    "handle": "a@b@acme.rine.network",
+    "ownSlug": "acme",
+    "want": "a@b@acme.rine.network"
+  },
+  {
+    "name": "space_in_local_unchanged",
+    "handle": "a b@acme.rine.network",
+    "ownSlug": "acme",
+    "want": "a b@acme.rine.network"
+  },
+  {
+    "name": "leading_space_unchanged",
+    "handle": " x@acme.rine.network",
+    "ownSlug": "acme",
+    "want": " x@acme.rine.network"
+  },
+  {
+    "name": "trailing_newline_unchanged",
+    "handle": "x@acme.rine.network\n",
+    "ownSlug": "acme",
+    "want": "x@acme.rine.network\n"
+  },
+  {
+    "name": "trailing_dot_unchanged",
+    "handle": "x@acme.rine.network.",
+    "ownSlug": "acme",
+    "want": "x@acme.rine.network."
+  },
+  {
+    "name": "bidi_in_local_passes_through",
+    "handle": "\u202esales@acme.rine.network",
+    "ownSlug": "acme",
+    "want": "\u202esales"
+  },
+  {
+    "name": "bidi_in_slug_unchanged",
+    "handle": "x@ac\u202eme.rine.network",
+    "ownSlug": "acme",
+    "want": "x@ac\u202eme.rine.network"
+  },
+  {
+    "name": "cyrillic_slug_unchanged",
+    "handle": "x@\u0430cme.rine.network",
+    "ownSlug": "acme",
+    "want": "x@\u0430cme.rine.network"
+  },
+  {
+    "name": "kelvin_sign_slug_unchanged",
+    "handle": "x@\u212aing.rine.network",
+    "ownSlug": "acme",
+    "want": "x@\u212aing.rine.network"
+  },
+  {
+    "name": "zero_width_in_slug_unchanged",
+    "handle": "x@ac\u200bme.rine.network",
+    "ownSlug": "acme",
+    "want": "x@ac\u200bme.rine.network"
+  },
+  {
+    "name": "garbage_local_passes_through",
+    "handle": "\u0001\u007f!!@acme.rine.network",
+    "ownSlug": "acme",
+    "want": "\u0001\u007f!!"
+  }
+]

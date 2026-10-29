@@ -31,16 +31,8 @@ import {
 	MlsDowngradeError,
 	isMlsDowngradeError,
 } from "../../src/crypto/downgrade-error.js";
-import type { AgentKeys } from "../../src/crypto/keys.js";
-import {
-	generateAgentKeys,
-	saveAgentKeys,
-	signingPublicKeyToJWK,
-} from "../../src/crypto/keys.js";
-import {
-	decryptGroupMessage,
-	encryptGroupMessage,
-} from "../../src/crypto/message.js";
+import { encryptGroupMessage } from "../../src/crypto/sender-key-seal.js";
+import { decryptGroupMessage } from "../../src/message-group.js";
 import { assertNoMlsDowngrade } from "../../src/crypto/mls-downgrade.js";
 import { noteMlsStateChanged } from "../../src/crypto/mls-state.js";
 import {
@@ -57,27 +49,28 @@ import {
 	saveSenderKeyState,
 } from "../../src/crypto/sender-keys-helpers.js";
 import { generateSenderKey } from "../../src/crypto/sender-keys.js";
+import { World } from "./world.js";
 
 const SENDER_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
 const READER_ID = "b2c3d4e5-f6a7-8901-bcde-f12345678901";
 const GROUP_ID = "c3d4e5f6-a7b8-9012-cdef-123456789012";
 
 let dir: string;
+let world: World;
 
 // Each test gets its own config dir, and the memo is keyed by config dir, so no
 // test can inherit another's remembered answer.
 beforeEach(() => {
 	dir = fs.mkdtempSync(join(tmpdir(), "rine-downgrade-"));
+	world = new World();
 });
 
 afterEach(() => {
 	fs.rmSync(dir, { recursive: true, force: true });
 });
 
-function setupAgent(agentId: string): AgentKeys {
-	const keys = generateAgentKeys();
-	saveAgentKeys(dir, agentId, keys);
-	return keys;
+function setupAgent(agentId: string): void {
+	world.save(dir, world.addAgent({ id: agentId }));
 }
 
 /**
@@ -90,19 +83,24 @@ function plantMlsState(agentId: string, groupId: string = GROUP_ID): void {
 	noteMlsStateChanged(dir, agentId, groupId);
 }
 
-function keyServer(keys: AgentKeys) {
+function keyServer() {
+	const base = world.client();
 	return {
-		get: vi.fn(async (path: string) =>
-			path.includes("/keys")
-				? { signing_public_key: signingPublicKeyToJWK(keys.signing.publicKey) }
-				: { welcomes: [], handshakes: [] },
+		get: vi.fn(
+			async (
+				path: string,
+				params?: Record<string, string | number | boolean>,
+			) =>
+				path.includes("/keys")
+					? base.get(path, params)
+					: { welcomes: [], handshakes: [] },
 		),
 		post: vi.fn(),
 	} as never;
 }
 
 /** One sender-key row, plus the reader's copy of the key state to open it. */
-async function senderKeyRow(senderKeys: AgentKeys, payload: object) {
+async function senderKeyRow(payload: object) {
 	const state = generateSenderKey(GROUP_ID, SENDER_ID);
 	// The sender's own copy, which `encryptGroupMessage` advances in place. A
 	// stand-in sender needs it as much as a real one does: the tail refuses a
@@ -116,7 +114,7 @@ async function senderKeyRow(senderKeys: AgentKeys, payload: object) {
 		payload,
 	);
 	saveSenderKeyState(dir, READER_ID, GROUP_ID, [state]);
-	return { payload: result.encrypted_payload, client: keyServer(senderKeys) };
+	return { payload: result.encrypted_payload, client: keyServer() };
 }
 
 function senderKeyStateOnDisk(): string {
@@ -237,10 +235,8 @@ describe("MlsDowngradeError classification", () => {
 // ── the read path ────────────────────────────────────────────────────────────
 
 describe("decryptGroupMessage downgrade guard", () => {
-	let senderKeys: AgentKeys;
-
 	beforeEach(() => {
-		senderKeys = setupAgent(SENDER_ID);
+		setupAgent(SENDER_ID);
 		setupAgent(READER_ID);
 	});
 
@@ -248,7 +244,7 @@ describe("decryptGroupMessage downgrade guard", () => {
 		// The converse: an open billboard group is sender-key encrypted by
 		// design and holds no local MLS state. It must keep reading.
 		const body = { announcement: "open enrolment, all welcome" };
-		const { payload, client } = await senderKeyRow(senderKeys, body);
+		const { payload, client } = await senderKeyRow(body);
 
 		const decrypted = await decryptGroupMessage(
 			dir,
@@ -264,7 +260,7 @@ describe("decryptGroupMessage downgrade guard", () => {
 	});
 
 	it("test_decrypt_group_message_when_sender_key_row_and_local_mls_state_refuses", async () => {
-		const { payload, client } = await senderKeyRow(senderKeys, { x: 1 });
+		const { payload, client } = await senderKeyRow({ x: 1 });
 		plantMlsState(READER_ID);
 		const before = senderKeyStateOnDisk();
 
@@ -294,7 +290,7 @@ describe("decryptGroupMessage downgrade guard", () => {
 
 	it("test_decrypt_group_message_when_mls_state_is_another_groups_still_decrypts", async () => {
 		const body = { still: "fine" };
-		const { payload, client } = await senderKeyRow(senderKeys, body);
+		const { payload, client } = await senderKeyRow(body);
 		// State for a DIFFERENT group is not evidence about this one.
 		plantMlsState(READER_ID, "d4e5f6a7-b8c9-4012-8def-1234567890ab");
 

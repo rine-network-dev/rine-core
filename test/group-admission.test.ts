@@ -27,6 +27,7 @@ const MLS_SKIP_REASONS: MlsAdmissionSkipReason[] = [
 	"no_key_package",
 	"already_in_group",
 	"rejected_by_server",
+	"key_package_not_current",
 ];
 
 describe("groupAdmissionSkipSentence", () => {

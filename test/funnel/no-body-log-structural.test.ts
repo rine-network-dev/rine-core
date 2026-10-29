@@ -30,12 +30,15 @@ const FUNNEL_SRC = join(HERE, "../../src/funnel");
 /** The funnel relay modules the no-body-log contract scopes to.
  * `edge-pipe.ts` is the SHARED-EDGE sibling of `tls-listener.ts`: the
  * broker forwards the DECRYPTED request down the mux, so the relay parses a
- * plaintext body it must NEVER log — same guard, same forbidden set. */
+ * plaintext body it must NEVER log — same guard, same forbidden set.
+ * `hook-create.ts` holds the freshly generated HMAC secret, so it carries the
+ * same guard. */
 const RELAY_MODULES = [
 	"relay-adapter.ts",
 	"tls-listener.ts",
 	"edge-pipe.ts",
 	"tunnel.ts",
+	"hook-create.ts",
 ] as const;
 
 // Identifier names that hold the raw body / decrypted payload / HMAC secret /

@@ -14,16 +14,17 @@
  */
 import { describe, expect, it } from "vitest";
 import type { GroupRead } from "../src/api-types.js";
-import {
-	MLS_CIPHER_SUITE_CLASSICAL,
-	MLS_CIPHER_SUITE_XWING,
-} from "../src/crypto/mls.js";
+import { MLS_CIPHER_SUITE_XWING } from "../src/crypto/mls.js";
 import { encryptionLine, groupEncryption } from "../src/group-format.js";
 import type { MlsAdmissionResult } from "../src/mls-admission.js";
+import { emptyReport } from "../src/mls-escrow-report.js";
 import {
 	MLS_NEVER_FOUNDED_NOTE,
 	unfoundedGroupNote,
 } from "../src/mls-recovery-format.js";
+
+/** A suite value this client has no name for. */
+const UNKNOWN_SUITE = 0x0001;
 
 function group(overrides: Partial<GroupRead> = {}): GroupRead {
 	return {
@@ -63,6 +64,7 @@ const ADMISSION: MlsAdmissionResult = {
 			status: "added",
 		},
 	],
+	escrow: emptyReport(),
 };
 
 describe("groupEncryption — a founded MLS group", () => {
@@ -78,14 +80,15 @@ describe("groupEncryption — a founded MLS group", () => {
 		});
 	});
 
-	it("never calls a classical group post-quantum", () => {
-		const classical = groupEncryption(
-			group({ mls_cipher_suite: MLS_CIPHER_SUITE_CLASSICAL }),
+	it("shows a suite it does not know by number, never post-quantum and never labelled", () => {
+		const unknown = groupEncryption(
+			group({ mls_cipher_suite: UNKNOWN_SUITE }),
 		);
 
-		expect(classical.post_quantum).toBe(false);
-		expect(classical.summary).toContain("NOT post-quantum");
-		expect(classical.regime).toBe("mls");
+		expect(unknown.post_quantum).toBe(false);
+		expect(unknown.summary).toBe("MLS (RFC 9420) on ciphersuite 0x0001.");
+		expect(unknown.summary).not.toMatch(/classical/i);
+		expect(unknown.regime).toBe("mls");
 	});
 });
 
@@ -108,10 +111,8 @@ describe("groupEncryption — a group still founding its tree", () => {
 		});
 	});
 
-	it("falls back to the core's own default suite while the group has none", () => {
-		// A group still founding carries no `mls_cipher_suite`, and what it will
-		// get is decided in the native core — restating a suite number here is how
-		// the two stacks would create groups of different suites.
+	it("takes the one suite rine speaks while the group has none", () => {
+		// A group still founding carries no `mls_cipher_suite`.
 		const noSuite = groupEncryption({ ...inFlight, mls_cipher_suite: null });
 
 		expect(noSuite.post_quantum).toBe(true);
@@ -241,10 +242,9 @@ describe("groupEncryption — a founding this client watched land", () => {
 		expect(said).not.toContain("not founded yet");
 	});
 
-	it("takes the core's own default suite, the row having none to report", () => {
-		// Same fallback, and the same reason, as the group still founding its tree:
-		// the row predates the init, so it carries no `mls_cipher_suite` and the
-		// suite it will carry is decided in the native core.
+	it("takes the one suite rine speaks, the row having none to report", () => {
+		// Same fallback as the group still founding its tree: the row predates
+		// the init, so it carries no `mls_cipher_suite`.
 		expect(groupEncryption(LANDED).post_quantum).toBe(true);
 	});
 

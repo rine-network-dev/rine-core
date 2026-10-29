@@ -1,0 +1,324 @@
+[
+  {
+    "name": "same_instant_now",
+    "iso": "2026-10-26T12:00:00Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "now"
+  },
+  {
+    "name": "44s_ago_now",
+    "iso": "2026-10-26T11:59:16Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "now"
+  },
+  {
+    "name": "45s_ago_1m",
+    "iso": "2026-10-26T11:59:15Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "1m"
+  },
+  {
+    "name": "59s_ago_1m",
+    "iso": "2026-10-26T11:59:01Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "1m"
+  },
+  {
+    "name": "60s_ago_1m",
+    "iso": "2026-10-26T11:59:00Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "1m"
+  },
+  {
+    "name": "2m_ago",
+    "iso": "2026-10-26T11:58:00Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "2m"
+  },
+  {
+    "name": "59m59s_ago_59m",
+    "iso": "2026-10-26T11:00:01Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "59m"
+  },
+  {
+    "name": "60m_ago_clock",
+    "iso": "2026-10-26T11:00:00Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "11:00"
+  },
+  {
+    "name": "today_morning_clock",
+    "iso": "2026-10-26T08:05:00Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "08:05"
+  },
+  {
+    "name": "today_midnight_clock",
+    "iso": "2026-10-26T00:00:00Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "00:00"
+  },
+  {
+    "name": "future_30s_now",
+    "iso": "2026-10-26T12:00:30Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "now"
+  },
+  {
+    "name": "future_120s_now",
+    "iso": "2026-10-26T12:02:00Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "now"
+  },
+  {
+    "name": "future_121s_clock",
+    "iso": "2026-10-26T12:02:01Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "12:02"
+  },
+  {
+    "name": "future_same_day_clock",
+    "iso": "2026-10-26T18:30:00Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "18:30"
+  },
+  {
+    "name": "future_tomorrow_day_month",
+    "iso": "2026-10-27T09:00:00Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "27 Oct"
+  },
+  {
+    "name": "future_next_year_day_month",
+    "iso": "2027-01-05T09:00:00Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "5 Jan"
+  },
+  {
+    "name": "yesterday_late",
+    "iso": "2026-10-25T23:59:00Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "yesterday"
+  },
+  {
+    "name": "yesterday_midnight",
+    "iso": "2026-10-25T00:00:00Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "yesterday"
+  },
+  {
+    "name": "two_days_ago_weekday",
+    "iso": "2026-10-24T15:00:00Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "Sat"
+  },
+  {
+    "name": "six_days_ago_weekday",
+    "iso": "2026-10-20T10:00:00Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "Tue"
+  },
+  {
+    "name": "seven_days_ago_day_month",
+    "iso": "2026-10-19T10:00:00Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "19 Oct"
+  },
+  {
+    "name": "under_seven_days_but_seven_calendar_days",
+    "iso": "2026-10-19T13:00:00Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "19 Oct"
+  },
+  {
+    "name": "same_year_day_month",
+    "iso": "2026-01-03T10:00:00Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "3 Jan"
+  },
+  {
+    "name": "same_year_two_digit_day",
+    "iso": "2026-03-14T10:00:00Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "14 Mar"
+  },
+  {
+    "name": "last_year_month_year",
+    "iso": "2025-12-31T23:59:00Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "Dec 2025"
+  },
+  {
+    "name": "older_year_month_year",
+    "iso": "2019-03-14T10:00:00Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "Mar 2019"
+  },
+  {
+    "name": "new_year_minutes_across",
+    "iso": "2025-12-31T23:50:00Z",
+    "nowMs": 1767227400000,
+    "tz": "UTC",
+    "want": "40m"
+  },
+  {
+    "name": "new_year_yesterday",
+    "iso": "2025-12-31T22:00:00Z",
+    "nowMs": 1767227400000,
+    "tz": "UTC",
+    "want": "yesterday"
+  },
+  {
+    "name": "new_year_eve_two_days",
+    "iso": "2025-12-30T22:00:00Z",
+    "nowMs": 1767227400000,
+    "tz": "UTC",
+    "want": "Tue"
+  },
+  {
+    "name": "midnight_minutes_across",
+    "iso": "2026-10-25T23:55:00Z",
+    "nowMs": 1792973400000,
+    "tz": "UTC",
+    "want": "15m"
+  },
+  {
+    "name": "midnight_hours_across_yesterday",
+    "iso": "2026-10-25T20:00:00Z",
+    "nowMs": 1792973400000,
+    "tz": "UTC",
+    "want": "yesterday"
+  },
+  {
+    "name": "leap_day_yesterday",
+    "iso": "2028-02-29T10:00:00Z",
+    "nowMs": 1835524800000,
+    "tz": "UTC",
+    "want": "yesterday"
+  },
+  {
+    "name": "month_boundary_weekday",
+    "iso": "2026-10-30T09:00:00Z",
+    "nowMs": 1793620800000,
+    "tz": "UTC",
+    "want": "Fri"
+  },
+  {
+    "name": "offset_iso_same_instant",
+    "iso": "2026-10-26T14:00:00+02:00",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "now"
+  },
+  {
+    "name": "microsecond_precision",
+    "iso": "2026-10-26T11:30:00.123456Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "29m"
+  },
+  {
+    "name": "zoneless_iso_is_local_time",
+    "iso": "2026-10-26T11:00:00",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "11:00"
+  },
+  {
+    "name": "garbage_dash",
+    "iso": "not a date",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "\u2014"
+  },
+  {
+    "name": "empty_dash",
+    "iso": "",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "\u2014"
+  },
+  {
+    "name": "invalid_month_dash",
+    "iso": "2026-13-45T00:00:00Z",
+    "nowMs": 1793016000000,
+    "tz": "UTC",
+    "want": "\u2014"
+  },
+  {
+    "name": "rome_local_midnight_utc_date_differs",
+    "iso": "2026-10-25T23:30:00Z",
+    "nowMs": 1793016000000,
+    "tz": "Europe/Rome",
+    "want": "00:30"
+  },
+  {
+    "name": "rome_just_after_local_midnight_utc_says_yesterday",
+    "iso": "2026-10-25T23:30:00Z",
+    "nowMs": 1792974600000,
+    "tz": "Europe/Rome",
+    "want": "00:30"
+  },
+  {
+    "name": "rome_dst_end_day_after_local_midnight",
+    "iso": "2026-10-24T22:30:00Z",
+    "nowMs": 1792929600000,
+    "tz": "Europe/Rome",
+    "want": "00:30"
+  },
+  {
+    "name": "rome_yesterday_across_dst_change",
+    "iso": "2026-10-25T10:00:00Z",
+    "nowMs": 1793016000000,
+    "tz": "Europe/Rome",
+    "want": "yesterday"
+  },
+  {
+    "name": "rome_yesterday_exactly_24h_across_dst_change",
+    "iso": "2026-10-24T23:30:00Z",
+    "nowMs": 1792971000000,
+    "tz": "Europe/Rome",
+    "want": "yesterday"
+  },
+  {
+    "name": "rome_seven_calendar_days_across_dst_change",
+    "iso": "2026-10-19T12:00:00Z",
+    "nowMs": 1793016000000,
+    "tz": "Europe/Rome",
+    "want": "19 Oct"
+  },
+  {
+    "name": "rome_six_calendar_days_across_dst_change",
+    "iso": "2026-10-20T11:00:00Z",
+    "nowMs": 1793016000000,
+    "tz": "Europe/Rome",
+    "want": "Tue"
+  }
+]

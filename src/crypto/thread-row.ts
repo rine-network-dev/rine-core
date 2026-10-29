@@ -9,6 +9,11 @@
  * — `thread.ts` re-exports the public names.
  */
 
+import {
+	a2aCleartextPlaintext,
+	isA2aCleartext,
+	withA2aCleartextNotice,
+} from "../a2a-cleartext.js";
 import type { HttpClient } from "../http.js";
 import { decryptGroupMessageWithRecovery } from "../sender-key-ops.js";
 import { asSenderKeyUnavailable } from "../sender-key-words.js";
@@ -37,12 +42,14 @@ export interface ThreadRow {
 	 * `unverifiable`: the envelope is never accepted as its own witness.
 	 */
 	from_agent_id?: string | null;
+	/** The recipient a sent 1:1 row was signed for; the scope of a self-read. */
+	to_agent_id?: string | null;
 	group_id?: string | null;
 	content_type?: string | null;
 	created_at: string;
 }
 
-/** One rendered turn — mirrors the SDK `ThreadEntry` shape. */
+/** One rendered turn — the SDK `ThreadEntry` shape without its typed `a2aCleartext` flag; the notice prefix on `text` carries it here. */
 export interface ThreadRowEntry {
 	direction: "sent" | "received";
 	sender_handle: string | null;
@@ -79,6 +86,24 @@ export async function classifyThreadRow(
 	const direction = row.direction ?? "received";
 	const senderHandle = row.sender_handle ?? null;
 	const isGroup = row.group_id != null;
+
+	// An A2A message an external client posted in cleartext was never sealed: there
+	// is no ciphertext to open and no signature to check, so it renders readable,
+	// led by the notice, and `unverifiable` — never as a closed row.
+	if (isA2aCleartext(row)) {
+		return sealed(
+			entry(
+				direction,
+				senderHandle,
+				withA2aCleartextNotice(
+					row,
+					renderThreadText(a2aCleartextPlaintext(row)),
+				),
+				"unverifiable",
+				row,
+			),
+		);
+	}
 
 	// A `sent` row's sender is the caller. With neither that nor the row's own
 	// `from_agent_id` there is nothing to check the envelope's claim against, so the
@@ -122,6 +147,8 @@ export async function classifyThreadRow(
 					ciphertext,
 					client,
 					fromAgentId,
+					direction === "sent" ? (row.to_agent_id ?? undefined) : undefined,
+					row.created_at,
 				);
 
 		// Fail-closed: tampered bytes and a turn signed by someone other than the

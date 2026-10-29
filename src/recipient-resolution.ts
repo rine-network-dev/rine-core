@@ -109,7 +109,7 @@ export async function resolveGroupForJoin(
  * rather than because it was free.
  *
  * What keeps the widening safe is the ORDER and the scope of the two reads.
- * `GET /groups/{id}` is org-scoped (`has_read_access`), and `GET /agents/{id}/keys`
+ * `GET /groups/{id}` is key-scoped (`can_read_group`), and `GET /agents/{id}/keys`
  * is unauthenticated and global — so asking the agent side first would prefer a
  * stranger's namespace over the caller's own org's. The group probe goes first,
  * answers only for a row this caller may read, and {@link readableGroupById}
@@ -145,7 +145,7 @@ export async function resolveGroupForJoin(
  * spelling sends a fabricated org half, sealed for the right group and refused
  * with a bare `Group not found` (`71c2759b`).
  *
- * 🔴 **Item 18 is discharged here by the RETURN VALUE, not by a message.** The
+ * 🔴 **The completion is reported here by the RETURN VALUE, not by a message.** The
  * agent arm completes a short handle — `kofi@acme` is looked up as
  * `kofi@acme.rine.network` — and every other call site of `resolveToUuid` had to
  * grow a printed notice because that function answers with a UUID and drops the
@@ -187,7 +187,7 @@ export async function resolveRecipient(
 			// point buys the roster and THROWS on a miss, which would refuse every
 			// agent UUID in the product — and never `resolveGroupForJoin`, whose own
 			// UUID rung passes an id through UNREAD precisely because a joiner holds
-			// no seat this org-scoped route would answer for. Two UUID rungs, two
+			// no seat this key-scoped route would answer for. Two UUID rungs, two
 			// questions; they are not to be unified.
 			const group = await readableGroupById(client, to, extraHeaders);
 			if (group) return groupRecipient(group, to);

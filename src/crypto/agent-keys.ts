@@ -5,17 +5,21 @@ import type { TtlCache } from "../cache.js";
 import type { HttpClient } from "../http.js";
 import type { InnerEnvelope } from "./envelope.js";
 import {
-	type PqJWK,
-	agentIdFromKid,
-	jwkToPqPublicKey,
-	jwkToPublicKey,
-} from "./keys.js";
+	KeyChainError,
+	type PublishedKeys,
+	type VerifiedAgentKeys,
+	signedWithinValidity,
+	verifyKeyChain,
+} from "./key-chain.js";
+import { getPublishedKeys } from "./published-keys.js";
+import { pinsFor } from "./key-pins.js";
+import { InvalidSigningKidError, parseSigningKid } from "./keys.js";
 import type { VerificationStatus } from "./message.js";
-import { verifySignature } from "./sign.js";
+import { type SigContext, verifyMessageSignature } from "./sign.js";
 
 export interface RecipientKeys {
 	encryption: Uint8Array;
-	pqEncryption?: Uint8Array;
+	pqEncryption: Uint8Array;
 }
 
 /**
@@ -29,7 +33,7 @@ export interface SenderKeyChange {
 	currentFingerprint: string;
 }
 
-export interface SenderVerification {
+interface SenderVerification {
 	verified: boolean;
 	verificationStatus: VerificationStatus;
 	/** Set only when the rotation refetch returned a different signing key. */
@@ -41,51 +45,58 @@ type CachingClient = Pick<HttpClient, "get"> & {
 	readonly keyCache?: TtlCache<AgentKeysResponse>;
 };
 
-function getPublishedKeys(
-	client: Pick<HttpClient, "get">,
-	agentId: string,
-): Promise<AgentKeysResponse> {
-	return client.get(`/agents/${agentId}/keys`) as Promise<AgentKeysResponse>;
-}
-
 /**
  * Stable short identity for a published signing key, used to tell a rotation
  * apart from a repeated wrong answer.
  */
-function signingKeyFingerprint(keys: AgentKeysResponse): string {
-	return bytesToHex(sha256(jwkToPublicKey(keys.signing_public_key)));
+function signingKeyFingerprint(signing: Uint8Array): string {
+	return bytesToHex(sha256(signing));
 }
 
 /**
- * Fetch an agent's published keys (`GET /agents/{id}/keys`) through the client's
- * per-agent {@link HttpClient.keyCache}.
+ * Fetch and chain-verify an agent's published keys (`GET /agents/{id}/keys`)
+ * through the client's per-agent {@link HttpClient.keyCache}.
  *
- * This is the INBOUND-VERIFY read. It may serve a cached key because a wrong one
- * announces itself here — the signature fails and {@link verifyEnvelopeSender}
- * refetches. `bypassCache` forces a fresh fetch and overwrites the entry.
+ * This is the INBOUND-VERIFY read. It may serve a cached raw response because a
+ * wrong one announces itself here — the signature fails and
+ * {@link verifyEnvelopeSender} refetches. `bypassCache` forces a fresh fetch and
+ * overwrites the entry. A history read (`opts.gen`) caches under a distinct key
+ * so it can never collide with the current-generation entry.
  *
- * A real {@link HttpClient} always carries a cache, so every production verify is
- * cached; the cache stays optional on the parameter type so a caller holding only
- * a `get` — a stub, a narrower transport — still fetches rather than throwing.
+ * The raw response is cached only after {@link verifyKeyChain} accepts it: a
+ * broken chain propagates its {@link KeyChainError} and leaves the cache empty,
+ * so a refusal is never remembered as a usable key. The cache stays optional on
+ * the parameter type so a caller holding only a `get` — a stub, a narrower
+ * transport — still fetches rather than throwing.
  */
 export async function fetchAgentKeys(
 	client: CachingClient,
 	agentId: string,
-	opts?: { bypassCache?: boolean },
-): Promise<{ keys: AgentKeysResponse; fromCache: boolean }> {
+	opts?: { bypassCache?: boolean; gen?: number },
+): Promise<{ keys: VerifiedAgentKeys; fromCache: boolean }> {
 	const cache = client.keyCache;
-	if (cache && !opts?.bypassCache) {
-		const hit = cache.get(agentId);
-		if (hit !== undefined) return { keys: hit, fromCache: true };
+	const cacheKey = opts?.gen === undefined ? agentId : `${agentId}#${opts.gen}`;
+	const pins = pinsFor(client);
+	const cached = cache && !opts?.bypassCache ? cache.get(cacheKey) : undefined;
+	if (cached !== undefined) {
+		try {
+			const keys = verifyKeyChain(cached, { agentId, gen: opts?.gen }, pins);
+			return { keys, fromCache: true };
+		} catch (err) {
+			// A cached copy can fall behind pins another read advanced (the outbound
+			// path shares them); it is dropped and fetched once, never trusted.
+			if (!(err instanceof KeyChainError)) throw err;
+			cache?.delete(cacheKey);
+		}
 	}
-	const keys = await getPublishedKeys(client, agentId);
-	cache?.set(agentId, keys);
+	const raw = await getPublishedKeys(client, agentId, opts?.gen);
+	const keys = verifyKeyChain(raw, { agentId, gen: opts?.gen }, pins);
+	cache?.set(cacheKey, raw);
 	return { keys, fromCache: false };
 }
 
 /**
- * Fetch a recipient's encryption keys, including the optional PQ key for hybrid
- * mode.
+ * Fetch a recipient's encryption keys, including the PQ key for hybrid mode.
  *
  * The OUTBOUND-SEAL read, and deliberately cache-free: the parameter type grants
  * only `get`, so this path cannot reach {@link HttpClient.keyCache} even by
@@ -95,19 +106,19 @@ export async function fetchAgentKeys(
  * window would be permanently unreadable for its recipient. The verify path can
  * afford a cache precisely because it has a failure signal to act on; this one
  * does not. Keep the two asymmetric.
+ *
+ * The chain is verified before the keys are returned: a broken chain throws the
+ * {@link KeyChainError} ("recipient key chain invalid") and sealing is refused.
+ * There is no fallback — sealing to an unverified key is the failure this check
+ * exists to prevent.
  */
 export async function fetchRecipientKeys(
 	client: Pick<HttpClient, "get">,
 	agentId: string,
 ): Promise<RecipientKeys> {
-	const keys = await getPublishedKeys(client, agentId);
-	const out: RecipientKeys = {
-		encryption: jwkToPublicKey(keys.encryption_public_key),
-	};
-	if (keys.pq_encryption_public_key) {
-		out.pqEncryption = jwkToPqPublicKey(keys.pq_encryption_public_key as PqJWK);
-	}
-	return out;
+	const raw = await getPublishedKeys(client, agentId);
+	const keys = verifyKeyChain(raw, { agentId }, pinsFor(client));
+	return { encryption: keys.encryption, pqEncryption: keys.pqEncryption };
 }
 
 /**
@@ -122,6 +133,25 @@ export function sameAgentId(a: string, b: string): boolean {
 }
 
 /**
+ * A signature only counts against the exact generation the kid names. For a
+ * generation below the sender's current one (`row.history`, with the
+ * row's server `created_at`) it also has to be an object stamped before that
+ * generation was superseded. A generation of a revoked agent, current or not,
+ * carries `revoked_at` and is bounded by it the same way.
+ */
+function verifyAgainst(
+	keys: VerifiedAgentKeys,
+	keyGen: number,
+	ctx: SigContext,
+	decoded: InnerEnvelope,
+	row: { createdAt: string | undefined; history: boolean },
+): boolean {
+	if (keys.keyGen !== keyGen) return false;
+	if (!signedWithinValidity(keys, row.createdAt, row.history)) return false;
+	return verifyMessageSignature(keys.signing, ctx, decoded.payload, decoded.signature);
+}
+
+/**
  * Verify an envelope's Ed25519 signature against the sender's published signing
  * key, and bind that signature to the sender the SERVER authenticated.
  *
@@ -133,40 +163,61 @@ export function sameAgentId(a: string, b: string): boolean {
  * round-trip — it is decided before any key is fetched, because it is not a
  * question the key endpoint can answer.
  *
+ * The kid also names the generation the sender signed under. If the current
+ * response is newer, the named generation is fetched as a history read (whose
+ * rollback pin is skipped); a kid generation HIGHER than the fetched one is a
+ * stale cache and counts as not verified. A history read verifies only when
+ * `createdAt`, the row's server `created_at`, is at or before that generation's
+ * `superseded_at`; without it an older generation is `"invalid"`. A revoked
+ * agent's keys carry `revoked_at`, and the same comparison applies to the
+ * earlier of the two bounds, current generation included. The bound is read off
+ * the key view, and a cached view is as old as the client's cache TTL, so a
+ * revocation newer than the cached fetch is seen once the entry expires.
+ *
  * If a CACHED key yields a failure, the sender may have rotated mid-TTL: refetch
- * once bypassing the cache. Exactly one refetch per call — whoever answers the
- * key endpoint chooses the second answer, so retrying until something verifies
- * would hand them an oracle. A repeat of the same key is not re-verified (same
- * inputs, same verdict); a genuinely different key is re-verified and reported
- * as a key change, whichever way that verdict falls. A fresh fetch that fails is
- * not refetched. Any network/lookup error still yields "unverifiable".
+ * once bypassing the cache for the same slot. Exactly one refetch per call —
+ * whoever answers the key endpoint chooses the second answer, so retrying until
+ * something verifies would hand them an oracle. A repeat of the same key is not
+ * re-verified (same inputs, same verdict); a genuinely different key is
+ * re-verified and reported as a key change, whichever way that verdict falls. A
+ * fresh fetch that fails is not refetched.
+ *
+ * A {@link KeyChainError} anywhere is a verdict, not a transient miss: the
+ * content is withheld as `"invalid"`. A malformed kid is `"sender-mismatch"`,
+ * decided before any fetch. Any other error (network) still yields
+ * `"unverifiable"`.
  */
 export async function verifyEnvelopeSender(
 	decoded: InnerEnvelope,
-	client: HttpClient,
+	client: CachingClient,
 	expectedSenderAgentId: string,
+	ctx: SigContext,
+	createdAt?: string,
 ): Promise<SenderVerification> {
 	try {
-		const senderAgentId = agentIdFromKid(decoded.kid);
-		if (!sameAgentId(senderAgentId, expectedSenderAgentId)) {
+		const { agentId, keyGen } = parseSigningKid(decoded.kid);
+		if (!sameAgentId(agentId, expectedSenderAgentId)) {
 			return { verified: false, verificationStatus: "sender-mismatch" };
 		}
-		const { keys, fromCache } = await fetchAgentKeys(client, senderAgentId);
-		let verified = verifyWith(keys, decoded);
+		let opts: { bypassCache?: boolean; gen?: number } | undefined;
+		let { keys, fromCache } = await fetchAgentKeys(client, agentId);
+		if (keys.keyGen > keyGen) {
+			opts = { gen: keyGen };
+			({ keys, fromCache } = await fetchAgentKeys(client, agentId, opts));
+		}
+		const row = { createdAt, history: opts !== undefined };
+		let verified = verifyAgainst(keys, keyGen, ctx, decoded, row);
 		let keyChanged: SenderKeyChange | undefined;
 		if (!verified && fromCache) {
-			const fresh = await fetchAgentKeys(client, senderAgentId, {
+			const fresh = await fetchAgentKeys(client, agentId, {
+				...opts,
 				bypassCache: true,
 			});
-			const previousFingerprint = signingKeyFingerprint(keys);
-			const currentFingerprint = signingKeyFingerprint(fresh.keys);
+			const previousFingerprint = signingKeyFingerprint(keys.signing);
+			const currentFingerprint = signingKeyFingerprint(fresh.keys.signing);
 			if (previousFingerprint !== currentFingerprint) {
-				verified = verifyWith(fresh.keys, decoded);
-				keyChanged = {
-					agentId: senderAgentId,
-					previousFingerprint,
-					currentFingerprint,
-				};
+				verified = verifyAgainst(fresh.keys, keyGen, ctx, decoded, row);
+				keyChanged = { agentId, previousFingerprint, currentFingerprint };
 			}
 		}
 		const verificationStatus: VerificationStatus = verified
@@ -175,13 +226,16 @@ export async function verifyEnvelopeSender(
 		return keyChanged
 			? { verified, verificationStatus, keyChanged }
 			: { verified, verificationStatus };
-	} catch {
+	} catch (err) {
+		if (err instanceof KeyChainError) {
+			return { verified: false, verificationStatus: "invalid" };
+		}
+		// A kid no honest client emits names no sender, so it is a refusal and
+		// never a lookup outcome.
+		if (err instanceof InvalidSigningKidError) {
+			return { verified: false, verificationStatus: "sender-mismatch" };
+		}
 		// Could not fetch sender's key — signature unverifiable.
 		return { verified: false, verificationStatus: "unverifiable" };
 	}
-}
-
-function verifyWith(keys: AgentKeysResponse, decoded: InnerEnvelope): boolean {
-	const senderSigningPk = jwkToPublicKey(keys.signing_public_key);
-	return verifySignature(senderSigningPk, decoded.payload, decoded.signature);
 }

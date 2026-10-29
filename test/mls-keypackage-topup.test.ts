@@ -10,7 +10,7 @@
  * 🔴 **Why the process boundary is the whole test.** `rine group sync` is a
  * one-shot process, so the module-level rescue gate is fresh on every
  * invocation, and a suite that loops inside one process measures the gate rather
- * than the bound. `resetKeyPackageRescueGate()` between iterations IS the
+ * than the bound. `resetProcessGates()` between iterations IS the
  * simulated process exit, and it is the only thing here standing in for real
  * life. Every other participant is real: a real native core opening a real store
  * under a real temp dir, and `keyPackageCount()` read off the disk it wrote.
@@ -34,15 +34,14 @@ vi.mock("../src/crypto/mls-api.js", async (importOriginal) => {
 	return { ...actual, uploadKeyPackages: vi.fn() };
 });
 
-import { generateAgentKeys, saveAgentKeys } from "../src/crypto/keys.js";
+import { saveAgentKeys } from "../src/crypto/keys.js";
+import { generateAgentKeys } from "./helpers/keys.js";
 import { openMlsClient } from "../src/crypto/mls.js";
 import { uploadKeyPackages } from "../src/crypto/mls-api.js";
 import { RineApiError } from "../src/errors.js";
 import type { MlsActor } from "../src/mls-heartbeat.js";
-import {
-	resetKeyPackageRescueGate,
-	topUpKeyPackages,
-} from "../src/mls-keypackage-topup.js";
+import { topUpKeyPackages } from "../src/mls-keypackage-topup.js";
+import { resetProcessGates } from "../src/process-gate.js";
 import { MLS_KEY_PACKAGE_TARGET } from "../src/mls-keypackages.js";
 
 const AGENT_ID = "b2c3d4e5-f6a7-8901-bcde-f12345678901";
@@ -113,13 +112,13 @@ let dir: string;
 beforeEach(() => {
 	dir = fs.mkdtempSync(join(tmpdir(), "rine-topup-bound-"));
 	vi.clearAllMocks();
-	resetKeyPackageRescueGate();
+	resetProcessGates();
 	saveAgentKeys(dir, AGENT_ID, generateAgentKeys());
 });
 
 afterEach(() => {
 	fs.rmSync(dir, { recursive: true, force: true });
-	resetKeyPackageRescueGate();
+	resetProcessGates();
 });
 
 describe("the rescue is bounded by what the server says it holds", () => {
@@ -132,7 +131,7 @@ describe("the rescue is bounded by what the server says it holds", () => {
 
 		const outcomes = [];
 		for (let i = 0; i < 6; i++) {
-			resetKeyPackageRescueGate(); // the process boundary, and the only fake here
+			resetProcessGates(); // the process boundary, and the only fake here
 			outcomes.push(await topUpKeyPackages(server.actor));
 		}
 
@@ -174,9 +173,9 @@ describe("the rescue is bounded by what the server says it holds", () => {
 		await topUpKeyPackages(server.actor); // first sync fills both
 		server.drainedByPeers();
 
-		resetKeyPackageRescueGate();
+		resetProcessGates();
 		const rescued = await topUpKeyPackages(server.actor);
-		resetKeyPackageRescueGate();
+		resetProcessGates();
 		const after = await topUpKeyPackages(server.actor);
 
 		expect(rescued).toMatchObject({

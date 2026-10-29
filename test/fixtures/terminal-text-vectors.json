@@ -1,0 +1,269 @@
+{
+  "scrub": [
+    {
+      "name": "csi_removed",
+      "input": "a\u001b[31mred\u001b[0m",
+      "oneLine": true,
+      "text": "ared",
+      "hiddenChars": 9
+    },
+    {
+      "name": "csi_c1_introducer_removed",
+      "input": "a\u009b31mred",
+      "oneLine": true,
+      "text": "ared",
+      "hiddenChars": 4
+    },
+    {
+      "name": "csi_unterminated_to_end",
+      "input": "a\u001b[31;1",
+      "oneLine": true,
+      "text": "a",
+      "hiddenChars": 6
+    },
+    {
+      "name": "osc_bel_and_st_removed",
+      "input": "a\u001b]0;title\u0007b\u001b]8;;http://x\u001b\\c",
+      "oneLine": true,
+      "text": "abc",
+      "hiddenChars": 25
+    },
+    {
+      "name": "osc_c1_introducer_removed",
+      "input": "a\u009d0;title\u0007b",
+      "oneLine": true,
+      "text": "ab",
+      "hiddenChars": 9
+    },
+    {
+      "name": "osc_unterminated_to_end",
+      "input": "safe\u001b]0;evil payload",
+      "oneLine": true,
+      "text": "safe",
+      "hiddenChars": 16
+    },
+    {
+      "name": "osc_unterminated_keeps_following_lines_hidden",
+      "input": "a\u001b]52;c;ZGF0YQ==\nsecret",
+      "oneLine": false,
+      "text": "a",
+      "hiddenChars": 22
+    },
+    {
+      "name": "dcs_terminated_by_st_removed",
+      "input": "a\u001bPpayload\u001b\\b",
+      "oneLine": true,
+      "text": "ab",
+      "hiddenChars": 11
+    },
+    {
+      "name": "dcs_unterminated_to_end",
+      "input": "a\u001bPpayload\u0007tail",
+      "oneLine": true,
+      "text": "a",
+      "hiddenChars": 14
+    },
+    {
+      "name": "sos_terminated_by_st_removed",
+      "input": "a\u001bXpayload\u001b\\b",
+      "oneLine": true,
+      "text": "ab",
+      "hiddenChars": 11
+    },
+    {
+      "name": "sos_unterminated_to_end",
+      "input": "a\u001bXpayload\u0007tail",
+      "oneLine": true,
+      "text": "a",
+      "hiddenChars": 14
+    },
+    {
+      "name": "pm_terminated_by_st_removed",
+      "input": "a\u001b^payload\u001b\\b",
+      "oneLine": true,
+      "text": "ab",
+      "hiddenChars": 11
+    },
+    {
+      "name": "pm_unterminated_to_end",
+      "input": "a\u001b^payload\u0007tail",
+      "oneLine": true,
+      "text": "a",
+      "hiddenChars": 14
+    },
+    {
+      "name": "apc_terminated_by_st_removed",
+      "input": "a\u001b_payload\u001b\\b",
+      "oneLine": true,
+      "text": "ab",
+      "hiddenChars": 11
+    },
+    {
+      "name": "apc_unterminated_to_end",
+      "input": "a\u001b_payload\u0007tail",
+      "oneLine": true,
+      "text": "a",
+      "hiddenChars": 14
+    },
+    {
+      "name": "dcs_c1_introducer_unterminated",
+      "input": "a\u0090payload",
+      "oneLine": true,
+      "text": "a",
+      "hiddenChars": 8
+    },
+    {
+      "name": "lone_esc_removed",
+      "input": "a\u001bb",
+      "oneLine": true,
+      "text": "ab",
+      "hiddenChars": 1
+    },
+    {
+      "name": "tag_characters_removed",
+      "input": "a\udb40\udc41b\udb40\udc7fc",
+      "oneLine": true,
+      "text": "abc",
+      "hiddenChars": 2
+    },
+    {
+      "name": "bidi_zero_width_hangul_filler_removed",
+      "input": "a\u202e\u2066\u200b\ufeff\u3164b",
+      "oneLine": true,
+      "text": "ab",
+      "hiddenChars": 5
+    },
+    {
+      "name": "zwsp_zwj_zwnj_removed",
+      "input": "a\u200b\u200c\u200db",
+      "oneLine": true,
+      "text": "ab",
+      "hiddenChars": 3
+    },
+    {
+      "name": "word_joiner_and_invisible_operators_removed",
+      "input": "a\u2060\u2061\u2062\u2063\u2064b",
+      "oneLine": true,
+      "text": "ab",
+      "hiddenChars": 5
+    },
+    {
+      "name": "bom_removed",
+      "input": "a\ufeffb",
+      "oneLine": true,
+      "text": "ab",
+      "hiddenChars": 1
+    },
+    {
+      "name": "soft_hyphen_removed",
+      "input": "a\u00adb",
+      "oneLine": true,
+      "text": "ab",
+      "hiddenChars": 1
+    },
+    {
+      "name": "variation_selectors_removed",
+      "input": "a\ufe0f\udb40\udd00b",
+      "oneLine": true,
+      "text": "ab",
+      "hiddenChars": 2
+    },
+    {
+      "name": "emoji_zwj_sequence_shows_components",
+      "input": "a\ud83d\udc69\u200d\ud83d\udcbbb",
+      "oneLine": true,
+      "text": "a\ud83d\udc69\ud83d\udcbbb",
+      "hiddenChars": 1
+    },
+    {
+      "name": "format_and_default_ignorable_removed",
+      "input": "a\u0600\u06dd\u070f\u08e2\ud804\udcbd\ud80d\udc30\ud82f\udca0\ud82f\udca3\u2065b",
+      "oneLine": true,
+      "text": "ab",
+      "hiddenChars": 9
+    },
+    {
+      "name": "c0_c1_del_removed_tab_becomes_space",
+      "input": "a\u0000\u0007\u007f\u0085\tb",
+      "oneLine": true,
+      "text": "a b",
+      "hiddenChars": 4
+    },
+    {
+      "name": "carriage_return_removed",
+      "input": "a\r\nb",
+      "oneLine": false,
+      "text": "a\nb",
+      "hiddenChars": 1
+    },
+    {
+      "name": "line_separator_becomes_newline",
+      "input": "a\u2028b\u2029c",
+      "oneLine": false,
+      "text": "a\nb\nc",
+      "hiddenChars": 0
+    },
+    {
+      "name": "block_newline_runs_collapsed",
+      "input": "a\n\n\n\nb",
+      "oneLine": false,
+      "text": "a\n\nb",
+      "hiddenChars": 0
+    },
+    {
+      "name": "one_line_whitespace_collapsed",
+      "input": "  a\n\n b\t\tc  ",
+      "oneLine": true,
+      "text": "a b c",
+      "hiddenChars": 0
+    },
+    {
+      "name": "clean_text_unchanged",
+      "input": "plain text, with accents: \u00e9\u00e8 and \u6f22\u5b57",
+      "oneLine": false,
+      "text": "plain text, with accents: \u00e9\u00e8 and \u6f22\u5b57",
+      "hiddenChars": 0
+    },
+    {
+      "name": "empty_input",
+      "input": "",
+      "oneLine": true,
+      "text": "",
+      "hiddenChars": 0
+    }
+  ],
+  "safeBlock": [
+    {
+      "name": "fits_unchanged",
+      "input": "hello",
+      "maxChars": 10,
+      "text": "hello",
+      "hiddenChars": 0,
+      "truncatedChars": 0
+    },
+    {
+      "name": "cut_to_max_chars",
+      "input": "abcdef",
+      "maxChars": 4,
+      "text": "abcd",
+      "hiddenChars": 0,
+      "truncatedChars": 2
+    },
+    {
+      "name": "cut_counts_code_points",
+      "input": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
+      "maxChars": 3,
+      "text": "\ud83d\ude00\ud83d\ude00\ud83d\ude00",
+      "hiddenChars": 0,
+      "truncatedChars": 2
+    },
+    {
+      "name": "hidden_counted_before_cut",
+      "input": "a\u001b[1mbcd\u200b",
+      "maxChars": 3,
+      "text": "abc",
+      "hiddenChars": 5,
+      "truncatedChars": 1
+    }
+  ]
+}

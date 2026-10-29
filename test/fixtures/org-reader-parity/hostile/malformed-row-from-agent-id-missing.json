@@ -1,0 +1,81 @@
+{
+  "name": "malformed-row-from-agent-id-missing",
+  "family": "malformed",
+  "note": "an activity row where the sender has no agent_id",
+  "api_url": "http://rine.invalid",
+  "org_id": "de4db70f-d37f-8be9-b275-3abdf05aa800",
+  "root_key": "DCoYVE0vnLZwN1n4OUylViWWrvcHOAeyQMsZlVnpcOY",
+  "own_agents": [
+    "0afd1ba5-5498-443b-b706-b64ce0873d1f",
+    "5cccc04e-c097-4a7f-aa8e-62e8eb05f7c5"
+  ],
+  "reader": {
+    "branch": null
+  },
+  "reads": [
+    {
+      "query": {
+        "group_id": "66f3e4e8-d6f4-4c70-926a-f094916082bd",
+        "cursor": null,
+        "limit": 100
+      },
+      "exchanges": [
+        {
+          "method": "POST",
+          "path": "/oauth/token",
+          "query": {},
+          "status": 200,
+          "body": {
+            "access_token": "fixture-token",
+            "token_type": "bearer",
+            "expires_in": 900
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "group_id": "66f3e4e8-d6f4-4c70-926a-f094916082bd",
+            "include": "payload",
+            "limit": "100"
+          },
+          "status": 200,
+          "body": {
+            "items": [
+              {
+                "id": "f29f5858-cf62-59a8-a245-a4f5acbf731f",
+                "created_at": "2026-10-24T12:00:10.000000Z",
+                "type": "rine.v1.dm",
+                "direction": "received",
+                "from": {
+                  "handle": "05375eb7@example.test",
+                  "org_id": "6704b472-471d-8702-b9af-74fe69b09e6f",
+                  "own": false
+                },
+                "to": {
+                  "agent_id": "0afd1ba5-5498-443b-b706-b64ce0873d1f",
+                  "handle": "0afd1ba5@example.test",
+                  "org_id": "de4db70f-d37f-8be9-b275-3abdf05aa800",
+                  "own": true
+                },
+                "group": null,
+                "conversation_id": "70f80be0-ee10-56eb-a63b-2017f2db5092",
+                "encryption_version": "hpke-hybrid-v2",
+                "delivered_at": null,
+                "x402_status": null,
+                "x402_rail": null,
+                "payload": {
+                  "encrypted_payload": "BGFt66xG3xy_jMxlpKXPMAkBd4V75OgIiQr-des3xqhM8kApHZoRPR0Uq3Gv9OXAFBQnPg4NtzQfByqFo_HKQYxlK1MySspTKRaC4ukJIKZhrsuRyC1mVaTFuKrKquMolzAVONXePwGQrQmL7IwYfum2hwQK49d6JWnEacioPZfxQPmgoj-FA6EY3ieuPbMehBXIA9opN_ItzbsaC4UlxMaBc9rcGoTWL6ApSjZe3B00i9xLfrkpRpJl7iZM1AJPhvFLIb-w1eV0zq_24Ui1qSCkdQXdmgPgI3iG_uNm2CDfVtDkJBSUabgayhq6uujaADSMoeXJNu3ThajpUAerNDtv8EDc5YPAJ3zbk5_wSKXdl8vE1b9EwFyHmEUlV805XYzhgiflT3389EVVAzOWIlUepacOAVrRFTY5rkUU6XZlRrTooAxoYg0zV3rDegW7VN3KB7ZrMbWaXmncTFeQl8Yd3IId82r7viyfQHrK08ni0wgkJRyqhR5oPGjejjBOhbijJJ-IeL71HK495zKxZDNIan7s6OTMthFzCzxQ6V-pIOWKN6uAeEg1JRpthXCTryr725N-i_III7I6XaVXNIp3CQZ4ANheVbKEpsgygyOzb-780A_xrOOpdDAtGVcldgopvuH66RRUVLD6Ou5cvzKNa-eGd0roHCAc82_d0vX-V-Kgtx0DgyZ5P39ty9hs0375gm5n71mWnA5AiXJWrJsSFWqM0uKiv1QMh0Uiwm2ObQU0zoygYslopt1H6NvNAQf-u-fXvGxrc_DT_4BNgIHabC1okzCte9azti2D6EhwaWO6W2BZInOh1ibOeDW3Y8XnXNvulZrbTSikEXtQW7sP4P1dSWDr5nPXVl3VXz0M2IRuNYJG2yVWuzjcB8fAaXSGRKehJ6SlutjQrk8zI3UNLuJbx-pglIbKKvcAVn8TNcEz3mDE2FruvVLhYCL16i1ZQ1beT0gwzJ7U2mVXBQF9436K_OIyZC_lXhmdNiiti-zVG8shj9TjViWhZEha7WhquwTR8lUcF6olTWFKX4DdH2y40wWizSPPnZ80I3-2DXuYUEanh6ZYmQt9-DChVtpXWmz87cqhWpKsJqdj_XPxs-VOJJm_V-HM087OKu9EJuZg3y5ucxjaQLrfjbvqv6ky_1gDIUVL6T9CTOOZanYwjieVwtZySJb4zldlEf82xdJCNXgwefV_GZWiHN5wJ2le6gCDmCY8K8hFeqO1KP1GhlyQ7GicMWlh5ZHyjdEspTx3A6aZ82skbEI3hPW4aPo68yUbAc1G1WNC2UnHaKDlE0Eko4mYbXKP-gkXMDtwdXRz2o9-nHNrwP5FIxrsuJdnLKMMs9Tjvt-CyynCyc9ExD-9hwccYTjxY2DAjQGnbPqrfPNon9S3BaSoNegObRrtm6kvqrmuK6csQ1REDe373re2Fg-6Qi7H20E9V7utcR4LUOoLsvL8G3w0lJ8N8vma66U_rik8_LlQRDovkx1hAExlGQK8SHHZJiMJ9Jw4Fy4ZN_uyaod_rW4cynBBJ_msg_KwEurVvENuXVt3F7xHMHdwS-3yGXfs-S8iHYChB595u4Q_YgDF-or79lobeRReZZqowwAqJSQNYu0_xh9sietuQtnz_nXaD_PR_3xMTCfRwOhvdIRVznnbtd3dtX8dgwF82r64iZN0IF-8T2TngqyABicpTbXdCYMhAmwtt3T2JrZ-EQ",
+                  "self_encrypted_payload": null,
+                  "key_gen": 0
+                }
+              }
+            ],
+            "next_cursor": null
+          }
+        }
+      ],
+      "raised": "KeyError"
+    }
+  ]
+}

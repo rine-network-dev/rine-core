@@ -20,6 +20,7 @@
 // companion fix lowers the SOA-minimum so any residual poison self-heals fast.
 
 import { Resolver, resolve4, resolveNs } from "node:dns/promises";
+import { sleep } from "../timing.js";
 
 // Grace before the FIRST TXT query. Sized comfortably above the
 // observed worst-case backend propagation (~34s) so the first query never
@@ -28,10 +29,6 @@ import { Resolver, resolve4, resolveNs } from "node:dns/promises";
 const INITIAL_PROPAGATION_DELAY_MS = 45_000;
 const PROPAGATION_TIMEOUT_MS = 120_000; // bounded poll AFTER the grace delay
 const PROPAGATION_INTERVAL_MS = 5_000;
-
-export function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 /** Minimal TXT-resolving surface (node:dns `Resolver` satisfies this). */
 interface TxtResolver {

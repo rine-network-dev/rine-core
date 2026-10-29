@@ -94,7 +94,7 @@ function quoteMsg(over: Partial<MessageRead> = {}): MessageRead {
 		type: "rine.v1.x402_payment_required",
 		encrypted_payload: "recipient-blob",
 		self_encrypted_payload: "self-blob",
-		encryption_version: "hpke-v1",
+		encryption_version: "hpke-hybrid-v2",
 		created_at: "2026-07-21T00:00:00Z",
 		...over,
 	};

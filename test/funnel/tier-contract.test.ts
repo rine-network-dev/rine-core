@@ -4,7 +4,7 @@
 // The TS `api-types.ts` `termination` field is typed `FunnelTier`
 // ("zero_trust" | "shared_edge"), with `FUNNEL_TIERS` as its exhaustive runtime
 // witness. The authoritative source of the tier strings is the Python
-// `funnel_naming.FunnelTier` StrEnum. This test reads the Python enum DIRECTLY
+// `core.funnel_tier.FunnelTier` StrEnum. This test reads the Python enum DIRECTLY
 // from source and asserts the TS witness EXACTLY equals it (same values, same
 // order, same count) — so a future third tier (or a renamed value) added on one
 // side and forgotten on the other FAILS the build instead of silently drifting
@@ -18,15 +18,15 @@ import { describe, expect, it } from "vitest";
 import { FUNNEL_TIERS, type FunnelTier } from "../../src/api-types.js";
 
 // `__dirname` is `rine-core/test/funnel`; the Python enum lives in the backend.
-const PY_FUNNEL_NAMING = join(
+const PY_FUNNEL_TIER = join(
 	__dirname,
 	"..",
 	"..",
 	"..",
 	"src",
 	"rine",
-	"api",
-	"funnel_naming.py",
+	"core",
+	"funnel_tier.py",
 );
 
 /**
@@ -36,9 +36,9 @@ const PY_FUNNEL_NAMING = join(
  * enum body, not the whole file) so an unrelated string elsewhere never leaks in.
  */
 function pythonFunnelTierValues(): string[] {
-	const src = readFileSync(PY_FUNNEL_NAMING, "utf-8");
+	const src = readFileSync(PY_FUNNEL_TIER, "utf-8");
 	const classIdx = src.indexOf("class FunnelTier(StrEnum):");
-	expect(classIdx, "FunnelTier StrEnum must exist in funnel_naming.py").toBeGreaterThanOrEqual(
+	expect(classIdx, "FunnelTier StrEnum must exist in funnel_tier.py").toBeGreaterThanOrEqual(
 		0,
 	);
 	const after = src.slice(classIdx);

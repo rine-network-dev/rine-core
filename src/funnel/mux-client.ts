@@ -173,14 +173,9 @@ export function createMuxClient(args: MuxClientArgs): MuxClient {
 }
 
 /**
- * Reconnect backoff progression, identical to stream.ts: double, capped at 30s.
+ * Reconnect backoff progression: double, capped at 30s.
  * `1 → 2 → 4 → 8 → 16 → 30 → 30`.
  */
 export function nextReconnectBackoffSeconds(backoffSeconds: number): number {
 	return Math.min(backoffSeconds * 2, 30);
-}
-
-/** Full jitter over the current backoff window — identical to stream.ts. */
-export function jitteredDelayMs(backoffSeconds: number): number {
-	return Math.round(backoffSeconds * (0.5 + Math.random()) * 1000);
 }

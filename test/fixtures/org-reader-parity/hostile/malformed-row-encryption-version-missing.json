@@ -1,0 +1,81 @@
+{
+  "name": "malformed-row-encryption-version-missing",
+  "family": "malformed",
+  "note": "an activity row where no encryption_version",
+  "api_url": "http://rine.invalid",
+  "org_id": "de4db70f-d37f-8be9-b275-3abdf05aa800",
+  "root_key": "DCoYVE0vnLZwN1n4OUylViWWrvcHOAeyQMsZlVnpcOY",
+  "own_agents": [
+    "0afd1ba5-5498-443b-b706-b64ce0873d1f",
+    "5cccc04e-c097-4a7f-aa8e-62e8eb05f7c5"
+  ],
+  "reader": {
+    "branch": null
+  },
+  "reads": [
+    {
+      "query": {
+        "group_id": "66f3e4e8-d6f4-4c70-926a-f094916082bd",
+        "cursor": null,
+        "limit": 100
+      },
+      "exchanges": [
+        {
+          "method": "POST",
+          "path": "/oauth/token",
+          "query": {},
+          "status": 200,
+          "body": {
+            "access_token": "fixture-token",
+            "token_type": "bearer",
+            "expires_in": 900
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "group_id": "66f3e4e8-d6f4-4c70-926a-f094916082bd",
+            "include": "payload",
+            "limit": "100"
+          },
+          "status": 200,
+          "body": {
+            "items": [
+              {
+                "id": "97d3a14c-4bb6-5710-b726-7c7ab2d39774",
+                "created_at": "2026-10-24T12:00:10.000000Z",
+                "type": "rine.v1.dm",
+                "direction": "received",
+                "from": {
+                  "agent_id": "05375eb7-2d92-4fca-91d0-0ce6d7203b12",
+                  "handle": "05375eb7@example.test",
+                  "org_id": "6704b472-471d-8702-b9af-74fe69b09e6f",
+                  "own": false
+                },
+                "to": {
+                  "agent_id": "0afd1ba5-5498-443b-b706-b64ce0873d1f",
+                  "handle": "0afd1ba5@example.test",
+                  "org_id": "de4db70f-d37f-8be9-b275-3abdf05aa800",
+                  "own": true
+                },
+                "group": null,
+                "conversation_id": "fc7d15f5-bf70-500f-887d-f885a13fea5d",
+                "delivered_at": null,
+                "x402_status": null,
+                "x402_rail": null,
+                "payload": {
+                  "encrypted_payload": "BGItpp14nPNxfRJrLvBWNRsaOD06uaMCbj7EYlf7SJhKWjgm8nEJh-XDKe2gUFrarhnLZZtW5-cMI6YwSuSlpdkcELNeMXWattDXbx_Rl-EVNrinEvl1sA-jzuviyd4V8AP9ioc0FzLJe33JgW2BEmWMUfDZyD76z1uR94bpvhmcY-jIA0tUTjfN8UxItC73sd7H2xBKKVYRdHveBETcYBirOfC6r-iqbwSZUnxhBUAjOS2Ev6WWrmYVTlUQDoaj2r5Q-bIdMEOCJgMk9vCCuGVJZCFdkwLo0SIjiFQTZROu7EWZ0SH6lfRTLzE9qOj9FevnmUoejNn-suzUisy9NSVfddlZWyYtn6_dSldP40Ivss92g22Lw6UIyWaoLGtTUq_l0jyn_8qq5EnRVSpkVoXm8NeSeJZIZBh7cbYKyuCnu2VuMCPtuQvHxfepIjhHxaztlkedNqrIXsx7XjTKw6OCEydrMnyNfKkpwiA2BrkFXPDOexA7S_qyLnfOT_ZI4hm7QuYXsKZ5hhQbSBtvUdwfhw37U2-hJ7ti96YJKQr1WoZ7i5FjJP26aIYxl8DFUftuFosEqYdx9Wyh5_6zvzgiik6tFchYhh9Lt3NAZT2i_oZV0LSJnTRCYMNm-dv9J59TTbhBWWvxJF1XuTFZ2paiJADdi_BcsanQ1B9wfn15BpwaeCg-gVjc2iz6zMvbNPuVELIcwqGivg6n6oEcphe1P1jrqwDKd3EtUK9-6Rqwx_Na6ID9FTKS90_hO7dpaINGFcLxoQ0ESoJyAKhAx3ub4ltiCnzR9ibreAu6Ie__uHYOxNvEo8oEfMGgMVA33eRVsc_0vuiBvBsnSTTbtt2aiOjnEKlZLTkxDPO_p5q14gbsvSTor1Uwo98_b2Las1TlnFArfEk4j_n4_C6_AyLfzN-WoHCYa0KdSm1QBnbwvaGdvoA5X-_7P95_ZhGMkQLNWCaUasglmdCUZGimeRZ7fnAF8nWcSYnJRduDbtWSw_1vzVew-n-9__stHaYS3T5F_Nlv2B27E7UP-eJAJM8BdGHFXLJLvv0GeHK78xQqgwcky0TdoC3JfCtI1KnVseSKOUcbxsGZeZUkjDGioxSWTx9vlyJxOyjY6SCTMUFXa_vchKV5GpiEOd3M9k4ePZGdlyxZUIQakS2TXSJNLwWeXx86WPSMLi4u6HhpCOjsFmrVkFY5knGh2lra998G0zFQlA06P6ZzWM0ZjqHUx5xewElX2Tv5CUNAJrro8EdsdY2Pjlihexkl-QxjEOACT3XiUVbzspZsC8-d97Q9-sESM9eb-9wwcswvIC3bNG7rdXy3xi06F1ac0CEP92ICvp5IL5IvwRsHIvhLdB3LJvm_JyLpOYbwDmNwHJrpWLP-8r7UBEbl79KWuo4f01znSE6Hd_b1Y87HgYaUZZQMsfvXFOgDkuMiaX5TIsQBiEFQMhA9-lPUniVfuRIUst-0FxnpMQ2y9xNS9Ql7SrRKogf3MY3X4kTmORoIIVKj9EX1ZayyvzA1qXyVT4Wx_8ZbWPhdWL8kocDb1RjcFthiz5ZlTv8a4wD2hsvxSqIinEmt6tRzbzUbzCfDdGAPuBW79-5SgIVUBDs_IzMcXdYgrXInGQX_N0rJa4LGJx3HGkud0FfPvd5WGxT4h--iyEro5utI_kCNSJT-gxkj_feltREk7-x_LqJOLZqPku4GaniWwQMIWbqVT7x0Mvk-",
+                  "self_encrypted_payload": null,
+                  "key_gen": 0
+                }
+              }
+            ],
+            "next_cursor": null
+          }
+        }
+      ],
+      "raised": "KeyError"
+    }
+  ]
+}

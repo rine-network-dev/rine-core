@@ -17,15 +17,17 @@ export interface KnownAsset {
 	 * EIP-712 domain (`name`/`version`) for the `exact`/EIP-3009 scheme. Used to
 	 * author an out-of-band expected-terms override WITHOUT trusting any
 	 * payer-supplied `extra`. Kept identical to how every rine surface
-	 * authors its own quotes (symbol name, version "2"); verify against the real
-	 * on-chain domain at the live-testnet proof gate before publish.
+	 * authors its own quotes. Base mainnet USDC is confirmed on-chain (2026-10-29,
+	 * `name()` = "USD Coin", `version()` = "2"; its `eip712Domain()` reverts).
+	 * The other three entries are NOT confirmed on-chain: Base Sepolia USDC
+	 * settled live with `USDC`/"2", and both EURC rows are unproven.
 	 */
 	domain: X402TokenExtra;
 }
 
 /**
  * Constant table of the featured v1.0 assets. Addresses are the canonical
- * Circle deployments; verify at the live-testnet proof gate before publish.
+ * Circle deployments.
  * Matching is by (network, address) — a wrong entry only prevents a symbol from
  * resolving (fail-closed), it can never redirect a payment.
  */
@@ -36,7 +38,7 @@ export const KNOWN_ASSETS: readonly KnownAsset[] = [
 		network: "eip155:8453",
 		address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
 		decimals: 6,
-		domain: { name: "USDC", version: "2" },
+		domain: { name: "USD Coin", version: "2" },
 	},
 	{
 		symbol: "EURC",

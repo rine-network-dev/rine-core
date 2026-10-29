@@ -4,7 +4,7 @@ import { normalizeHandle } from "./resolve-handle.js";
  * The one sentence that tells a caller their spelling was not the spelling
  * looked up — composed here, rendered by each surface in its own idiom.
  *
- * 🔴 **Item 18, and why it lives in `rine-core` rather than on a surface.**
+ * 🔴 **Why this lives in `rine-core` rather than on a surface.**
  * {@link resolveToUuid} completes a short handle before it reaches WebFinger —
  * `kofi@acme` is looked up as `kofi@acme.rine.network` — and it answers with
  * the resolved UUID, never the handle it resolved. The substitution is
@@ -22,7 +22,7 @@ import { normalizeHandle } from "./resolve-handle.js";
  * 🔴 This composer **returns** and never prints. A library that writes to a
  * stream has taken a decision belonging to whoever is holding the terminal —
  * which is also why {@link resolveRecipient} and the two SDKs get no notice at
- * all: they discharge item 18 through their RETURN VALUE, carrying the
+ * all: they report the completion through their RETURN VALUE, carrying the
  * caller's spelling beside the resolved handle so a consumer can compare the
  * two without being told.
  */

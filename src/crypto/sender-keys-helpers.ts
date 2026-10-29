@@ -10,12 +10,7 @@ export function uuidToBytes(uuid: string): Uint8Array {
 	return new Uint8Array(matches.map((b) => Number.parseInt(b, 16)));
 }
 
-export function bytesToUuid(bytes: Uint8Array): string {
-	const hex = Array.from(bytes)
-		.map((b) => b.toString(16).padStart(2, "0"))
-		.join("");
-	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
+export { bytesToUuid } from "./bytes.js";
 
 interface SenderKeyStateJSON {
 	senderKeyId: string;
@@ -157,13 +152,10 @@ export function markSenderKeysRetired(
 ): void {
 	const dir = senderKeysDir(configDir, agentId, groupId);
 	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-	const filePath = join(dir, retirementFile(groupId));
-	fs.writeFileSync(
-		filePath,
+	writeAtomic(
+		join(dir, retirementFile(groupId)),
 		JSON.stringify({ retiredAt: new Date().toISOString() }),
-		"utf-8",
 	);
-	fs.chmodSync(filePath, 0o600);
 }
 
 /**

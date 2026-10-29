@@ -20,6 +20,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../src/mls-escrow-key.js", () => escrowKeyModule());
+
 vi.mock("../src/crypto/mls-api.js", async () => {
 	const actual = await vi.importActual<
 		typeof import("../src/crypto/mls-api.js")
@@ -34,11 +36,13 @@ vi.mock("../src/crypto/mls-api.js", async () => {
 	};
 });
 
+import { World } from "./crypto/world.js";
+import { escrowKeyModule, withPeerReads } from "./mls-escrow-harness.js";
 import {
-	generateAgentKeys,
-	saveAgentKeys,
-	signingPublicKeyToJWK,
-} from "../src/crypto/keys.js";
+	mintHonestWelcome,
+	spooledWelcomes,
+	welcomeQueue,
+} from "./mls-welcome-harness.js";
 import type { MlsCommitBody } from "../src/crypto/mls-api.js";
 import {
 	claimKeyPackagesBatch,
@@ -55,8 +59,10 @@ import {
 	processMlsWelcomes,
 	removeMlsGroupMember,
 } from "../src/mls-ops.js";
-import { isMlsWelcomeRefusedError } from "../src/mls-welcome-guard.js";
-import { WelcomeSpool } from "../src/mls-welcome-spool.js";
+import {
+	isMlsWelcomeRefusedError,
+	refusalIsRetryable,
+} from "../src/mls-welcome-guard.js";
 
 const VICTIM = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
 const GROUP_ID = "c3d4e5f6-a7b8-9012-cdef-123456789012";
@@ -64,31 +70,38 @@ const GROUP_ID = "c3d4e5f6-a7b8-9012-cdef-123456789012";
 const OTHER_GROUP_ID = "d4e5f6a7-b8c9-0123-def1-234567890123";
 
 let dir: string;
+let world: World;
 /** Every commit body the fake server accepted, in order. */
 let posted: MlsCommitBody[];
 /** Agent ids `GET /groups/{id}/members` reports, per group. */
 let members: Map<string, string[]>;
 /** What `GET /agents/{id}/mls/welcomes` hands the victim. */
-let welcomes: { id: string; group_id: string | null; blob: string }[];
-/** Set to make every group-scoped read fail, as it does for a non-member. */
-let rosterReadable: boolean;
+let inbox: ReturnType<typeof welcomeQueue>;
+/**
+ * How many roster reads still answer before the roster stops answering. The
+ * welcome pass reads the roster once to admit the group's peers, then the guard
+ * reads it again, so 1 lets the admission through and fails the guard's own
+ * read, as it does for a non-member.
+ */
+let rosterReadsLeft: number;
 let client: never;
 
-/** An agent with keys on disk. */
+/** An agent with keys on disk, minted by the world so its chain verifies. */
 function agent(): string {
 	const agentId = randomUUID();
-	saveAgentKeys(dir, agentId, generateAgentKeys());
+	world.save(dir, world.addAgent({ id: agentId }));
 	return agentId;
 }
 
-/** The published signing keys `GET /agents/keys` would return for `ids`. */
-function publishedKeys(ids: string[]) {
-	const keys: Record<string, unknown> = {};
-	for (const id of ids) {
-		const jwk = signingPublicKeyToJWK(openMlsClient(dir, id).publicKey());
-		keys[id] = { signing_public_key: jwk, encryption_public_key: jwk };
-	}
-	return keys;
+/**
+ * The group roster `GET /groups/{id}/members` reports, and the read the
+ * admission path and the guard both make. An unreadable roster throws, as it
+ * does for an org holding no member row.
+ */
+function roster(groupId: string): string[] {
+	if (rosterReadsLeft <= 0) throw new Error("403 Membership required");
+	rosterReadsLeft -= 1;
+	return members.get(groupId) ?? [];
 }
 
 /**
@@ -98,12 +111,14 @@ function publishedKeys(ids: string[]) {
 async function honestWelcome(groupId: string): Promise<string> {
 	const founder = agent();
 	members.set(groupId, [founder, VICTIM]);
-	openMlsClient(dir, founder).createGroup(mlsGroupIdBytes(groupId)).save();
-	await addMlsGroupMembers(dir, founder, groupId, [VICTIM], client);
-	const body = posted.at(-1);
-	const welcome = body?.welcomes?.[0]?.welcome;
-	if (!welcome) throw new Error("the founding commit minted no welcome");
-	return welcome;
+	return mintHonestWelcome({
+		founderDir: dir,
+		founder,
+		victim: VICTIM,
+		groupId,
+		client,
+		posted,
+	});
 }
 
 /**
@@ -139,33 +154,14 @@ async function reinvitationWelcome(groupId: string): Promise<string> {
 	return welcome;
 }
 
-/**
- * File a welcome blob for the victim under the group id the server chooses.
- *
- * The delivery id is the server's too, and it used to decide which refusal a
- * batch raised, so the cases about that pass it explicitly.
- */
-function deliver(
-	blob: string,
-	groupId: string | null,
-	id: string = randomUUID(),
-): void {
-	welcomes.push({ id, group_id: groupId, blob });
-}
-
-/** How many Welcomes are still spooled for a later attempt. */
-function spooled(): number {
-	return new WelcomeSpool(dir, VICTIM).pending().length;
-}
-
 beforeEach(() => {
 	dir = fs.mkdtempSync(join(tmpdir(), "rine-welcome-guard-"));
+	world = new World();
 	posted = [];
 	members = new Map();
-	welcomes = [];
-	rosterReadable = true;
+	rosterReadsLeft = Number.POSITIVE_INFINITY;
 	vi.clearAllMocks();
-	saveAgentKeys(dir, VICTIM, generateAgentKeys());
+	world.save(dir, world.addAgent({ id: VICTIM }));
 	vi.mocked(mlsCommit).mockImplementation(async (_c, _g, body) => {
 		posted.push(body);
 		return { epoch: body.epoch ?? null, delivered_to: 1 };
@@ -178,29 +174,12 @@ beforeEach(() => {
 			],
 		})),
 	}));
-	client = {
-		get: vi.fn(async (path: string, params?: Record<string, string>) => {
-			if (path === `/agents/${VICTIM}/mls/welcomes`) {
-				// The real route marks every welcome it returns consumed in the same
-				// transaction, so the fetch is one-shot and the queue drains here too.
-				const batch = welcomes;
-				welcomes = [];
-				return { welcomes: batch };
-			}
-			if (path === "/agents/keys") {
-				return { keys: publishedKeys(String(params?.ids).split(",")) };
-			}
-			if (!rosterReadable) throw new Error("403 Membership required");
-			const groupId = path.split("/")[2] ?? "";
-			if (path.endsWith("/members")) {
-				return {
-					items: (members.get(groupId) ?? []).map((agent_id) => ({ agent_id })),
-				};
-			}
-			if (path.endsWith("/requests")) return { items: [] };
-			throw new Error(`unexpected GET ${path}`);
-		}),
-	} as never;
+	// The escrow and admission reads the orchestrators now make are answered by
+	// the harness; the inbox keeps the welcome queue and the requests read, and
+	// every other path is a test bug.
+	inbox = welcomeQueue(VICTIM);
+	const fakeClient = { get: inbox.get };
+	client = withPeerReads(world, fakeClient, roster) as never;
 });
 
 afterEach(() => {
@@ -209,7 +188,7 @@ afterEach(() => {
 
 describe("processMlsWelcomes", () => {
 	it("installs a welcome minted by a member of the group it names", async () => {
-		deliver(await honestWelcome(GROUP_ID), GROUP_ID);
+		inbox.deliver(await honestWelcome(GROUP_ID), GROUP_ID);
 
 		const result = await processMlsWelcomes(dir, VICTIM, client);
 
@@ -222,21 +201,24 @@ describe("processMlsWelcomes", () => {
 		// victim. The tree this welcome seats the victim in holds the server's own
 		// identity instead, so nothing in it corroborates the roster.
 		await honestWelcome(GROUP_ID);
-		deliver(substitutedWelcome(GROUP_ID), GROUP_ID);
+		inbox.deliver(substitutedWelcome(GROUP_ID), GROUP_ID);
 
-		await expect(processMlsWelcomes(dir, VICTIM, client)).rejects.toSatisfy(
-			(err: unknown) =>
-				isMlsWelcomeRefusedError(err) &&
-				(err as { reason: string }).reason === "roster_uncorroborated",
+		const refusal = await processMlsWelcomes(dir, VICTIM, client).catch(
+			(err: unknown) => err,
 		);
+
+		expect(isMlsWelcomeRefusedError(refusal)).toBe(true);
+		expect((refusal as { reason: string }).reason).toBe("roster_uncorroborated");
+		expect((refusal as Error).message).not.toMatch(/rotat|group sync/);
 		expect(loadMlsGroup(openMlsClient(dir, VICTIM), GROUP_ID)).toBeNull();
 	});
 
 	it("refuses a welcome the roster contradicts while state is held", async () => {
-		deliver(await honestWelcome(GROUP_ID), GROUP_ID);
+		inbox.deliver(await honestWelcome(GROUP_ID), GROUP_ID);
+		const substituted = substitutedWelcome(GROUP_ID);
 		await processMlsWelcomes(dir, VICTIM, client);
 		const epoch = loadMlsGroup(openMlsClient(dir, VICTIM), GROUP_ID)?.epoch();
-		deliver(substitutedWelcome(GROUP_ID), GROUP_ID);
+		inbox.deliver(substituted, GROUP_ID);
 
 		await expect(processMlsWelcomes(dir, VICTIM, client)).rejects.toSatisfy(
 			(err: unknown) =>
@@ -253,11 +235,12 @@ describe("processMlsWelcomes", () => {
 	it("refuses a welcome it cannot corroborate while state is held", async () => {
 		// The same unreadable roster that ACCEPTS for an agent holding nothing
 		// REFUSES here: with state to lose, corroboration has to be positive.
-		deliver(await honestWelcome(GROUP_ID), GROUP_ID);
+		inbox.deliver(await honestWelcome(GROUP_ID), GROUP_ID);
+		const substituted = substitutedWelcome(GROUP_ID);
 		await processMlsWelcomes(dir, VICTIM, client);
 		const epoch = loadMlsGroup(openMlsClient(dir, VICTIM), GROUP_ID)?.epoch();
-		deliver(substitutedWelcome(GROUP_ID), GROUP_ID);
-		rosterReadable = false;
+		inbox.deliver(substituted, GROUP_ID);
+		rosterReadsLeft = 1;
 
 		await expect(processMlsWelcomes(dir, VICTIM, client)).rejects.toSatisfy(
 			(err: unknown) =>
@@ -274,12 +257,12 @@ describe("processMlsWelcomes", () => {
 		// state — and holds it as ACTIVE, because eviction is not persisted, so a
 		// reloaded handle says nothing useful about whether its leaf survives. The
 		// roster is what settles it, and here the roster corroborates.
-		deliver(await honestWelcome(GROUP_ID), GROUP_ID);
+		inbox.deliver(await honestWelcome(GROUP_ID), GROUP_ID);
 		await processMlsWelcomes(dir, VICTIM, client);
 		const first = loadMlsGroup(openMlsClient(dir, VICTIM), GROUP_ID);
 		expect(first?.isActive()).toBe(true);
 		const firstEpoch = first?.epoch() ?? 0;
-		deliver(await reinvitationWelcome(GROUP_ID), GROUP_ID);
+		inbox.deliver(await reinvitationWelcome(GROUP_ID), GROUP_ID);
 
 		const result = await processMlsWelcomes(dir, VICTIM, client);
 
@@ -289,7 +272,7 @@ describe("processMlsWelcomes", () => {
 		const held = loadMlsGroup(openMlsClient(dir, VICTIM), GROUP_ID);
 		expect(held?.epoch()).toBeGreaterThan(firstEpoch);
 		expect(held?.memberIdentities().length).toBe(2);
-		expect(spooled()).toBe(0);
+		expect(spooledWelcomes(dir, VICTIM)).toBe(0);
 	});
 
 	it("keeps a welcome whose refusal a later attempt can clear", async () => {
@@ -297,37 +280,39 @@ describe("processMlsWelcomes", () => {
 		// consumed, so there is no second read and no peer can produce it again.
 		// The first attempt refuses with an unreadable roster; the second, once the
 		// roster answers, installs the SAME bytes.
-		deliver(await honestWelcome(GROUP_ID), GROUP_ID);
+		inbox.deliver(await honestWelcome(GROUP_ID), GROUP_ID);
+		const reinvitation = await reinvitationWelcome(GROUP_ID);
 		await processMlsWelcomes(dir, VICTIM, client);
 		const firstEpoch =
 			loadMlsGroup(openMlsClient(dir, VICTIM), GROUP_ID)?.epoch() ?? 0;
-		deliver(await reinvitationWelcome(GROUP_ID), GROUP_ID);
-		rosterReadable = false;
+		inbox.deliver(reinvitation, GROUP_ID);
+		rosterReadsLeft = 1;
 
 		await expect(processMlsWelcomes(dir, VICTIM, client)).rejects.toSatisfy(
 			isMlsWelcomeRefusedError,
 		);
-		expect(spooled()).toBe(1);
+		expect(spooledWelcomes(dir, VICTIM)).toBe(1);
 
 		// The fetch is empty now — the server already handed the bytes over — so
 		// the install can only come off the spool.
-		rosterReadable = true;
+		rosterReadsLeft = Number.POSITIVE_INFINITY;
 		const result = await processMlsWelcomes(dir, VICTIM, client);
 
 		expect(result.groupIds).toEqual([GROUP_ID]);
 		expect(
 			loadMlsGroup(openMlsClient(dir, VICTIM), GROUP_ID)?.epoch(),
 		).toBeGreaterThan(firstEpoch);
-		expect(spooled()).toBe(0);
+		expect(spooledWelcomes(dir, VICTIM)).toBe(0);
 	});
 
 	it("retries a retained refusal quietly instead of raising it again", async () => {
 		// A retained refusal must not fail every later call. It was reported once,
 		// when its bytes arrived; after that it is a quiet retry, or one unusable
 		// Welcome would break every future join on this agent.
-		deliver(await honestWelcome(GROUP_ID), GROUP_ID);
+		inbox.deliver(await honestWelcome(GROUP_ID), GROUP_ID);
+		const substituted = substitutedWelcome(GROUP_ID);
 		await processMlsWelcomes(dir, VICTIM, client);
-		deliver(substitutedWelcome(GROUP_ID), GROUP_ID);
+		inbox.deliver(substituted, GROUP_ID);
 		await expect(processMlsWelcomes(dir, VICTIM, client)).rejects.toSatisfy(
 			isMlsWelcomeRefusedError,
 		);
@@ -335,11 +320,11 @@ describe("processMlsWelcomes", () => {
 		const result = await processMlsWelcomes(dir, VICTIM, client);
 
 		expect(result.groupIds).toEqual([]);
-		expect(spooled()).toBe(1);
+		expect(spooledWelcomes(dir, VICTIM)).toBe(1);
 	});
 
 	it("discards a welcome filed under a group it does not join", async () => {
-		deliver(await honestWelcome(GROUP_ID), OTHER_GROUP_ID);
+		inbox.deliver(await honestWelcome(GROUP_ID), OTHER_GROUP_ID);
 
 		await expect(processMlsWelcomes(dir, VICTIM, client)).rejects.toSatisfy(
 			(err: unknown) =>
@@ -348,7 +333,7 @@ describe("processMlsWelcomes", () => {
 		);
 		// Deterministic, so it is the one refusal that keeps nothing: the welcome
 		// joins a group it was not filed under, on every attempt.
-		expect(spooled()).toBe(0);
+		expect(spooledWelcomes(dir, VICTIM)).toBe(0);
 	});
 
 	it("installs the honest welcomes in a batch that also carries a refused one", async () => {
@@ -356,8 +341,8 @@ describe("processMlsWelcomes", () => {
 		// lose every welcome behind it — permanently, since no peer can mint
 		// another without noticing the first went unused.
 		await honestWelcome(GROUP_ID);
-		deliver(substitutedWelcome(GROUP_ID), GROUP_ID);
-		deliver(await honestWelcome(OTHER_GROUP_ID), OTHER_GROUP_ID);
+		inbox.deliver(substitutedWelcome(GROUP_ID), GROUP_ID);
+		inbox.deliver(await honestWelcome(OTHER_GROUP_ID), OTHER_GROUP_ID);
 
 		await expect(processMlsWelcomes(dir, VICTIM, client)).rejects.toSatisfy(
 			isMlsWelcomeRefusedError,
@@ -372,8 +357,8 @@ describe("processMlsWelcomes", () => {
 		// every group-scoped route, so an unreadable roster has to accept. This is
 		// the residual: a server that refuses the roster read defeats the
 		// corroboration check, which is why no surface may call the attack closed.
-		deliver(substitutedWelcome(GROUP_ID), GROUP_ID);
-		rosterReadable = false;
+		inbox.deliver(substitutedWelcome(GROUP_ID), GROUP_ID);
+		rosterReadsLeft = 1;
 
 		const result = await processMlsWelcomes(dir, VICTIM, client);
 
@@ -388,8 +373,12 @@ describe("processMlsWelcomes", () => {
 		// orderings — it is written first AND named first.
 		await honestWelcome(GROUP_ID);
 		await honestWelcome(OTHER_GROUP_ID);
-		deliver(substitutedWelcome(GROUP_ID), GROUP_ID, "aaaa-decoy");
-		deliver(substitutedWelcome(OTHER_GROUP_ID), OTHER_GROUP_ID, "zzzz-real");
+		inbox.deliver(substitutedWelcome(GROUP_ID), GROUP_ID, "aaaa-decoy");
+		inbox.deliver(
+			substitutedWelcome(OTHER_GROUP_ID),
+			OTHER_GROUP_ID,
+			"zzzz-real",
+		);
 
 		await expect(
 			processMlsWelcomes(dir, VICTIM, client, { forGroup: OTHER_GROUP_ID }),
@@ -404,7 +393,7 @@ describe("processMlsWelcomes", () => {
 		// unusable Welcome from failing every future call. Loud for a caller that
 		// is establishing this very group: it asked, and a refusal is the answer.
 		await honestWelcome(GROUP_ID);
-		deliver(substitutedWelcome(GROUP_ID), GROUP_ID);
+		inbox.deliver(substitutedWelcome(GROUP_ID), GROUP_ID);
 		await expect(processMlsWelcomes(dir, VICTIM, client)).rejects.toSatisfy(
 			isMlsWelcomeRefusedError,
 		);
@@ -425,8 +414,8 @@ describe("processMlsWelcomes", () => {
 		// missing: a substituted Welcome for one group must not fail a legitimate
 		// install of another.
 		await honestWelcome(GROUP_ID);
-		deliver(substitutedWelcome(GROUP_ID), GROUP_ID);
-		deliver(await honestWelcome(OTHER_GROUP_ID), OTHER_GROUP_ID);
+		inbox.deliver(substitutedWelcome(GROUP_ID), GROUP_ID);
+		inbox.deliver(await honestWelcome(OTHER_GROUP_ID), OTHER_GROUP_ID);
 
 		const result = await processMlsWelcomes(dir, VICTIM, client, {
 			forGroup: OTHER_GROUP_ID,
@@ -441,12 +430,21 @@ describe("processMlsWelcomes", () => {
 		// because abandoning it would skip key-package replenishment and throw away
 		// the ids this pass DID install. The Python twin logs and continues; this
 		// stack used to throw, which is the asymmetry.
-		deliver("AQIDBAUGBwg=", OTHER_GROUP_ID);
-		deliver(await honestWelcome(GROUP_ID), GROUP_ID);
+		inbox.deliver("AQIDBAUGBwg=", OTHER_GROUP_ID);
+		inbox.deliver(await honestWelcome(GROUP_ID), GROUP_ID);
 
 		const result = await processMlsWelcomes(dir, VICTIM, client);
 
 		expect(result.groupIds).toEqual([GROUP_ID]);
-		expect(spooled()).toBe(0);
+		expect(spooledWelcomes(dir, VICTIM)).toBe(0);
+	});
+});
+
+describe("refusalIsRetryable", () => {
+	it("test_retryable_when_the_refusal_is_final_for_the_tree_then_the_bytes_are_not_kept", () => {
+		expect(refusalIsRetryable("peer_not_admitted")).toBe(false);
+		expect(refusalIsRetryable("group_id_mismatch")).toBe(false);
+		expect(refusalIsRetryable("roster_uncorroborated")).toBe(true);
+		expect(refusalIsRetryable("state_would_be_overwritten")).toBe(true);
 	});
 });

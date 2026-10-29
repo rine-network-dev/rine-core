@@ -4,7 +4,15 @@ import { UNKNOWN_SENDER_KEY_CLAUSE } from "../sender-key-words.js";
 import { encodeEnvelope } from "./envelope.js";
 import { fromBase64Url, toBase64Url } from "./keys.js";
 import { bytesToUuid, uuidToBytes } from "./sender-keys-helpers.js";
-import { signPayload } from "./sign.js";
+import {
+	HEADER_SIZE,
+	MESSAGE_INDEX_SIZE,
+	NONCE_SIZE,
+	SENDER_KEY_ID_SIZE,
+	VERSION_SENDER_KEY,
+	parseSenderKeyWire,
+} from "./sender-key-wire.js";
+import { signMessage } from "./sign.js";
 
 const ROTATION_MESSAGE_LIMIT = 100;
 const ROTATION_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -26,10 +34,6 @@ export function needsRotation(state: SenderKeyState): boolean {
 	return false;
 }
 
-const VERSION_SENDER_KEY = 0x02;
-const SENDER_KEY_ID_SIZE = 16;
-const MESSAGE_INDEX_SIZE = 4;
-const NONCE_SIZE = 12;
 const MAX_SKIP = 1000;
 
 /** Copy Uint8Array into a plain ArrayBuffer-backed Uint8Array (required by Web Crypto). */
@@ -62,6 +66,15 @@ export function deriveMessageKey(chainKey: Uint8Array): {
 	const messageKey = hmac(sha256, chainKey, new Uint8Array([0x01]));
 	const nextChainKey = hmac(sha256, chainKey, new Uint8Array([0x02]));
 	return { messageKey, nextChainKey };
+}
+
+/** The chain key at `index`, derived forward without keeping skipped keys and with no skip cap. */
+export function chainKeyAt(state: SenderKeyState, index: number): Uint8Array {
+	let chainKey = state.chainKey;
+	for (let step = state.messageIndex; step < index; step++) {
+		chainKey = deriveMessageKey(chainKey).nextChainKey;
+	}
+	return chainKey;
 }
 
 export function advanceChain(
@@ -104,7 +117,11 @@ export async function sealGroup(
 	state: SenderKeyState,
 	plaintext: Uint8Array,
 ): Promise<{ encryptedPayload: Uint8Array; updatedState: SenderKeyState }> {
-	const signature = signPayload(senderSigningPrivateKey, plaintext);
+	const signature = signMessage(
+		senderSigningPrivateKey,
+		{ kind: "GroupSig", groupId: state.groupId },
+		plaintext,
+	);
 	const innerEnvelope = encodeEnvelope(senderSigningKid, signature, plaintext);
 
 	const { messageKey, nextChainKey } = deriveMessageKey(state.chainKey);
@@ -166,30 +183,10 @@ export async function openGroup(
 	messageIndex: number;
 	updatedState: SenderKeyState;
 }> {
-	const minLen = 1 + SENDER_KEY_ID_SIZE + MESSAGE_INDEX_SIZE + NONCE_SIZE;
-	if (encryptedPayload.length < minLen) {
-		throw new Error("encrypted payload too short");
-	}
-	const version = encryptedPayload[0];
-	if (version !== VERSION_SENDER_KEY) {
-		throw new Error(
-			`unsupported version: 0x${version?.toString(16).padStart(2, "0")}`,
-		);
-	}
-
-	let offset = 1;
-	const senderKeyId = bytesToUuid(
-		encryptedPayload.slice(offset, offset + SENDER_KEY_ID_SIZE),
-	);
-	offset += SENDER_KEY_ID_SIZE;
-	const messageIndex = new DataView(
-		encryptedPayload.buffer,
-		encryptedPayload.byteOffset,
-	).getUint32(offset, false);
-	offset += MESSAGE_INDEX_SIZE;
+	const { keyId: senderKeyId, index: messageIndex } = parseSenderKeyWire(encryptedPayload);
+	const offset = HEADER_SIZE;
 	const nonce = encryptedPayload.slice(offset, offset + NONCE_SIZE);
-	offset += NONCE_SIZE;
-	const ciphertext = encryptedPayload.slice(offset);
+	const ciphertext = encryptedPayload.slice(offset + NONCE_SIZE);
 
 	const state = senderKeyStates.get(senderKeyId);
 	// The recovery paths read the id back off this message to know what to

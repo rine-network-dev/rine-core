@@ -37,18 +37,13 @@ import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-	generateAgentKeys,
-	loadAgentKeys,
-	saveAgentKeys,
-	signingPublicKeyToJWK,
-	toBase64Url,
-} from "../../src/crypto/keys.js";
+import type { AgentKeysResponse } from "../../src/api-types.js";
+import { toBase64Url } from "../../src/crypto/keys.js";
 import {
 	UnpersistedSenderKeyStateError,
-	decryptGroupMessage,
 	encryptGroupMessage,
-} from "../../src/crypto/message.js";
+} from "../../src/crypto/sender-key-seal.js";
+import { decryptGroupMessage } from "../../src/message-group.js";
 import {
 	loadSenderKeyStates,
 	saveSenderKeyState,
@@ -58,6 +53,7 @@ import {
 	deleteSenderKey,
 	getOrCreateSenderKey,
 } from "../../src/sender-key-ops.js";
+import { World } from "./world.js";
 
 const SENDER_ID = "a1b2c3d4-e5f6-4890-abcd-ef1234567890";
 /** Already holds this agent's key, so the fan-out is not for it. */
@@ -69,23 +65,23 @@ const PEER_ID = "e5f6a7b8-c9d0-4234-8fab-345678901234";
 const GROUP_ID = "d4e5f6a7-b8c9-4123-8efa-234567890123";
 const GROUP_HANDLE = "#ops@acme.rine.network";
 
+let world: World;
+
+/** A real org world, with every party this file names seated in `dir`. */
+function setupWorld(dir: string): void {
+	world = new World();
+	for (const id of [SENDER_ID, MEMBER_A_ID, MEMBER_B_ID, PEER_ID]) {
+		world.save(dir, world.addAgent({ id }));
+	}
+}
+
 /** `GET /agents/keys` for a fan-out, in the batch shape the server sends. */
 function makeBatchKeys(agentIds: string[]) {
-	const keys: Record<string, object> = {};
+	const keys: Record<string, AgentKeysResponse> = {};
 	for (const id of agentIds) {
-		const k = generateAgentKeys();
-		keys[id] = {
-			signing_public_key: {
-				kty: "OKP",
-				crv: "Ed25519",
-				x: toBase64Url(k.signing.publicKey),
-			},
-			encryption_public_key: {
-				kty: "OKP",
-				crv: "X25519",
-				x: toBase64Url(k.encryption.publicKey),
-			},
-		};
+		const generations = world.agents.get(id);
+		const newest = generations?.[generations.length - 1];
+		if (newest) keys[id] = newest.response;
 	}
 	return { keys };
 }
@@ -98,32 +94,26 @@ function makeBatchKeys(agentIds: string[]) {
  * delivery, which is the window every test here writes into. Each of these sends
  * has exactly one undistributed recipient, so it fires once.
  */
-function makeClient(dir: string, memberIds: string[], onPost?: () => void) {
+function makeClient(memberIds: string[], onPost?: () => void) {
+	const base = world.client();
 	return {
-		get: vi.fn(async (path: string) => {
-			if (path === "/groups") return { items: [{ id: GROUP_ID }] };
-			if (path === `/groups/${GROUP_ID}/members`) {
-				return {
-					items: memberIds.map((id) => ({ agent_id: id, role: "member" })),
-				};
-			}
-			if (path === "/agents/keys") {
-				return makeBatchKeys(memberIds.filter((id) => id !== SENDER_ID));
-			}
-			// The single-agent read a DECRYPT's verify makes, answered from what
-			// this agent actually published — a self-read checks its own signature
-			// against it, so a freshly minted pair would fail the verify rather
-			// than answer the question under test.
-			if (path === `/agents/${SENDER_ID}/keys`) {
-				return {
-					agent_id: SENDER_ID,
-					signing_public_key: signingPublicKeyToJWK(
-						loadAgentKeys(dir, SENDER_ID).signing.publicKey,
-					),
-				};
-			}
-			throw new Error(`unexpected GET ${path}`);
-		}),
+		get: vi.fn(
+			async (
+				path: string,
+				params?: Record<string, string | number | boolean>,
+			) => {
+				if (path === "/groups") return { items: [{ id: GROUP_ID }] };
+				if (path === `/groups/${GROUP_ID}/members`) {
+					return {
+						items: memberIds.map((id) => ({ agent_id: id, role: "member" })),
+					};
+				}
+				if (path === "/agents/keys") {
+					return makeBatchKeys(memberIds.filter((id) => id !== SENDER_ID));
+				}
+				return base.get(path, params);
+			},
+		),
 		post: vi.fn(async () => {
 			onPost?.();
 			return { id: "dddddddd-eeee-4fff-8000-111111111111" };
@@ -136,7 +126,7 @@ describe("the send tail's write of this agent's own row", () => {
 
 	beforeEach(() => {
 		dir = fs.mkdtempSync(join(tmpdir(), "rine-sk-send-race-"));
-		saveAgentKeys(dir, SENDER_ID, generateAgentKeys());
+		setupWorld(dir);
 	});
 	afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
@@ -207,7 +197,7 @@ describe("the send tail's write of this agent's own row", () => {
 			senderKeyId: own.senderKeyId,
 		};
 		saveSenderKeyState(dir, SENDER_ID, GROUP_ID, [squat, own]);
-		const client = makeClient(dir, [SENDER_ID, MEMBER_A_ID, MEMBER_B_ID]);
+		const client = makeClient([SENDER_ID, MEMBER_A_ID, MEMBER_B_ID]);
 
 		const { state } = await getOrCreateSenderKey(
 			client as never,
@@ -238,7 +228,7 @@ describe("the send tail's write of this agent's own row", () => {
 		// fan-out of its own.
 		const replacement = generateSenderKey(GROUP_ID, SENDER_ID);
 		replacement.distributedTo = [MEMBER_A_ID, MEMBER_B_ID];
-		const client = makeClient(dir, [SENDER_ID, MEMBER_A_ID, MEMBER_B_ID], () => {
+		const client = makeClient([SENDER_ID, MEMBER_A_ID, MEMBER_B_ID], () => {
 			saveSenderKeyState(dir, SENDER_ID, GROUP_ID, [own, replacement]);
 		});
 
@@ -254,7 +244,7 @@ describe("the send tail's write of this agent's own row", () => {
 		// the post it just sent — but it stays where the rotation put it.
 		expect(ownIds()).toEqual([own.senderKeyId, replacement.senderKeyId]);
 
-		const after = makeClient(dir, [SENDER_ID, MEMBER_A_ID, MEMBER_B_ID]);
+		const after = makeClient([SENDER_ID, MEMBER_A_ID, MEMBER_B_ID]);
 		const { state: picked } = await getOrCreateSenderKey(
 			after as never,
 			dir,
@@ -279,7 +269,7 @@ describe("the send tail's write of this agent's own row", () => {
 		// already refuses to re-create the file; the tail is the second writer,
 		// and it used to put this agent's live chain key back under a group it had
 		// just left.
-		const client = makeClient(dir, [SENDER_ID, MEMBER_A_ID, MEMBER_B_ID], () => {
+		const client = makeClient([SENDER_ID, MEMBER_A_ID, MEMBER_B_ID], () => {
 			deleteSenderKey(dir, SENDER_ID, GROUP_ID);
 		});
 
@@ -316,7 +306,7 @@ describe("the send tail's write of this agent's own row", () => {
 		const first = generateSenderKey(GROUP_ID, SENDER_ID);
 		const second = generateSenderKey(GROUP_ID, SENDER_ID);
 		second.distributedTo = [MEMBER_A_ID, MEMBER_B_ID];
-		const client = makeClient(dir, [SENDER_ID, MEMBER_A_ID, MEMBER_B_ID], () => {
+		const client = makeClient([SENDER_ID, MEMBER_A_ID, MEMBER_B_ID], () => {
 			saveSenderKeyState(dir, SENDER_ID, GROUP_ID, [own, first]);
 			saveSenderKeyState(dir, SENDER_ID, GROUP_ID, [first, second]);
 		});
@@ -333,7 +323,7 @@ describe("the send tail's write of this agent's own row", () => {
 
 		// Through the selector, because that is what the defect costs: the key the
 		// next post is sealed under.
-		const after = makeClient(dir, [SENDER_ID, MEMBER_A_ID, MEMBER_B_ID]);
+		const after = makeClient([SENDER_ID, MEMBER_A_ID, MEMBER_B_ID]);
 		const { state: picked } = await getOrCreateSenderKey(
 			after as never,
 			dir,
@@ -364,7 +354,7 @@ describe("the send tail's refusal of a state nothing persisted", () => {
 
 	beforeEach(() => {
 		dir = fs.mkdtempSync(join(tmpdir(), "rine-sk-unpersisted-"));
-		saveAgentKeys(dir, SENDER_ID, generateAgentKeys());
+		setupWorld(dir);
 	});
 	afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
@@ -455,7 +445,7 @@ describe("rotation and self-read", () => {
 
 	beforeEach(() => {
 		dir = fs.mkdtempSync(join(tmpdir(), "rine-sk-self-read-"));
-		saveAgentKeys(dir, SENDER_ID, generateAgentKeys());
+		setupWorld(dir);
 	});
 	afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
@@ -464,7 +454,7 @@ describe("rotation and self-read", () => {
 		own.distributedTo = [MEMBER_A_ID, MEMBER_B_ID];
 		saveSenderKeyState(dir, SENDER_ID, GROUP_ID, [own]);
 
-		const seated = makeClient(dir, [SENDER_ID, MEMBER_A_ID, MEMBER_B_ID]);
+		const seated = makeClient([SENDER_ID, MEMBER_A_ID, MEMBER_B_ID]);
 		const { state } = await getOrCreateSenderKey(
 			seated as never,
 			dir,
@@ -476,7 +466,7 @@ describe("rotation and self-read", () => {
 		});
 
 		// MEMBER_B is gone from the roster, which is a rotation trigger.
-		const after = makeClient(dir, [SENDER_ID, MEMBER_A_ID]);
+		const after = makeClient([SENDER_ID, MEMBER_A_ID]);
 		const { state: rotated } = await getOrCreateSenderKey(
 			after as never,
 			dir,

@@ -424,9 +424,10 @@ describe("mux client driver — connection multiplexing", () => {
 
 describe("mux client driver — reconnect loop (modeled on stream.ts)", () => {
 	it("computes jittered backoff capped at 30s with the same min(backoff*2,30) progression", async () => {
-		const { nextReconnectBackoffSeconds, jitteredDelayMs } = await import(
+		const { nextReconnectBackoffSeconds } = await import(
 			"../../src/funnel/tunnel.js"
 		);
+		const { jitteredDelayMs } = await import("../../src/timing.js");
 		// Progression: 1 → 2 → 4 → 8 → 16 → 30 (cap), never above 30.
 		expect(nextReconnectBackoffSeconds(1)).toBe(2);
 		expect(nextReconnectBackoffSeconds(16)).toBe(30);

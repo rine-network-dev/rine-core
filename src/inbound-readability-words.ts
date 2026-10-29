@@ -29,6 +29,12 @@ export interface OpenInboundArgs {
 	readonly messageType: string;
 	readonly encryptedPayload: string;
 	readonly encryptionVersion: string;
+	/**
+	 * The row's server `created_at`. A signature under a sender key that has
+	 * since been superseded is accepted only when the row predates the
+	 * supersession, so omitting it fails closed for older generations.
+	 */
+	readonly createdAt?: string;
 }
 
 /**

@@ -6,6 +6,7 @@ import { deleteMlsState } from "./crypto/mls-state.js";
 import { needsRemovalCommit } from "./errors.js";
 import { groupEncryption } from "./group-format.js";
 import type { HttpClient } from "./http.js";
+import { settleEscrow } from "./mls-escrow-settle.js";
 import {
 	type MlsRemovalCommit,
 	removeMlsGroupMember,
@@ -20,11 +21,9 @@ const LEAF_GONE =
 	" after it.";
 
 const NO_LEAF_TAKEN =
-	"declared the removal, but no leaf in this group's ratchet tree carries the" +
-	" signing key they publish now, so nothing was taken out of it. What keeps" +
-	" them out is this server declining to hand them the group's traffic. If" +
-	" they rotated their signing key, their old leaf is still in the tree: have" +
-	" them rejoin, or re-invite them, so a Remove commit can name it.";
+	"declared the removal, but no leaf in this group's ratchet tree is theirs," +
+	" so nothing was taken out of it. What keeps them out is this server" +
+	" declining to hand them the group's traffic.";
 
 /** What a wipe did, and — when it did not — the sentence saying so. */
 export interface LocalStateRetirement {
@@ -58,6 +57,11 @@ export interface LocalStateRetirement {
  * carve-out answers it and there is no admin to resolve. Without a resolver the
  * server's refusal is passed through unchanged — it already says what to do.
  *
+ * A self-leave first settles the leaver's escrow, locally: the caller wipes the
+ * local state next, and the exports a deferred drain left in it are sealed under
+ * the cached escrow key, or the snapshot is parked for the sweep. The leave
+ * never waits on the server for it.
+ *
  * Returns what the commit did, or null when no commit was needed.
  */
 export async function deleteGroupMember(
@@ -68,6 +72,10 @@ export async function deleteGroupMember(
 	resolveActingAdmin?: () => Promise<string>,
 	extraHeaders?: Record<string, string>,
 ): Promise<MlsRemovalCommit | null> {
+	if (isSelfLeave(targetAgentId, extraHeaders?.[ACTING_AGENT_HEADER])) {
+		// The caller wipes this agent's local state once the server has let it go.
+		settleEscrow({ configDir, agentId: targetAgentId, client, extraHeaders }, groupId);
+	}
 	try {
 		await client.delete(
 			`/groups/${groupId}/members/${targetAgentId}`,
@@ -92,6 +100,17 @@ export async function deleteGroupMember(
 		);
 		return removal;
 	}
+}
+
+/**
+ * True when the acting agent is the member being removed: the same signal the
+ * server reads to tell a leave from a kick.
+ */
+export function isSelfLeave(
+	targetAgentId: string,
+	actingAgentId: string | undefined,
+): boolean {
+	return actingAgentId?.toLowerCase() === targetAgentId.toLowerCase();
 }
 
 /**

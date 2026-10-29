@@ -10,6 +10,7 @@
  * change is caught.
  */
 import { describe, expect, it } from "vitest";
+import { emptyReport } from "../src/mls-escrow-report.js";
 import type { MlsRecoveryResult } from "../src/mls-ops-resync.js";
 import {
 	MLS_NEVER_FOUNDED_NOTE,
@@ -28,6 +29,7 @@ const REPLAYED: MlsRecoveryResult = {
 	behind: 5,
 	processed: 5,
 	evicted: false,
+	escrow: emptyReport(),
 };
 
 describe("describeMlsReclamation", () => {
@@ -42,6 +44,7 @@ describe("describeMlsReclamation", () => {
 				reclaimed: 2,
 				commits: 2,
 				epoch: 9,
+				escrow: emptyReport(),
 			}),
 		).toBe(
 			"Reclaimed 2 of 3 orphaned leaves in 2 commit(s), now at epoch 9;" +
@@ -58,6 +61,7 @@ describe("describeMlsReclamation", () => {
 				reclaimed: 0,
 				commits: 0,
 				epoch: 4,
+				escrow: emptyReport(),
 			}),
 		).toBe("Every leaf belongs to a member or to an unanswered invitation.");
 	});
@@ -76,6 +80,7 @@ describe("describeMlsReclamation", () => {
 				commits: 0,
 				epoch: 4,
 				declined: { reason: "identity_unknown", detail },
+				escrow: emptyReport(),
 			}),
 		).toBe(detail);
 	});
@@ -88,6 +93,7 @@ describe("describeMlsReclamation", () => {
 			reclaimed: 1,
 			commits: 1,
 			epoch: 2,
+			escrow: emptyReport(),
 		});
 		expect(said).not.toMatch(/admin-initiated|admin-gated/);
 	});

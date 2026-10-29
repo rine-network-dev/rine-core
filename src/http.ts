@@ -1,37 +1,24 @@
 import type { AgentKeysResponse } from "./api-types.js";
 import { TtlCache } from "./cache.js";
+import { pinsFor, sharePins } from "./crypto/key-pins.js";
 import { rineErrorFromResponse } from "./errors.js";
-import { sleep } from "./funnel/propagation.js";
+import type { HttpClientOptions, TokenFn } from "./http-options.js";
 import { MAX_RETRY_WAIT_MS, retryAfterMsFromResponse } from "./retry.js";
+import { sleep } from "./timing.js";
 
-// The token helpers moved to token.ts to keep this file under the size cap; they
-// stay reachable from "./http.js" for back-compat with existing import sites.
+// The token helpers live in token.ts and are reachable from "./http.js" too.
 export { fetchOAuthToken, getOrRefreshToken } from "./token.js";
 
-export type TokenFn = (force?: boolean) => Promise<string>;
+export type { HttpClientOptions, TokenFn } from "./http-options.js";
 
-export interface HttpClientOptions {
-	tokenFn: TokenFn;
-	apiUrl: string;
-	/** Whether 401 auto-retry is possible (requires client credentials). */
-	canRefresh?: boolean;
-	/** Headers injected on every request (e.g. X-Rine-Agent). */
-	defaultHeaders?: Record<string, string>;
-	/**
-	 * Default abort signal applied to every request made by this instance.
-	 * Use one short-lived HttpClient per cancellation scope — e.g. one per
-	 * SDK crypto operation. A fired signal propagates to fetch() as-is; the
-	 * resulting AbortError is NOT wrapped in RineApiError.
-	 */
-	signal?: AbortSignal;
-	/**
-	 * Per-agent key cache (GET /agents/{id}/keys) read by the inbound-verify path.
-	 * Every client builds its own, which is what a persistent client wants. Pass
-	 * one to share a single cache across several clients instead — the SDK does
-	 * that, because it spawns a short-lived core client per crypto operation and a
-	 * per-instance cache would never see a second read.
-	 */
-	keyCache?: TtlCache<AgentKeysResponse>;
+/** Pin `client`'s own org and agent ids into its key-chain pins. */
+export function seedOwnPins(
+	client: object,
+	own: NonNullable<HttpClientOptions["ownIdentity"]>,
+): void {
+	const pins = pinsFor(client);
+	pins.ownOrgId = own.orgId;
+	for (const id of own.agentIds) pins.ownAgentIds.add(id);
 }
 
 export class HttpClient {
@@ -40,6 +27,7 @@ export class HttpClient {
 	private readonly canRefresh: boolean;
 	private readonly defaultHeaders: Record<string, string>;
 	private readonly defaultSignal: AbortSignal | undefined;
+	private readonly fetchFn: typeof fetch | undefined;
 	/** Per-agent key cache; see {@link HttpClientOptions.keyCache}. */
 	readonly keyCache: TtlCache<AgentKeysResponse>;
 
@@ -49,7 +37,10 @@ export class HttpClient {
 		this.canRefresh = opts.canRefresh ?? true;
 		this.defaultHeaders = opts.defaultHeaders ?? {};
 		this.defaultSignal = opts.signal;
+		this.fetchFn = opts.fetch;
 		this.keyCache = opts.keyCache ?? new TtlCache();
+		if (opts.keyPins) sharePins(this, opts.keyPins);
+		if (opts.ownIdentity) seedOwnPins(this, opts.ownIdentity);
 	}
 
 	private async request(
@@ -83,7 +74,7 @@ export class HttpClient {
 			if (body !== undefined) {
 				init.body = JSON.stringify(body);
 			}
-			return fetch(url, init);
+			return (this.fetchFn ?? fetch)(url, init);
 		};
 
 		let res = await doFetch();

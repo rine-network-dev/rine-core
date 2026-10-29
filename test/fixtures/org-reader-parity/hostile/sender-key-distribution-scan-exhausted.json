@@ -1,0 +1,410 @@
+{
+  "name": "sender-key-distribution-scan-exhausted",
+  "family": "sender-key",
+  "note": "the distribution feed never ends and never holds the key",
+  "api_url": "http://rine.invalid",
+  "org_id": "de4db70f-d37f-8be9-b275-3abdf05aa800",
+  "root_key": "DCoYVE0vnLZwN1n4OUylViWWrvcHOAeyQMsZlVnpcOY",
+  "own_agents": [
+    "0afd1ba5-5498-443b-b706-b64ce0873d1f",
+    "5cccc04e-c097-4a7f-aa8e-62e8eb05f7c5"
+  ],
+  "reader": {
+    "branch": null
+  },
+  "reads": [
+    {
+      "query": {
+        "group_id": "f9d25783-8872-5cd5-acac-f0410bac83fd",
+        "cursor": null,
+        "limit": 100
+      },
+      "exchanges": [
+        {
+          "method": "POST",
+          "path": "/oauth/token",
+          "query": {},
+          "status": 200,
+          "body": {
+            "access_token": "fixture-token",
+            "token_type": "bearer",
+            "expires_in": 900
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "group_id": "f9d25783-8872-5cd5-acac-f0410bac83fd",
+            "include": "payload",
+            "limit": "100"
+          },
+          "status": 200,
+          "body": {
+            "items": [
+              {
+                "id": "556ec410-4c01-59cb-8a9d-ac6cae92a3de",
+                "created_at": "2026-10-24T12:00:10.000000Z",
+                "type": "rine.v1.dm",
+                "direction": "received",
+                "from": {
+                  "agent_id": "05375eb7-2d92-4fca-91d0-0ce6d7203b12",
+                  "handle": "05375eb7@example.test",
+                  "org_id": "6704b472-471d-8702-b9af-74fe69b09e6f",
+                  "own": false
+                },
+                "to": null,
+                "group": {
+                  "id": "f9d25783-8872-5cd5-acac-f0410bac83fd",
+                  "handle": "#room@example.test"
+                },
+                "conversation_id": "b7e14e91-b13b-510b-bab6-a45159fda36d",
+                "encryption_version": "sender-key-v1",
+                "delivered_at": null,
+                "x402_status": null,
+                "x402_rail": null,
+                "payload": {
+                  "encrypted_payload": "ApY_CUCTlV2at952f-dCDXwAAAAAOqZM0wQFc43iEhbdMvQ62HO0wUd44o4_jprbhBOaRbHIP1gE-brFqP6hMNI5wPXsCBgfZLNSxrHt0BVWU0hAaHotbZoAnXlVB8QmjhTReXeWvI5LHhqFfzr2GBtDdIofpGET-KIh_E-sUizSMe2JxaoVXVLzeD2ZkJ3E_dknOdMuqhSrI34fdCrv61h_n_pXWyb7WtKypYiji25IWyc",
+                  "self_encrypted_payload": null,
+                  "key_gen": 0
+                }
+              }
+            ],
+            "next_cursor": null
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "type": "rine.v1.sender_key_distribution",
+            "include": "payload",
+            "limit": "100"
+          },
+          "status": 200,
+          "body": {
+            "items": [],
+            "next_cursor": "page-1"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "type": "rine.v1.sender_key_distribution",
+            "include": "payload",
+            "limit": "100",
+            "cursor": "page-1"
+          },
+          "status": 200,
+          "body": {
+            "items": [],
+            "next_cursor": "page-2"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "type": "rine.v1.sender_key_distribution",
+            "include": "payload",
+            "limit": "100",
+            "cursor": "page-2"
+          },
+          "status": 200,
+          "body": {
+            "items": [],
+            "next_cursor": "page-3"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "type": "rine.v1.sender_key_distribution",
+            "include": "payload",
+            "limit": "100",
+            "cursor": "page-3"
+          },
+          "status": 200,
+          "body": {
+            "items": [],
+            "next_cursor": "page-4"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "type": "rine.v1.sender_key_distribution",
+            "include": "payload",
+            "limit": "100",
+            "cursor": "page-4"
+          },
+          "status": 200,
+          "body": {
+            "items": [],
+            "next_cursor": "page-5"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "type": "rine.v1.sender_key_distribution",
+            "include": "payload",
+            "limit": "100",
+            "cursor": "page-5"
+          },
+          "status": 200,
+          "body": {
+            "items": [],
+            "next_cursor": "page-6"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "type": "rine.v1.sender_key_distribution",
+            "include": "payload",
+            "limit": "100",
+            "cursor": "page-6"
+          },
+          "status": 200,
+          "body": {
+            "items": [],
+            "next_cursor": "page-7"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "type": "rine.v1.sender_key_distribution",
+            "include": "payload",
+            "limit": "100",
+            "cursor": "page-7"
+          },
+          "status": 200,
+          "body": {
+            "items": [],
+            "next_cursor": "page-8"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "type": "rine.v1.sender_key_distribution",
+            "include": "payload",
+            "limit": "100",
+            "cursor": "page-8"
+          },
+          "status": 200,
+          "body": {
+            "items": [],
+            "next_cursor": "page-9"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "type": "rine.v1.sender_key_distribution",
+            "include": "payload",
+            "limit": "100",
+            "cursor": "page-9"
+          },
+          "status": 200,
+          "body": {
+            "items": [],
+            "next_cursor": "page-10"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "type": "rine.v1.sender_key_distribution",
+            "include": "payload",
+            "limit": "100",
+            "cursor": "page-10"
+          },
+          "status": 200,
+          "body": {
+            "items": [],
+            "next_cursor": "page-11"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "type": "rine.v1.sender_key_distribution",
+            "include": "payload",
+            "limit": "100",
+            "cursor": "page-11"
+          },
+          "status": 200,
+          "body": {
+            "items": [],
+            "next_cursor": "page-12"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "type": "rine.v1.sender_key_distribution",
+            "include": "payload",
+            "limit": "100",
+            "cursor": "page-12"
+          },
+          "status": 200,
+          "body": {
+            "items": [],
+            "next_cursor": "page-13"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "type": "rine.v1.sender_key_distribution",
+            "include": "payload",
+            "limit": "100",
+            "cursor": "page-13"
+          },
+          "status": 200,
+          "body": {
+            "items": [],
+            "next_cursor": "page-14"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "type": "rine.v1.sender_key_distribution",
+            "include": "payload",
+            "limit": "100",
+            "cursor": "page-14"
+          },
+          "status": 200,
+          "body": {
+            "items": [],
+            "next_cursor": "page-15"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "type": "rine.v1.sender_key_distribution",
+            "include": "payload",
+            "limit": "100",
+            "cursor": "page-15"
+          },
+          "status": 200,
+          "body": {
+            "items": [],
+            "next_cursor": "page-16"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "type": "rine.v1.sender_key_distribution",
+            "include": "payload",
+            "limit": "100",
+            "cursor": "page-16"
+          },
+          "status": 200,
+          "body": {
+            "items": [],
+            "next_cursor": "page-17"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "type": "rine.v1.sender_key_distribution",
+            "include": "payload",
+            "limit": "100",
+            "cursor": "page-17"
+          },
+          "status": 200,
+          "body": {
+            "items": [],
+            "next_cursor": "page-18"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "type": "rine.v1.sender_key_distribution",
+            "include": "payload",
+            "limit": "100",
+            "cursor": "page-18"
+          },
+          "status": 200,
+          "body": {
+            "items": [],
+            "next_cursor": "page-19"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "type": "rine.v1.sender_key_distribution",
+            "include": "payload",
+            "limit": "100",
+            "cursor": "page-19"
+          },
+          "status": 200,
+          "body": {
+            "items": [],
+            "next_cursor": "page-20"
+          }
+        }
+      ],
+      "page": {
+        "items": [
+          {
+            "id": "556ec410-4c01-59cb-8a9d-ac6cae92a3de",
+            "created_at": "2026-10-24T12:00:10+00:00",
+            "type": "rine.v1.dm",
+            "direction": "received",
+            "from": {
+              "agent_id": "05375eb7-2d92-4fca-91d0-0ce6d7203b12",
+              "handle": "05375eb7@example.test",
+              "own": false
+            },
+            "to": null,
+            "group": {
+              "id": "f9d25783-8872-5cd5-acac-f0410bac83fd",
+              "handle": "#room@example.test"
+            },
+            "conversation_id": "b7e14e91-b13b-510b-bab6-a45159fda36d",
+            "encryption_version": "sender-key-v1",
+            "epoch": null,
+            "text": null,
+            "verification": null,
+            "equivocation": false,
+            "gap": {
+              "reason": "NoDistribution",
+              "sender": "05375eb7-2d92-4fca-91d0-0ce6d7203b12"
+            }
+          }
+        ],
+        "findings": [],
+        "next_cursor": null
+      }
+    }
+  ]
+}

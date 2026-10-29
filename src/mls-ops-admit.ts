@@ -1,7 +1,8 @@
 import { mlsInit } from "./crypto/mls-api.js";
 import { loadMlsState } from "./crypto/mls-state.js";
-import { openMlsClient } from "./crypto/mls.js";
 import type { HttpClient } from "./http.js";
+import { openPeerMlsClient } from "./mls-allowed.js";
+import { admitGroupPeers } from "./mls-allowed-tree.js";
 import { processMlsWelcomes } from "./mls-ops-join.js";
 import { runAdmission } from "./mls-admission-batch.js";
 import {
@@ -16,7 +17,9 @@ import {
 	requireGroup,
 } from "./mls-admission.js";
 import { mlsHeartbeat } from "./mls-heartbeat.js";
+import { mergeReports } from "./mls-escrow-report.js";
 import { reclaimOrphanLeaves } from "./mls-orphans.js";
+import { admitGroupPeersChecked, admitUnlessHeld } from "./mls-revoked-seat.js";
 
 /**
  * Initialize an MLS group: found it, and admit every member and invitee the
@@ -64,7 +67,11 @@ export async function initMlsGroup(
 		(agent) => !unready.has(admissionKey(agent)),
 	);
 
-	const mls = openMlsClient(configDir, agentId);
+	// The founding commit meets every member's leaf for the first time, so the
+	// group's chain-verified peers must be admitted before it is built. The
+	// members are the group's members: `/mls/init` reports exactly that roster.
+	await admitGroupPeers(ctx, groupId);
+	const mls = openPeerMlsClient(ctx);
 	return runAdmission(ctx, mls, pending, ledger, 1, null);
 }
 
@@ -80,7 +87,7 @@ export async function initMlsGroup(
  * `majority` group, where the deciding vote is routinely cast by a member who
  * joined and has not read anything yet.
  *
- * The decrypt path (`crypto/message.ts`) and the join path both install pending
+ * The decrypt path (`message-mls.ts`) and the join path both install pending
  * Welcomes before they need state. These two did not; this is that same step.
  *
  * Scoped with `forGroup` because it establishes exactly ONE group's state:
@@ -118,8 +125,12 @@ export async function addMlsGroupMembers(
 ): Promise<MlsAdmissionResult> {
 	const ctx = { configDir, agentId, groupId, client, extraHeaders };
 	await ensureAdmitterState(configDir, agentId, groupId, client);
-	const mls = openMlsClient(configDir, agentId);
+	// The Add commit meets the members' leaves for the first time, so the
+	// group's chain-verified peers must be admitted before it is built; the same
+	// read says whether the tree still holds a revoked agent's leaf.
+	const mls = openPeerMlsClient(ctx);
 	const group = requireGroup(mls, groupId);
+	const unserved = await admitGroupPeersChecked(ctx, group);
 	// Forced replenishment of OUR inventory. Each member's own inventory is
 	// theirs to replenish — a client can only publish key packages for an agent
 	// whose signing key it holds.
@@ -135,7 +146,7 @@ export async function addMlsGroupMembers(
 		pending.length > 1
 			? treeSize(await fetchGroupTree(client, groupId, extraHeaders))
 			: 1;
-	return runAdmission(ctx, mls, pending, ledger, seated, group.epoch());
+	return admitUnlessHeld(ctx, mls, unserved, pending, ledger, seated, group.epoch());
 }
 
 /**
@@ -170,9 +181,8 @@ export async function addMlsGroupMembers(
  * has one, retire the leaves nobody is entitled to. It is **off by default and
  * asked for explicitly**, because it removes leaves and costs one O(N) commit
  * per leaf — a resume that quietly did both would change what the verb means
- * and what it bills. Reclamation runs **after** admission, never before, so an
- * agent that rotated its signing key is re-seated under the new key before its
- * stale leaf is dropped.
+ * and what it bills. Reclamation runs **after** admission, never before, so
+ * everyone entitled to a leaf is seated before any other leaf is dropped.
  */
 export async function resumeMlsGroupAdmission(
 	configDir: string,
@@ -184,8 +194,12 @@ export async function resumeMlsGroupAdmission(
 ): Promise<MlsAdmissionResult> {
 	const ctx = { configDir, agentId, groupId, client, extraHeaders };
 	await ensureAdmitterState(configDir, agentId, groupId, client);
-	const mls = openMlsClient(configDir, agentId);
+	// The Add commits this pass mints meet the members' leaves for the first
+	// time, so the group's chain-verified peers must be admitted before they are
+	// built; the same read says whether the tree holds a revoked agent's leaf.
+	const mls = openPeerMlsClient(ctx);
 	const group = requireGroup(mls, groupId);
+	const unserved = await admitGroupPeersChecked(ctx, group);
 	await mlsHeartbeat({ configDir, agentId, client }, "forced");
 
 	const tree = await fetchGroupTree(client, groupId, extraHeaders);
@@ -196,14 +210,8 @@ export async function resumeMlsGroupAdmission(
 		[...tree.members, ...tree.invited],
 		ledger,
 	);
-	const result = await runAdmission(
-		ctx,
-		mls,
-		pending,
-		ledger,
-		treeSize(tree),
-		group.epoch(),
-	);
+	const seated = treeSize(tree);
+	const result = await admitUnlessHeld(ctx, mls, unserved, pending, ledger, seated, group.epoch());
 	if (!opts.reclaim) return result;
 	const reclamation = await reclaimOrphanLeaves(
 		configDir,
@@ -212,5 +220,10 @@ export async function resumeMlsGroupAdmission(
 		client,
 		extraHeaders,
 	);
-	return { ...result, epoch: reclamation.epoch, reclamation };
+	return {
+		...result,
+		epoch: reclamation.epoch,
+		escrow: mergeReports(result.escrow, reclamation.escrow),
+		reclamation,
+	};
 }

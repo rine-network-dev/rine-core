@@ -46,7 +46,12 @@ export function decodeEnvelope(data: Uint8Array): InnerEnvelope {
 		throw new Error("envelope too short for declared kid length");
 	}
 
-	const kid = new TextDecoder("utf-8", { fatal: true }).decode(data.subarray(1, 1 + kidLen));
+	let kid: string;
+	try {
+		kid = new TextDecoder("utf-8", { fatal: true }).decode(data.subarray(1, 1 + kidLen));
+	} catch {
+		throw new Error("envelope kid is not valid UTF-8");
+	}
 	const signature = data.slice(1 + kidLen, 1 + kidLen + SIGNATURE_SIZE);
 	const payload = data.slice(1 + kidLen + SIGNATURE_SIZE);
 

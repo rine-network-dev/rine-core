@@ -35,6 +35,7 @@ import {
 	isInventoryFull,
 	publishMlsKeyPackages,
 } from "./mls-keypackages.js";
+import { type GateKey, ProcessGate, actorGateKey } from "./process-gate.js";
 
 /**
  * What a recovery's key-package top-up did — the closed set, so a renderer
@@ -99,12 +100,7 @@ export const NO_KEY_PACKAGE_TOP_UP: KeyPackageTopUp = {
  * strength: the mirror says nothing about what the server holds, so it would
  * refuse the second genuine rescue of an agent that got wedged twice.
  */
-const rescuedThisProcess = new Set<string>();
-
-/** Forget every rescue. Test-only: a process boundary is what clears it in life. */
-export function resetKeyPackageRescueGate(): void {
-	rescuedThisProcess.clear();
-}
+const rescuedThisProcess = new ProcessGate();
 
 /**
  * How many unconsumed key packages the server holds for this agent, or `null`
@@ -164,8 +160,7 @@ async function serverKeyPackageCount(actor: MlsActor): Promise<number | null> {
 export async function topUpKeyPackages(
 	actor: MlsActor,
 ): Promise<KeyPackageTopUp> {
-	const key = `${actor.configDir} ${actor.agentId}`;
-	try {
+	return guardTopUp(actor, async (key) => {
 		const status = await ensureMlsKeyPackages(
 			actor.configDir,
 			actor.agentId,
@@ -175,32 +170,72 @@ export async function topUpKeyPackages(
 		if (status.published > 0) {
 			return { outcome: "topped-up", published: status.published };
 		}
+		return mintServerShortfall(actor, key);
+	});
+}
 
+/**
+ * Step 2 of {@link topUpKeyPackages} alone: ask the server what it holds and
+ * publish the shortfall against the target, for a caller that has just run the
+ * local step itself through the heartbeat.
+ *
+ * The welcome pass is that caller. A Welcome it sets aside unopened keeps the
+ * private half it was sealed to, so the local mirror reads full while the server
+ * pool may be empty — the one state the local count cannot see. Same cap and
+ * failure arms as the full top-up; throws nothing. A count the server will not
+ * give is no known shortfall, so unlike the recovery this publishes nothing for
+ * it: the additive rescue stays with {@link topUpKeyPackages}, which an operator
+ * runs on purpose.
+ */
+export async function topUpFromServerCount(
+	actor: MlsActor,
+): Promise<KeyPackageTopUp> {
+	return guardTopUp(actor, async () => {
 		const held = await serverKeyPackageCount(actor);
-		let count: number;
-		if (held === null) {
-			if (rescuedThisProcess.has(key)) return NO_KEY_PACKAGE_TOP_UP;
-			rescuedThisProcess.add(key);
-			count = MLS_KEY_PACKAGE_TARGET;
-		} else {
-			count = MLS_KEY_PACKAGE_TARGET - held;
-			// At or above target the pool really was healthy, and this is the arm
-			// that makes a looped `group sync` cost nothing: no mint, no upload,
-			// and no process boundary to reset.
-			if (count <= 0) return NO_KEY_PACKAGE_TOP_UP;
-		}
+		if (held === null) return NO_KEY_PACKAGE_TOP_UP;
+		return publishBatch(actor, MLS_KEY_PACKAGE_TARGET - held);
+	});
+}
 
-		const { stored } = await publishMlsKeyPackages(
-			actor.configDir,
-			actor.agentId,
-			actor.client,
-			count,
-		);
-		// `stored` and not the batch size: an upload the server answered by
-		// storing none of it is not a top-up, and a sentence that says it topped
-		// the pool up by zero is an affirmative claim beside its own refutation.
-		if (stored === 0) return NO_KEY_PACKAGE_TOP_UP;
-		return { outcome: "topped-up", published: stored };
+async function mintServerShortfall(
+	actor: MlsActor,
+	key: GateKey,
+): Promise<KeyPackageTopUp> {
+	const held = await serverKeyPackageCount(actor);
+	if (held !== null) return publishBatch(actor, MLS_KEY_PACKAGE_TARGET - held);
+	if (rescuedThisProcess.has(key)) return NO_KEY_PACKAGE_TOP_UP;
+	rescuedThisProcess.set(key, true);
+	return publishBatch(actor, MLS_KEY_PACKAGE_TARGET);
+}
+
+async function publishBatch(
+	actor: MlsActor,
+	count: number,
+): Promise<KeyPackageTopUp> {
+	// At or above target the pool really was healthy, and this is the arm
+	// that makes a looped `group sync` cost nothing: no mint, no upload,
+	// and no process boundary to reset.
+	if (count <= 0) return NO_KEY_PACKAGE_TOP_UP;
+	const { stored } = await publishMlsKeyPackages(
+		actor.configDir,
+		actor.agentId,
+		actor.client,
+		count,
+	);
+	// `stored` and not the batch size: an upload the server answered by
+	// storing none of it is not a top-up, and a sentence that says it topped
+	// the pool up by zero is an affirmative claim beside its own refutation.
+	if (stored === 0) return NO_KEY_PACKAGE_TOP_UP;
+	return { outcome: "topped-up", published: stored };
+}
+
+async function guardTopUp(
+	actor: MlsActor,
+	step: (key: GateKey) => Promise<KeyPackageTopUp>,
+): Promise<KeyPackageTopUp> {
+	const key = actorGateKey(actor);
+	try {
+		return await step(key);
 	} catch (err) {
 		// The cap keeps its stamp: the server has answered, definitively, that it
 		// will not hold more for this agent, and another batch would be ten more

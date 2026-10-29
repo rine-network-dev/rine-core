@@ -1,47 +1,15 @@
-import { agentIdFromKid, fromBase64Url, validatePathId } from "./keys.js";
+import { SENDER_KEY_DISTRIBUTION_TYPE } from "../control-frames.js";
+import { parseSigningKid } from "./keys.js";
 import type { MessageDecryptResult } from "./message.js";
-import type { SenderKeyState } from "./sender-keys.js";
+import {
+	distributionGroupId,
+	parseSenderKeyDistribution,
+} from "./sk-distribution.js";
 import {
 	loadSenderKeyStates,
 	saveSenderKeyState,
 	senderKeysRetired,
 } from "./sender-keys-helpers.js";
-
-/**
- * Bytes in a chain key. It is an HMAC-SHA256 ratchet root and every honest
- * producer mints exactly this many (`generateSenderKey`), but HMAC accepts a key
- * of any length — so nothing downstream would ever notice a 0-byte or a 1 MiB
- * one, and the reader would store what it was sent.
- */
-const CHAIN_KEY_SIZE = 32;
-
-/**
- * The largest index the wire format can name: it carries the message index in a
- * big-endian uint32, so a state above this can never be reached by a real
- * message, and one below zero can never be reached at all.
- */
-const MAX_MESSAGE_INDEX = 0xffffffff;
-
-/**
- * One UUID out of the payload, spelled the one way every other reader spells it.
- *
- * 🔴 Lower-casing is not cosmetic. `validatePathId` accepts either case, and the
- * group id from a distribution becomes a FILENAME — while the retirement marker
- * and the group read cache both lower-case theirs, and every honest reader passes
- * the server's own lower-case spelling. Leaving the payload's spelling intact gave
- * a single logical group one state-file namespace per casing: a file no reader
- * looks in, no leave-time cleanup unlinks, and whose contents do not count as
- * "already held" against the canonical file.
- *
- * Twin: `_canonical_id` in `rine-sdk/src/rine/_crypto/sk_distribution.py`.
- */
-function canonicalId(value: unknown, label: string): string {
-	if (typeof value !== "string") {
-		throw new Error(`Invalid ${label}: expected a UUID string`);
-	}
-	validatePathId(value, label);
-	return value.toLowerCase();
-}
 
 /**
  * Auto-ingest a sender key distribution from a decrypted message.
@@ -75,7 +43,7 @@ export function ingestSenderKeyDistribution(
 	messageType: string,
 	result: MessageDecryptResult,
 ): boolean {
-	if (messageType !== "rine.v1.sender_key_distribution") return false;
+	if (messageType !== SENDER_KEY_DISTRIBUTION_TYPE) return false;
 
 	// Only ingest sender keys from verified senders to prevent poisoning. A
 	// refused envelope is unverified AND carries no text — group key material is
@@ -87,45 +55,18 @@ export function ingestSenderKeyDistribution(
 		// and never from here — is the sender's own plaintext, chosen freely by any
 		// agent that can DM this one. `unknown` rather than the shape it claims,
 		// because the claim is the thing under attack.
-		const dist = JSON.parse(result.plaintext) as {
-			group_id: unknown;
-			sender_key_id: unknown;
-			chain_key: unknown;
-			message_index?: unknown;
-		};
+		const dist = JSON.parse(result.plaintext) as Record<string, unknown>;
 		// A group this agent retired never takes key material again, however the
 		// distribution reaches it. The DMs that carried these keys are still in the
 		// inbox after a leave, so without this the wipe holds only until the next
 		// group read that misses. A malformed group id throws out of
 		// `validatePathId` into the catch below, so the refusal fails closed.
-		const groupId = canonicalId(dist.group_id, "group id");
+		const groupId = distributionGroupId(dist);
 		if (senderKeysRetired(configDir, agentId, groupId)) return false;
 
-		if (typeof dist.chain_key !== "string") {
-			throw new Error("Invalid chain_key: expected a base64url string");
-		}
-		const chainKey = fromBase64Url(dist.chain_key);
-		if (chainKey.length !== CHAIN_KEY_SIZE) {
-			throw new Error(
-				`Invalid chain_key: expected ${CHAIN_KEY_SIZE} bytes, got ${chainKey.length}`,
-			);
-		}
-		// `=== undefined`, not `??`: absent means "starts at zero" and is the only
-		// spelling an honest producer emits, while an explicit `null` is a value the
-		// sender chose. Coalescing the two would make this the one field where TS
-		// accepts what `_crypto/sk_distribution.py` refuses.
-		const messageIndex = dist.message_index === undefined ? 0 : dist.message_index;
-		if (
-			!Number.isInteger(messageIndex) ||
-			(messageIndex as number) < 0 ||
-			(messageIndex as number) > MAX_MESSAGE_INDEX
-		) {
-			throw new Error(
-				`Invalid message_index: ${String(messageIndex)} is not a uint32 the wire can carry`,
-			);
-		}
-		const senderAgentId = agentIdFromKid(result.senderKid);
-		const senderKeyId = canonicalId(dist.sender_key_id, "sender key id");
+		const senderAgentId = parseSigningKid(result.senderKid).agentId;
+		const newState = parseSenderKeyDistribution(dist, groupId, senderAgentId);
+		if (newState === null) return false;
 
 		// 🔴 Per SENDER, never per key id alone. A sender key id is minted by whoever
 		// sends it, so a check that asks only "do I hold this id" makes the first
@@ -137,26 +78,19 @@ export function ingestSenderKeyDistribution(
 		// permanently — re-scanning re-skips the DM that would have fixed it — and
 		// the refusal reads as a crypto regression. Agent ids compare
 		// case-insensitively, as the own-row test in `sender-key-ops.ts` already
-		// does: `agentIdFromKid` preserves whatever case the signer put in its kid.
+		// does: `parseSigningKid` preserves whatever case the signer put in its kid.
 		// Twin: `alreadyHeld` in `rine-sdk/src/rine/_crypto/sk_distribution.py`.
 		const existing = loadSenderKeyStates(configDir, agentId, groupId);
 		const sender = senderAgentId.toLowerCase();
 		if (
 			existing.some(
 				(s) =>
-					s.senderKeyId === senderKeyId &&
+					s.senderKeyId === newState.senderKeyId &&
 					s.senderAgentId.toLowerCase() === sender,
 			)
 		) {
 			return false;
 		}
-		const newState: SenderKeyState = {
-			senderKeyId,
-			groupId,
-			senderAgentId,
-			chainKey,
-			messageIndex: messageIndex as number,
-		};
 		saveSenderKeyState(configDir, agentId, groupId, [...existing, newState]);
 		return true;
 	} catch {

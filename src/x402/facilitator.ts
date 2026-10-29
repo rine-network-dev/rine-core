@@ -208,6 +208,10 @@ async function facilitatorPost<T>(
 			method: "POST",
 			headers: { "content-type": "application/json", ...cfg.headers },
 			body: JSON.stringify(body),
+			// Never follow a redirect: the POST carries the operator's facilitator
+			// headers, and a 3xx would replay them (and the signed payload) at a
+			// host the transport check never saw.
+			redirect: "error",
 			signal: withTimeout(signal),
 		});
 	} catch (err) {

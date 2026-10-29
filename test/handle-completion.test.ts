@@ -1,4 +1,4 @@
-// Item 18's sentence — the one place the bytes exist.
+// The handle-completion sentence — the one place the bytes exist.
 //
 // `resolveToUuid` completes a short handle before WebFinger sees it and answers
 // with a UUID, never the spelling it resolved, so the substitution is invisible

@@ -19,6 +19,7 @@
 
 import * as fs from "node:fs";
 import { join } from "node:path";
+import { ensureDir, writeAtomic } from "./config.js";
 import { validatePathId } from "./crypto/keys.js";
 import { sameWords } from "./crypto/verification-words.js";
 import { RineApiError } from "./errors.js";
@@ -137,11 +138,11 @@ export function recordPeerVerification(
 		words: peer.words,
 		confirmedAt: new Date().toISOString(),
 	};
-	const dir = peersDir(configDir, agentId);
-	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-	const path = peerFile(configDir, agentId, peer.peerAgentId);
-	fs.writeFileSync(path, JSON.stringify(record), "utf-8");
-	fs.chmodSync(path, 0o600);
+	ensureDir(peersDir(configDir, agentId));
+	writeAtomic(
+		peerFile(configDir, agentId, peer.peerAgentId),
+		JSON.stringify(record),
+	);
 	return record;
 }
 

@@ -52,7 +52,7 @@ import { UUID_RE, normalizeHandle } from "./resolve-handle.js";
  * 🔴 **A stranger's UUID is not the way round it either.**
  * {@link resolveGroup} reads an id from `GET /groups/{id}`
  * and refuses what that route will not serve this caller, so every spelling
- * this entry point's ladder takes is scoped to a group the org owns or is
+ * this entry point's ladder takes is scoped to a group the key's scope owns or is
  * seated in. {@link resolveGroupForJoin} (`recipient-resolution.ts`) is the
  * entry aimed at a group this org holds neither in, and its UUID rung is
  * deliberately still a passthrough.
@@ -60,13 +60,10 @@ import { UUID_RE, normalizeHandle } from "./resolve-handle.js";
  * The handle is normalised first, so the short form (`#ops@acme`) and the full
  * one (`#ops@acme.rine.network`) name the same group.
  *
- * ⚠️ That normalisation reaches the SEND path too, not just the read this round
- * added: `getOrCreateSenderKey` and the CLI's group send both resolve through
- * here and used to pass the handle to `?handle=` verbatim. It is idempotent —
- * the server normalises the same way, so a full handle produces a byte-identical
- * query and a short one now resolves where it used to find nothing — but a send
- * path changed under a read's brief, and that is worth saying out loud rather
- * than leaving for a bisect to find.
+ * ⚠️ That normalisation reaches the SEND path too: `getOrCreateSenderKey` and
+ * the CLI's group send both resolve through here. It is idempotent — the server
+ * normalises the same way, so a full handle produces a byte-identical query and
+ * a short one resolves to the same group.
  *
  * @throws {Error} No group of that handle is visible to this caller.
  */
@@ -90,8 +87,8 @@ export async function resolveGroupByHandle(
 	// rung, and a group the caller is not yet in is precisely what join is for.
 	// Widening it there would collapse the rung into the answer.
 	//
-	// Bounded by the route, not by trust: `GET /groups` is org-scoped, so this
-	// can only ever reach a group the caller already holds a seat in, and the
+	// Bounded by the route, not by trust: `GET /groups` is key-scoped, so this
+	// can only ever reach a group inside the caller's own scope, and the
 	// server refuses a post to a group the acting agent is not seated in
 	// regardless. The refusal quotes `handle`, never the local part.
 	return resolveGroupByName(client, groupLocalPart(handle), extraHeaders, handle);
@@ -101,8 +98,8 @@ export async function resolveGroupByHandle(
  * The same lookup, answering `undefined` instead of throwing.
  *
  * 🔴 **Named for its scope, because the scope is the whole point.** The route
- * joins `GroupMember` to the caller's org, so it answers for a group this org
- * already holds a seat in and for no other. Every group verb but one wants
+ * joins `GroupMember` to the caller's scope (its own seats for an agent, its
+ * branch's for a branch, the org's for the org) and answers for no other group. Every group verb but one wants
  * exactly that, and for them an empty page IS the refusal — which is why
  * {@link resolveGroupByHandle} keeps the throw and stays the function they call.
  *
@@ -144,7 +141,7 @@ export async function seatedGroupByHandle(
  * stays what it looks like: the fetch, and nothing else.
  *
  * `extraHeaders` carries `X-Rine-Agent` where the caller has one. Attribution,
- * not selection — the route is org-scoped either way.
+ * not selection — the route is key-scoped either way.
  */
 async function fetchOwnGroups(
 	client: HttpClient,
@@ -171,7 +168,7 @@ async function fetchOwnGroups(
  * 🔴 **404 and 403 answer the same, and that is a disclosure rule rather than
  * a simplification.** `GET /groups/{id}` 404s an id no group carries and 403s
  * one belonging to an org this caller is neither owner of nor seated in
- * (`has_read_access`, `src/rine/api/group_helpers.py`). Separating them would
+ * (`has_read_access`, `src/rine/api/group_scope.py`). Separating them would
  * tell a stranger which unknown ids EXIST, which is a non-member lookup rine
  * does not offer. Both become `undefined` here, so one refusal is
  * composed for both.
@@ -192,14 +189,12 @@ async function fetchOwnGroups(
  * client-side spelling comparison left to get wrong on the way out.
  *
  * 🔴 **The answer is checked, and that is not defensive tidiness.**
- * This rung was once a passthrough, so no server answer could stand in
- * for the group the caller named. Now the body is what every group verb acts
- * on — and `resolveGroup` is the seam five more surfaces are being routed
- * through — so a row naming another group would make every one of them act on
- * that group while the caller believed it addressed its own. It is a
- * {@link GroupIdentityMismatchError} and NOT the roster refusal: the fault is
- * the server's, and answering it with *"Group not found"* would send a caller
- * off to re-spell a reference that was right. The Python twin is
+ * The body is what every group verb acts on, so a row naming another group
+ * would make every one of them act on that group while the caller believed it
+ * addressed its own. It is a {@link GroupIdentityMismatchError} and NOT the
+ * roster refusal: the fault is the server's, and answering it with *"Group not
+ * found"* would send a caller off to re-spell a reference that was right. The
+ * Python twin is
  * `rine._recipient_reads.refuse_a_substituted_group`, and `GroupsResource.get`
  * (`rine-ts-sdk`) refuses the same body one layer up with the same sentence.
  *
@@ -219,7 +214,8 @@ async function fetchOwnGroups(
  * 🔴 **Exported because a second caller needs the MISS, not the refusal.**
  * `send --to <uuid>` asks the group namespace first and falls through to the
  * agent one when nothing answers — {@link resolveRecipient}, and the CLI's own
- * dispatch in `rine-cli/src/commands/messages.ts` — so neither can climb
+ * dispatch in `rine-cli/src/commands/messages-send-target.ts::resolveSendTarget`
+ * — so neither can climb
  * {@link resolveGroup}: that entry point spends the roster and throws, and a
  * throw would refuse every agent UUID in the product. Hand-rolling a bare read
  * of the single-group route for that probe instead would silently drop the
@@ -356,21 +352,21 @@ export async function resolveGroupRef(
  * {@link resolveGroup} with everything but the id thrown away — all three
  * spellings, including a UUID, walk the same ladder.
  *
- * 🔴 **A UUID used to pass straight through here, and no longer does.** This
- * entry answered an id nobody had checked while {@link resolveGroup} refused
- * the same unknown id with the caller's own roster, so one reference got two
- * answers depending on which entry a verb happened to reach. The roster refusal
- * won: what a bare server 404 buys is a measured
- * 0/6 recovery rate, and the id is the one spelling a model most often invents.
- * It is priced properly — a resolved id costs one indexed
- * `GET /groups/{id}` and the unpaginated roster is read only to compose the
- * refusal. `resolveGroupForJoin` is untouched and must stay so: a join targets
+ * 🔴 **A UUID is checked here, never passed straight through.** An unchecked
+ * id would get a different answer here than from {@link resolveGroup}, which
+ * refuses an unknown id with the caller's own roster, so one reference would
+ * get two answers depending on which entry a verb reached. The roster refusal
+ * is the answer both give: a bare server 404 buys a measured 0/6 recovery
+ * rate, and the id is the one spelling a model most often invents. It is
+ * priced properly — a resolved id costs one indexed `GET /groups/{id}` and the
+ * unpaginated roster is read only to compose the refusal.
+ * `resolveGroupForJoin` does not check and must not: a join targets
  * a group this org is neither owner of nor seated in by definition, so neither
  * of those two reads can describe it.
  *
  * `extraHeaders` carries `X-Rine-Agent` where the caller has one. It is
- * attribution, not selection: `GET /groups` is org-scoped, so a bare name
- * resolves against every group an agent of the org belongs to either way.
+ * attribution, not selection: `GET /groups` is key-scoped, so a bare name
+ * resolves against the same groups either way (an org key's: every group an agent of the org belongs to).
  */
 export async function resolveGroupUuid(
 	client: HttpClient,
@@ -407,8 +403,8 @@ export async function resolveGroupUuid(
  * gets this from `_fetch_agents`'s memo (`rine-sdk/src/rine/_client.py`); on
  * this stack the list is passed, because caching inside `rine-core` would
  * outlive a request it has no way to scope. The group fetch is the one round
- * trip this path genuinely adds, and it is paid only for a spelling that had no
- * answer at all before this function existed.
+ * trip this path genuinely adds, and it is paid only for a spelling no other
+ * rung answers.
  *
  * @throws {Error} The name is an agent's, or no group of the caller's answers
  *   to it.

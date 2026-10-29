@@ -36,6 +36,7 @@
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { sha256 } from "@noble/hashes/sha2.js";
+import { writeAtomic } from "../config.js";
 import { fromBase64Url, toBase64Url, validatePathId } from "./keys.js";
 
 /**
@@ -161,8 +162,7 @@ export function recordGroupRead(
 		const key = digest(ciphertext);
 		const entries = load(path).filter((e) => e.k !== key);
 		entries.push({ k: key, e: toBase64Url(innerEnvelope) });
-		fs.writeFileSync(path, JSON.stringify(evict(entries)), "utf-8");
-		fs.chmodSync(path, 0o600);
+		writeAtomic(path, JSON.stringify(evict(entries)));
 	} catch {
 		// A re-read buffer is not worth failing a read that succeeded.
 	}

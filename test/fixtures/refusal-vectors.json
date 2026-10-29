@@ -300,7 +300,7 @@
         }
       ],
       "agents": [],
-      "expected": "'nowhere' names neither an agent nor a group you can reach. A bare name is read as a group this org is seated in, and none of them answers to it. An agent is addressed in full — its name, an at sign, and its org's domain — and a group by its whole handle, which is a leading hash and the same three parts. Name one of these groups:\n  - #logistics@acme.rine.network (logistics)\n  - #ops@acme.rine.network (ops)\n  - #planning@acme.rine.network (planning)"
+      "expected": "'nowhere' names neither an agent nor a group you can reach. A bare name is read as a group you hold a seat in, and none of them answers to it. An agent is addressed in full — its name, an at sign, and its org's domain — and a group by its whole handle, which is a leading hash and the same three parts. Name one of these groups:\n  - #logistics@acme.rine.network (logistics)\n  - #ops@acme.rine.network (ops)\n  - #planning@acme.rine.network (planning)"
     },
     {
       "id": "bare-recipient-nothing-answers-empty-roster",
@@ -308,7 +308,7 @@
       "spelling": "nowhere",
       "candidates": [],
       "agents": [],
-      "expected": "'nowhere' names neither an agent nor a group you can reach. A bare name is read as a group this org is seated in, and none of them answers to it. An agent is addressed in full — its name, an at sign, and its org's domain — and a group by its whole handle, which is a leading hash and the same three parts. This org is in no groups yet."
+      "expected": "'nowhere' names neither an agent nor a group you can reach. A bare name is read as a group you hold a seat in, and none of them answers to it. An agent is addressed in full — its name, an at sign, and its org's domain — and a group by its whole handle, which is a leading hash and the same three parts. This org is in no groups yet."
     },
     {
       "id": "bare-recipient-a-spelling-ending-in-a-period",
@@ -332,7 +332,7 @@
         }
       ],
       "agents": [],
-      "expected": "'kofi.' names neither an agent nor a group you can reach. A bare name is read as a group this org is seated in, and none of them answers to it. An agent is addressed in full — its name, an at sign, and its org's domain — and a group by its whole handle, which is a leading hash and the same three parts. Name one of these groups:\n  - #logistics@acme.rine.network (logistics)\n  - #ops@acme.rine.network (ops)\n  - #planning@acme.rine.network (planning)"
+      "expected": "'kofi.' names neither an agent nor a group you can reach. A bare name is read as a group you hold a seat in, and none of them answers to it. An agent is addressed in full — its name, an at sign, and its org's domain — and a group by its whole handle, which is a leading hash and the same three parts. Name one of these groups:\n  - #logistics@acme.rine.network (logistics)\n  - #ops@acme.rine.network (ops)\n  - #planning@acme.rine.network (planning)"
     },
     {
       "id": "bare-agent-collision-one-agent",
@@ -485,7 +485,7 @@
       "unread": 0,
       "candidates": [],
       "agents": [],
-      "expected": "Group not found: #nowhere@acme.rine.network. No group of that handle is one this org is seated in, one this agent's pending invitations name, or a public group in the directory. A group in none of those three is not reachable by handle at all, and its id is the only reference that reaches it. Join takes a group's whole handle — a leading hash, the group's name, an at sign, and its org's domain — or its id."
+      "expected": "Group not found: #nowhere@acme.rine.network. No group of that handle is one you hold a seat in, one this agent's pending invitations name, an open or voted group your org owns and holds a seat in, or a public group in the directory. A group in none of those four is not reachable by handle at all, and its id is the only reference that reaches it. Join takes a group's whole handle — a leading hash, the group's name, an at sign, and its org's domain — or its id."
     },
     {
       "id": "join-a-handle-the-directory-held-more-of-than-the-join-read",
@@ -494,7 +494,7 @@
       "unread": 7,
       "candidates": [],
       "agents": [],
-      "expected": "Group not found: #nowhere@acme.rine.network. No group of that handle is one this org is seated in or one this agent's pending invitations name, and the public directory holds 7 more groups matching that name than this join read — so this is not a report that the group is absent from it. The id the directory prints beside a handle reaches the group in one step. Join takes a group's whole handle — a leading hash, the group's name, an at sign, and its org's domain — or its id."
+      "expected": "Group not found: #nowhere@acme.rine.network. No group of that handle is one you hold a seat in, one this agent's pending invitations name, or an open or voted group your org owns and holds a seat in, and the public directory holds 7 more groups matching that name than this join read — so this is not a report that the group is absent from it. The id the directory prints beside a handle reaches the group in one step. Join takes a group's whole handle — a leading hash, the group's name, an at sign, and its org's domain — or its id."
     },
     {
       "id": "a-group-reference-in-the-conversation-slot",

@@ -59,6 +59,7 @@ import {
 	retirementMessage,
 } from "../src/group-removal-ops.js";
 import type { HttpClient } from "../src/http.js";
+import { emptyReport } from "../src/mls-escrow-report.js";
 import { removeMlsGroupMember } from "../src/mls-ops-removal.js";
 import { deleteSenderKey } from "../src/sender-key-ops.js";
 
@@ -168,6 +169,7 @@ describe("deleteGroupMember — the DELETE goes first, the commit only when aske
 		vi.mocked(removeMlsGroupMember).mockResolvedValue({
 			epoch: 7,
 			removedLeaf: true,
+			escrow: emptyReport(),
 		});
 		const { client, deletes } = stubClient(1);
 
@@ -192,7 +194,11 @@ describe("deleteGroupMember — the DELETE goes first, the commit only when aske
 			client,
 			{ "X-Rine-Agent": ADMIN_ID },
 		);
-		expect(removal).toEqual({ epoch: 7, removedLeaf: true });
+		expect(removal).toEqual({
+			epoch: 7,
+			removedLeaf: true,
+			escrow: emptyReport(),
+		});
 		expect(deletes).toHaveLength(2);
 	});
 
@@ -200,6 +206,7 @@ describe("deleteGroupMember — the DELETE goes first, the commit only when aske
 		vi.mocked(removeMlsGroupMember).mockResolvedValue({
 			epoch: 7,
 			removedLeaf: true,
+			escrow: emptyReport(),
 		});
 		const { client, deletes } = stubClient(1);
 
@@ -229,6 +236,7 @@ describe("deleteGroupMember — the DELETE goes first, the commit only when aske
 		vi.mocked(removeMlsGroupMember).mockResolvedValue({
 			epoch: 9,
 			removedLeaf: false,
+			escrow: emptyReport(),
 		});
 		const { client, deletes } = stubClient(1);
 
@@ -242,7 +250,11 @@ describe("deleteGroupMember — the DELETE goes first, the commit only when aske
 
 		expect(deletes).toHaveLength(2);
 		expect((deletes[1] as DeleteCall)[2]).toEqual({ mls_removal_epoch: 9 });
-		expect(removal).toEqual({ epoch: 9, removedLeaf: false });
+		expect(removal).toEqual({
+			epoch: 9,
+			removedLeaf: false,
+			escrow: emptyReport(),
+		});
 	});
 
 	it("resolves the acting admin only on the path that needs a commit", async () => {
@@ -381,14 +393,20 @@ describe("the sentences say what happened, per group type", () => {
 	});
 
 	it("reports a leaf that went, and never claims one that did not", () => {
-		expect(evictionMessage(group(), { epoch: 7, removedLeaf: true })).toContain(
-			"took their leaf out",
-		);
-		const stranded = evictionMessage(group(), { epoch: 9, removedLeaf: false });
-		expect(stranded).toContain(
-			"no leaf in this group's ratchet tree carries the signing key they publish now",
-		);
-		expect(stranded).toContain("rotated their signing key");
+		expect(
+			evictionMessage(group(), {
+				epoch: 7,
+				removedLeaf: true,
+				escrow: emptyReport(),
+			}),
+		).toContain("took their leaf out");
+		const stranded = evictionMessage(group(), {
+			epoch: 9,
+			removedLeaf: false,
+			escrow: emptyReport(),
+		});
+		expect(stranded).toContain("no leaf in this group's ratchet tree is theirs");
+		expect(stranded).not.toContain("rotated");
 		expect(stranded).not.toContain("took their leaf out");
 	});
 

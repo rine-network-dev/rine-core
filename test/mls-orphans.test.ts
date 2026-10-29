@@ -11,11 +11,14 @@
  * invitation takes its leaf the moment its Welcome is minted, so a pass that
  * reads members alone would evict every agent who has not accepted yet.
  */
-import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../src/mls-escrow-key.js", async () =>
+	(await import("./mls-escrow-harness.js")).escrowKeyModule(),
+);
 
 vi.mock("../src/crypto/mls-api.js", async () => {
 	const actual = await vi.importActual<
@@ -36,12 +39,9 @@ vi.mock("../src/crypto/mls-api.js", async () => {
 	};
 });
 
-import {
-	agentKeysExist,
-	generateAgentKeys,
-	saveAgentKeys,
-	signingPublicKeyToJWK,
-} from "../src/crypto/keys.js";
+import { ascii } from "../src/crypto/bytes.js";
+import { RineApiError } from "../src/errors.js";
+import { World } from "./crypto/world.js";
 import {
 	claimKeyPackagesBatch,
 	mlsCommit,
@@ -65,6 +65,7 @@ const SELF_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
 const GROUP_ID = "c3d4e5f6-a7b8-9012-cdef-123456789012";
 
 let dir: string;
+let world: World;
 /** Every commit body the server accepted, in order. */
 let posted: MlsCommitBody[];
 /** Agents holding a claimable KeyPackage. */
@@ -83,27 +84,31 @@ let members: string[];
 /** Agent ids `GET /agents/keys` pretends not to know — revoked, or org erased. */
 let unreadable: Set<string>;
 let client: never;
+/** Every escrow upload the pass made, as the path it PUT. */
+let uploads: string[];
 
 /** An agent with keys on disk and one claimable KeyPackage. */
 function agent(): string {
-	const agentId = randomUUID();
-	saveAgentKeys(dir, agentId, generateAgentKeys());
-	pool.add(agentId);
-	return agentId;
+	const created = world.addAgent();
+	world.save(dir, created);
+	pool.add(created.id);
+	return created.id;
 }
 
-/** An agent's MLS basic-credential identity — its raw Ed25519 signing key. */
+/** An agent's MLS basic-credential identity — the ASCII bytes of its agent id. */
 function identityOf(agentId: string): Uint8Array {
-	return openMlsClient(dir, agentId).publicKey();
+	return ascii(agentId);
 }
 
-/** The published signing keys `GET /agents/keys` would return for `ids`. */
+/** The published keys `GET /agents/keys` would return for `ids`. */
 function publishedKeys(ids: string[]) {
 	const keys: Record<string, unknown> = {};
 	for (const id of ids) {
-		if (!agentKeysExist(dir, id) || unreadable.has(id)) continue;
-		const jwk = signingPublicKeyToJWK(identityOf(id));
-		keys[id] = { signing_public_key: jwk, encryption_public_key: jwk };
+		if (unreadable.has(id)) continue;
+		const generations = world.agents.get(id);
+		if (!generations?.length) continue;
+		const newest = generations.reduce((a, b) => (b.gen > a.gen ? b : a));
+		keys[id] = newest.response;
 	}
 	return keys;
 }
@@ -123,6 +128,7 @@ function commitCount(): number {
 
 beforeEach(() => {
 	dir = fs.mkdtempSync(join(tmpdir(), "rine-orphans-"));
+	world = new World();
 	posted = [];
 	pool = new Set();
 	invited = [];
@@ -131,7 +137,7 @@ beforeEach(() => {
 	members = [SELF_ID];
 	unreadable = new Set();
 	vi.clearAllMocks();
-	saveAgentKeys(dir, SELF_ID, generateAgentKeys());
+	world.save(dir, world.addAgent({ id: SELF_ID }));
 	vi.mocked(mlsCommit).mockImplementation(async (_c, _g, body) => {
 		posted.push(body);
 		return { epoch: body.epoch ?? null, delivered_to: 1 };
@@ -144,7 +150,12 @@ beforeEach(() => {
 				: [],
 		})),
 	}));
+	uploads = [];
 	client = {
+		put: vi.fn(async (path: string) => {
+			uploads.push(path);
+			return {};
+		}),
 		get: vi.fn(async (path: string, params?: Record<string, string>) => {
 			if (path === "/agents/keys") {
 				return { keys: publishedKeys(String(params?.ids).split(",")) };
@@ -272,12 +283,58 @@ describe("reclaimOrphanLeaves", () => {
 
 		expect(result).toMatchObject({ found: 1, reclaimed: 1, commits: 1 });
 		expect(commitCount()).toBe(before + 1);
-		// The Remove commit carries no Welcome and declares no removal target: an
-		// orphan holds no member row, so no DELETE may ever be authorised by it.
+		expect(uploads).toContain(
+			`/groups/${GROUP_ID}/mls/escrow/${openMlsGroup(dir, SELF_ID, GROUP_ID).epoch()}`,
+		);
+		// The Remove commit carries no Welcome and declares the orphan's agent, so
+		// the server can close that agent's seat span.
 		expect(posted.at(-1)?.welcomes).toEqual([]);
+		expect(posted.at(-1)?.removes).toEqual([noShow]);
 		expect(
 			isSeated(openMlsGroup(dir, SELF_ID, GROUP_ID), identityOf(noShow)),
 		).toBe(false);
+	});
+
+	it("test_reclaim_when_a_revoked_leaf_is_removed_then_nobody_is_added_or_claimed", async () => {
+		const revoked = agent();
+		const bystander = agent();
+		await seatAgents([revoked]);
+		const treeBefore = openMlsGroup(dir, SELF_ID, GROUP_ID)
+			.memberIdentities()
+			.map((leaf) => new TextDecoder().decode(leaf.identity));
+		unreadable.add(revoked);
+		vi.mocked(claimKeyPackagesBatch).mockClear();
+		const before = commitCount();
+
+		const result = await reclaimOrphanLeaves(dir, SELF_ID, GROUP_ID, client);
+
+		// The pass reaches no key package and no Welcome, so a joiner the revoked
+		// seat was holding back is not admitted by it, even with a key on offer.
+		expect(result).toMatchObject({ found: 1, reclaimed: 1 });
+		expect(claimKeyPackagesBatch).not.toHaveBeenCalled();
+		const reclaim = posted.slice(before);
+		expect(reclaim).toHaveLength(1);
+		expect(reclaim.every((body) => body.welcomes?.length === 0)).toBe(true);
+		const treeAfter = openMlsGroup(dir, SELF_ID, GROUP_ID)
+			.memberIdentities()
+			.map((leaf) => new TextDecoder().decode(leaf.identity));
+		expect(treeAfter).toEqual(treeBefore.filter((id) => id !== revoked));
+		expect(treeAfter).not.toContain(bystander);
+	});
+
+	it("test_reclaim_when_every_commit_meets_an_epoch_conflict_then_one_retry_and_the_pass_stops", async () => {
+		await seatAgents([agent(), agent()]);
+		vi.mocked(mlsCommit).mockClear();
+		vi.mocked(mlsCommit).mockRejectedValue(
+			new RineApiError(409, "stale", undefined, "epoch_conflict"),
+		);
+
+		const result = await reclaimOrphanLeaves(dir, SELF_ID, GROUP_ID, client);
+
+		// One resync and one retry for the first orphan; the second conflict ends
+		// the pass, so the second orphan is never tried.
+		expect(mlsCommit).toHaveBeenCalledTimes(2);
+		expect(result).toMatchObject({ found: 2, reclaimed: 0, commits: 0 });
 	});
 
 	it("refuses to act when an entitled agent publishes no readable signing key", async () => {
@@ -304,23 +361,22 @@ describe("reclaimOrphanLeaves", () => {
 		expect(isSeated(group, identityOf(noShow))).toBe(true);
 	});
 
-	it("test_reclaim_when_a_member_rotated_its_signing_key_then_the_pass_declines", async () => {
-		const rotator = agent();
+	it("test_reclaim_when_a_member_row_has_no_leaf_then_the_pass_declines_without_blaming_a_rotation", async () => {
+		const unseated = agent();
 		const noShow = agent();
-		await seatAgents([rotator, noShow]);
-		members = [SELF_ID, rotator];
-		// `POST /agents/{id}/keys` has no MLS guard, so a rotation leaves the leaf
-		// carrying the credential the group was founded on while the server
-		// publishes a different one. Subtracting by published key would classify
-		// this seated member's leaf as an orphan and Remove it.
-		saveAgentKeys(dir, rotator, generateAgentKeys());
+		await seatAgents([noShow]);
+		// A member row whose leaf the tree does not hold: the two have come apart,
+		// so no leaf can be attributed to it. Subtracting by published key would
+		// classify the seated no-show's leaf as an orphan and Remove it.
+		members = [SELF_ID, unseated];
 		const before = commitCount();
 
 		const result = await reclaimOrphanLeaves(dir, SELF_ID, GROUP_ID, client);
 
 		expect(result).toMatchObject({ found: 0, reclaimed: 0, commits: 0 });
 		expect(result.declined?.reason).toBe("identity_unseated");
-		expect(result.declined?.detail).toContain(rotator);
+		expect(result.declined?.detail).toContain(unseated);
+		expect(result.declined?.detail).not.toMatch(/rotat|group sync/);
 		// Nothing was committed, so BOTH leaves are still there — including the
 		// no-show's, which a pass that ran would legitimately have retired.
 		expect(commitCount()).toBe(before);

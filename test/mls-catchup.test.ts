@@ -17,8 +17,10 @@ vi.mock("../src/mls-ops-sync.js", () => ({
 	syncMlsGroup: (...args: unknown[]) => syncMlsGroupMock(...args),
 }));
 
-const { MLS_CATCHUP_MIN_INTERVAL_MS, catchUpMlsGroup, resetMlsCatchUpGate } =
-	await import("../src/mls-catchup.js");
+const { MLS_CATCHUP_MIN_INTERVAL_MS, catchUpMlsGroup } = await import(
+	"../src/mls-catchup.js"
+);
+const { resetProcessGates } = await import("../src/process-gate.js");
 
 const DIR = "/tmp/rine-catchup";
 const AGENT = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
@@ -28,7 +30,7 @@ const OTHER_GROUP = "eeeeeeee-5555-4555-8555-eeeeeeeeeeee";
 const client = {} as never;
 
 beforeEach(() => {
-	resetMlsCatchUpGate();
+	resetProcessGates();
 	syncMlsGroupMock.mockReset();
 	syncMlsGroupMock.mockResolvedValue({
 		epoch: 7,

@@ -64,16 +64,14 @@ const MLS_COMMIT_WELCOMES_MAX = 32;
  * every measured size rather than a floor (estimate vs measured Welcome:
  * 42,988 / 38,208 at N=16, 199,900 / 198,452 at N=100, 480,100 / 477,320 at
  * N=250, 1,881,100 / 1,866,664 at N=1000). Under-estimating is what produces an
- * oversized POST, so the model error is spent in the safe direction. Classical
- * `0x0001` blobs are ~6.9x smaller, so sizing every suite on the post-quantum
- * rate is conservative there too.
+ * oversized POST, so the model error is spent in the safe direction.
  */
 const WELCOME_B64_PER_MEMBER = 1_868;
 const WELCOME_B64_BASE = 13_100;
 
 /**
  * The commit's UpdatePath plus the republished GroupInfo, priced in Welcomes.
- * MEASURED at 1.85 Welcomes on `0xF057` and 1.41 on `0x0001`, at every size;
+ * MEASURED at 1.85 Welcomes on `0xF057`, at every size;
  * rounded up, which is the same rounding as the `floor(BUDGET / Welcome) - 2`
  * approximation the measured curve was fitted with: the commit and the
  * republished GroupInfo together cost under two Welcomes at every size, so

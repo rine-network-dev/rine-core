@@ -11,8 +11,7 @@
 
 import { ACTING_AGENT_HEADER } from "../actor.js";
 import type { MessageRead } from "../api-types.js";
-import { fetchRecipientKeys } from "../crypto/agent-keys.js";
-import { encryptMessage } from "../crypto/message.js";
+import { sealForAgent } from "../crypto/message.js";
 import type { HttpClient } from "../http.js";
 import { buildReceiptMessage } from "./messages.js";
 import type { MatchedQuote } from "./payee-settle.js";
@@ -58,16 +57,14 @@ export async function sendReceipt(params: {
 	const built = buildReceiptMessage(params.receiptBody, {
 		emitMarker: params.emitMarker,
 	});
-	const recipientKeys = await fetchRecipientKeys(
+	const encrypted = await sealForAgent(
 		params.client,
-		params.payerAgentId,
-	);
-	const encrypted = await encryptMessage(
 		params.configDir,
-		params.payeeAgentId,
-		recipientKeys.encryption,
+		{
+			senderAgentId: params.payeeAgentId,
+			recipientAgentId: params.payerAgentId,
+		},
 		built.payload,
-		recipientKeys.pqEncryption,
 	);
 	const body: Record<string, unknown> = {
 		type: built.type,

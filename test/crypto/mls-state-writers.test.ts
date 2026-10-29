@@ -28,7 +28,8 @@ const STATE_MUTATORS = [
 	".deleteGroupState(",
 ];
 
-const INVALIDATOR = "noteMlsStateChanged";
+/** The call, not the import: deleting the call must fail the scan even when the import survives. */
+const INVALIDATOR = "noteMlsStateChanged(";
 
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname;
 
@@ -179,7 +180,8 @@ describe("every MLS state writer invalidates the downgrade memo", () => {
 			// Founding moved here when it became the seated = 1 case of the
 			// batched admission loop; `mls-ops.ts` now only re-exports it.
 			"rine-core/src/mls-admission-batch.ts",
-			"rine-core/src/mls-ops-join.ts",
+			"rine-core/src/mls-external-join.ts",
+			"rine-core/src/mls-welcome-install.ts",
 		]);
 	});
 

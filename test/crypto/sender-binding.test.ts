@@ -15,24 +15,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-	type AgentKeys,
-	generateAgentKeys,
-	saveAgentKeys,
-	signingPublicKeyToJWK,
-	toBase64Url,
-} from "../../src/crypto/keys.js";
-import {
-	decryptGroupMessage,
 	decryptMessage,
-	encryptGroupMessage,
 	encryptMessage,
 	isAuthenticityFailure,
 } from "../../src/crypto/message.js";
+import { encryptGroupMessage } from "../../src/crypto/sender-key-seal.js";
+import { decryptGroupMessage } from "../../src/message-group.js";
 import {
 	loadSenderKeyStates,
 	saveSenderKeyState,
 } from "../../src/crypto/sender-keys-helpers.js";
 import { generateSenderKey } from "../../src/crypto/sender-keys.js";
+import { World, type WorldAgent } from "./world.js";
 
 /** The agent that genuinely signed the envelope. */
 const SIGNER_ID = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
@@ -44,36 +38,33 @@ const GROUP_ID = "dddddddd-4444-4444-8444-dddddddddddd";
 
 const MISMATCH = "Envelope sender does not match the message sender";
 
-/** Answers `GET /agents/{id}/keys` for the agents it was given, and no others. */
-function keyServer(published: Record<string, AgentKeys>) {
-	const get = vi.fn(async (path: string) => {
-		const match = /^\/agents\/([^/]+)\/keys$/.exec(path);
-		const keys = match ? published[match[1] as string] : undefined;
-		if (!match || !keys) throw new Error(`unexpected GET ${path}`);
-		return {
-			agent_id: match[1],
-			signing_public_key: signingPublicKeyToJWK(keys.signing.publicKey),
-			encryption_public_key: {
-				kty: "OKP",
-				crv: "X25519",
-				x: toBase64Url(keys.encryption.publicKey),
-			},
-		};
-	});
-	return { get, post: vi.fn() };
+/** The recipient's chain-verified encryption keys, as `fetchRecipientKeys` returns them. */
+function recipientKeysOf(agent: WorldAgent) {
+	return {
+		encryption: agent.derived.x25519.publicKey,
+		pqEncryption: agent.derived.mlKem768.publicKey,
+	};
+}
+
+/** A world client whose `get` is a spy, so a test can count key lookups. */
+function spiedClient(world: World) {
+	const base = world.client();
+	return { ...base, get: vi.fn(base.get) };
 }
 
 describe("sender binding on the 1:1 path", () => {
 	let dir: string;
-	let signer: AgentKeys;
-	let victim: AgentKeys;
+	let world: World;
+	let signer: WorldAgent;
+	let victim: WorldAgent;
 
 	beforeEach(() => {
 		dir = fs.mkdtempSync(join(tmpdir(), "rine-binding-"));
-		signer = generateAgentKeys();
-		victim = generateAgentKeys();
-		saveAgentKeys(dir, SIGNER_ID, signer);
-		saveAgentKeys(dir, VICTIM_ID, victim);
+		world = new World();
+		signer = world.addAgent({ id: SIGNER_ID });
+		victim = world.addAgent({ id: VICTIM_ID });
+		world.save(dir, signer);
+		world.save(dir, victim);
 	});
 	afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
@@ -82,14 +73,15 @@ describe("sender binding on the 1:1 path", () => {
 		const enc = await encryptMessage(
 			dir,
 			SIGNER_ID,
-			victim.encryption.publicKey,
+			VICTIM_ID,
+			recipientKeysOf(victim),
 			{ text: "release the funds" },
 		);
 		return enc.encrypted_payload;
 	}
 
 	it("test_decrypt_when_kid_names_a_different_agent_then_rejects", async () => {
-		const client = keyServer({ [SIGNER_ID]: signer });
+		const client = spiedClient(world);
 
 		const result = await decryptMessage(
 			dir,
@@ -111,7 +103,9 @@ describe("sender binding on the 1:1 path", () => {
 		// The other authenticity failure, refused identically: the kid names the
 		// row's sender, but the signature does not check out against the key that
 		// agent publishes, so the bytes are not its word either.
-		const client = keyServer({ [SIGNER_ID]: generateAgentKeys() });
+		const imposterWorld = new World();
+		imposterWorld.addAgent({ id: SIGNER_ID });
+		const client = imposterWorld.client();
 
 		const result = await decryptMessage(
 			dir,
@@ -152,7 +146,7 @@ describe("sender binding on the 1:1 path", () => {
 	it("test_decrypt_when_kid_names_a_different_agent_then_fetches_no_keys", async () => {
 		// Whether the kid names the row's sender is not a question the key endpoint
 		// can answer, so a mismatch must cost zero requests.
-		const client = keyServer({ [SIGNER_ID]: signer });
+		const client = spiedClient(world);
 
 		await decryptMessage(
 			dir,
@@ -168,7 +162,7 @@ describe("sender binding on the 1:1 path", () => {
 	it("test_decrypt_when_kid_names_the_rows_sender_then_verifies", async () => {
 		// False-positive guard: the identical envelope, attributed correctly, is
 		// trusted. Without this the suite would pass on a check that rejects all.
-		const client = keyServer({ [SIGNER_ID]: signer });
+		const client = spiedClient(world);
 
 		const result = await decryptMessage(
 			dir,
@@ -186,7 +180,7 @@ describe("sender binding on the 1:1 path", () => {
 	it("test_decrypt_when_sender_id_differs_in_case_then_verifies", async () => {
 		// Both sides are server-issued UUIDs, but a caller may hold a differently
 		// cased copy; a case-sensitive compare would refuse an honest message.
-		const client = keyServer({ [SIGNER_ID]: signer });
+		const client = spiedClient(world);
 
 		const result = await decryptMessage(
 			dir,
@@ -205,10 +199,11 @@ describe("sender binding on the 1:1 path", () => {
 		const enc = await encryptMessage(
 			dir,
 			SIGNER_ID,
-			signer.encryption.publicKey,
+			SIGNER_ID,
+			recipientKeysOf(signer),
 			{ text: "note to self" },
 		);
-		const client = keyServer({ [SIGNER_ID]: signer });
+		const client = spiedClient(world);
 
 		const result = await decryptMessage(
 			dir,
@@ -225,13 +220,13 @@ describe("sender binding on the 1:1 path", () => {
 
 describe("sender binding on the sender-key group path", () => {
 	let dir: string;
-	let signer: AgentKeys;
+	let world: World;
 
 	beforeEach(() => {
 		dir = fs.mkdtempSync(join(tmpdir(), "rine-binding-group-"));
-		signer = generateAgentKeys();
-		saveAgentKeys(dir, SIGNER_ID, signer);
-		saveAgentKeys(dir, VICTIM_ID, generateAgentKeys());
+		world = new World();
+		world.save(dir, world.addAgent({ id: SIGNER_ID }));
+		world.save(dir, world.addAgent({ id: VICTIM_ID }));
 	});
 	afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
@@ -261,7 +256,7 @@ describe("sender binding on the sender-key group path", () => {
 
 	it("test_group_decrypt_when_kid_names_a_different_agent_then_throws", async () => {
 		const ciphertext = await groupMessageFromSigner();
-		const client = keyServer({ [SIGNER_ID]: signer });
+		const client = world.client();
 
 		await expect(
 			decryptGroupMessage(
@@ -277,7 +272,7 @@ describe("sender binding on the sender-key group path", () => {
 
 	it("test_group_decrypt_when_kid_names_a_different_agent_then_keeps_ratchet", async () => {
 		const ciphertext = await groupMessageFromSigner();
-		const client = keyServer({ [SIGNER_ID]: signer });
+		const client = world.client();
 		const before = victimIndexes();
 
 		await expect(
@@ -298,7 +293,7 @@ describe("sender binding on the sender-key group path", () => {
 
 	it("test_group_decrypt_when_kid_names_the_rows_sender_then_verifies", async () => {
 		const ciphertext = await groupMessageFromSigner();
-		const client = keyServer({ [SIGNER_ID]: signer });
+		const client = world.client();
 		const before = victimIndexes();
 
 		const result = await decryptGroupMessage(

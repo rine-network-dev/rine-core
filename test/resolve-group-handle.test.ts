@@ -41,7 +41,7 @@ function row(id: string, name: string, handle: string): GroupRead {
  * answers the whole org list, and `GET /groups/{id}` answers one row or 404s.
  *
  * 🔴 The id route folds case, because the server does: `get_group` types its
- * path parameter `group_id: uuid.UUID` (`src/rine/api/groups.py`), which parses
+ * path parameter `group_id: uuid.UUID` (`src/rine/api/group_routes_read.py`), which parses
  * `AAAA…` and `aaaa…` to the same value. The client-side spelling comparison
  * that used to have to know this is gone, so the fixture is now where the
  * assumption lives — and it is asserted, below, on an id with hex LETTERS in it.
@@ -131,7 +131,7 @@ describe("resolveGroupByHandle", () => {
 		).rejects.toThrow(/^Group not found: #payroll@acme\.rine\.network\./);
 	});
 
-	it("names the org's groups in that refusal, as every other group miss does", async () => {
+	it("names the caller's groups in that refusal, as every other group miss does", async () => {
 		const { client } = clientHolding([LABELS]);
 
 		await expect(

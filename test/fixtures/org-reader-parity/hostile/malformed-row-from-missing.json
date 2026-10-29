@@ -1,0 +1,76 @@
+{
+  "name": "malformed-row-from-missing",
+  "family": "malformed",
+  "note": "an activity row where no sender",
+  "api_url": "http://rine.invalid",
+  "org_id": "de4db70f-d37f-8be9-b275-3abdf05aa800",
+  "root_key": "DCoYVE0vnLZwN1n4OUylViWWrvcHOAeyQMsZlVnpcOY",
+  "own_agents": [
+    "0afd1ba5-5498-443b-b706-b64ce0873d1f",
+    "5cccc04e-c097-4a7f-aa8e-62e8eb05f7c5"
+  ],
+  "reader": {
+    "branch": null
+  },
+  "reads": [
+    {
+      "query": {
+        "group_id": "66f3e4e8-d6f4-4c70-926a-f094916082bd",
+        "cursor": null,
+        "limit": 100
+      },
+      "exchanges": [
+        {
+          "method": "POST",
+          "path": "/oauth/token",
+          "query": {},
+          "status": 200,
+          "body": {
+            "access_token": "fixture-token",
+            "token_type": "bearer",
+            "expires_in": 900
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "group_id": "66f3e4e8-d6f4-4c70-926a-f094916082bd",
+            "include": "payload",
+            "limit": "100"
+          },
+          "status": 200,
+          "body": {
+            "items": [
+              {
+                "id": "d04adbad-e8cb-56b4-8fbf-63e47052e038",
+                "created_at": "2026-10-24T12:00:10.000000Z",
+                "type": "rine.v1.dm",
+                "direction": "received",
+                "to": {
+                  "agent_id": "0afd1ba5-5498-443b-b706-b64ce0873d1f",
+                  "handle": "0afd1ba5@example.test",
+                  "org_id": "de4db70f-d37f-8be9-b275-3abdf05aa800",
+                  "own": true
+                },
+                "group": null,
+                "conversation_id": "595242f4-7d3a-52b2-9c2e-81bda33c3c71",
+                "encryption_version": "hpke-hybrid-v2",
+                "delivered_at": null,
+                "x402_status": null,
+                "x402_rail": null,
+                "payload": {
+                  "encrypted_payload": "BDkM7IFyScW1hq6sRgD0GTHVYZIsQU5caUbMzj9jyBhBS98LN4Ej6PrRCzlff7sj0vwqbDCRM0cmG2zXx_nLYSW1U5ThTqecXkhnmtaXHXzEFBo0YPA7W9gH1CCI2Msmw4n7s323ifphEN3TKvFoens3L7Fb0Yxw6l5nu5fX3KcEFLx4P4j6Sxg2zQdgJfMFjt_9oVdFu4ERWvwUvzLmnX0FJNuLV43kdzT9s_ivNHKh9SP-7JgYemfGc_6DbkaVItuqmU_gj4rYmwpZPrpoj4CwmW1c_nBFBELImyMGrrEyCacO6va67mqOUCjKmDJrUtiw95RCUBJvjnVtPX27WaJCgrIlLnAUcpQlFMO9pKHeNhdj5bmeHZZBMdb1VVJGEjgNX5FQNgGGXhgCOIHhalRrmBVcWwpMGNUxqMSzNBYV606hT7V1iMZA64EYgwJhwx9UHvj8f-vP_ELX285kmOUJAQGRANsNHv7pkUzh0pFH9w6vzv00R05nU449wB1JLHDzZLv9hd_qu-aZ_g6HfhJubb5_CBO76sakiEKA8BlQRBfEI08TdSdSeIM6-lOST_BKgL1se0fyhS6drvGXdNHcc5p6x8q29P0fb_mPPiZQZ8monyE3yZyRLlACifKfGzN1dMl5eiYBd53Inirq4OBgFBDhKlSy5mWwFmvP4FUuMmXg9s884A9L1qhXDOSaKkUlFA6QF_cSphDwZb2T-V9vgajMfeJulA8RiDX43FkjeJlwuJ-tendKQgMAH_VGKrAUogMeIb08wtOQlaAjK3JKBShqlQLoqxK_KnoHSlpg_UKohwaxEVx28cGURJyqxwlIEHKuWj0pn5czwDaYcgbBFL-mCRXQG3iwKZixRqa8q_du7DpdOOr4CffdfhCC8j2qVVfvGQiTy7f5k2FAinFNvGmLJKs9gfhKdRxVzYm4LxvAoUPb1Hycua3QTMqOkTFy4JjeTMh1vXJsJ8WBs940rp4YTz1XFJPmoI4geGNoaM7twcDGH43etfAntp0NiNVSLplZXzyYhaLNd_mjyvSitWh34ERBQjwpYMXvCbSLqncr9WKUezN5ADZ63GzAW9efSTJI_D2EfUfOMlx6QYEz6ijQ9X-H6LbCZnPr5YyQvePr2LRpP8FxZEUYM-cPtepCTu4eKf2qOsPBcPNQWumNRSwCXgWP-oeDdtlN7l6ORx_FbaDbpo38OxrUoYE-5gG8gxuoSlijUqjAezuIQu7Hv2vlL6crEozo4oa1ccUQ2RIvAuzyl52BYqGxDmEDm--7Ax8PIEJNfGF_EHhlC0NaRzxDv-dx1vJOMz7pn39U51Sn9kL2Njxum1AnUQXcLjooCQBhddWy-EUu-1JcydIiFg09F4SlSvs8OZtA3bjOf1y3wf9f08YSf7PExyUmu-20DMfuh_Ou4zMoTNbyPepBztdGmdEm7fu_iC3TIeBZ3l6dBQBme6NpumHeGSzChfEhSty2IRS_Yr8vJXhYpKJ0-m1LKbQhTpYX5Bo6kxQwT0uAnmgDHNoYg9EKoNofR95GHkWJvVydti4qig5rVlCpRAgLhSmH5BPf_T7Lr8Ej6xqDXEYfnlglZDKZHZQdZEFW3idcQPFQJrttj8omKdgx8P3D84SDiPKOeCpnbaQuIKUPSqtiUXu3JhxkzF3x-nDBAP0Mz78OUStw--tUNpdzQHsIBxz3ojrfXAT17g",
+                  "self_encrypted_payload": null,
+                  "key_gen": 0
+                }
+              }
+            ],
+            "next_cursor": null
+          }
+        }
+      ],
+      "raised": "KeyError"
+    }
+  ]
+}

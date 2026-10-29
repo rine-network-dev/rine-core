@@ -242,6 +242,30 @@ describe("X402FacilitatorError", () => {
 		).rejects.toBeInstanceOf(X402FacilitatorError);
 	});
 
+	it("test_redirecting_facilitator_is_refused_not_followed", async () => {
+		// A fetch that honours `redirect`: with anything but "error" it follows a
+		// 3xx to a host the transport check never saw and answers from there.
+		const followed = vi.fn();
+		const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+			if (init.redirect === "error") {
+				throw new TypeError("redirect mode is set to error");
+			}
+			followed();
+			return new Response(JSON.stringify({ isValid: true }), { status: 200 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(
+			verifyPayment(paymentPayload(), requirement(), {
+				facilitator: {
+					...FACILITATOR_PRESET.payai,
+					headers: { authorization: "Bearer operator-secret" },
+				},
+			}),
+		).rejects.toBeInstanceOf(X402FacilitatorError);
+		expect(followed).not.toHaveBeenCalled();
+	});
+
 	it("test_transport_failure_wraps_as_facilitator_error", async () => {
 		const fetchMock = vi.fn(async () => {
 			throw new Error("ECONNREFUSED");

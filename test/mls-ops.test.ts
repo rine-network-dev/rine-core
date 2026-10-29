@@ -12,6 +12,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../src/mls-escrow-key.js", async () =>
+	(await import("./mls-escrow-harness.js")).escrowKeyModule(),
+);
+
 vi.mock("../src/crypto/mls-api.js", async () => {
 	const actual = await vi.importActual<
 		typeof import("../src/crypto/mls-api.js")
@@ -34,12 +38,9 @@ vi.mock("../src/crypto/mls-api.js", async () => {
 	};
 });
 
-import {
-	agentKeysExist,
-	generateAgentKeys,
-	saveAgentKeys,
-	signingPublicKeyToJWK,
-} from "../src/crypto/keys.js";
+import { agentKeysExist } from "../src/crypto/keys.js";
+import { World } from "./crypto/world.js";
+import { type PeerReads, withPeerReads } from "./mls-escrow-harness.js";
 import {
 	claimKeyPackages,
 	claimKeyPackagesBatch,
@@ -58,9 +59,9 @@ import type { MlsCommitBody } from "../src/crypto/mls-api.js";
 import { loadMlsState } from "../src/crypto/mls-state.js";
 import { mlsGroupIdBytes, openMlsClient } from "../src/crypto/mls.js";
 import { RineApiError } from "../src/errors.js";
+import { KEY_PACKAGE_LOW_WATER } from "@rine-network/mls";
+import { MLS_KEY_PACKAGE_TARGET } from "../src/mls-keypackages.js";
 import {
-	MLS_KEY_PACKAGE_LOW_WATER,
-	MLS_KEY_PACKAGE_TARGET,
 	addMlsGroupMember,
 	drainAndRepublishMlsKeyPackages,
 	ensureMlsKeyPackages,
@@ -78,6 +79,7 @@ const THIRD_ID = "d4e5f6a7-b8c9-0123-def1-234567890123";
 const GROUP_ID = "c3d4e5f6-a7b8-9012-cdef-123456789012";
 
 let dir: string;
+let world: World;
 /** Every commit body the code posted, in order. */
 let posted: MlsCommitBody[];
 
@@ -87,17 +89,20 @@ let posted: MlsCommitBody[];
  * "just the founder" keeps these cases about the MLS mechanics; the batching
  * and resume behaviour those reads drive is exercised in `mls-admission.test.ts`.
  */
-const client = {
+const readsOnly = {
 	get: async (path: string, params?: Record<string, string>) => {
 		if (path === "/agents/keys") return { keys: publishedKeys(params) };
 		if (path === `/groups/${GROUP_ID}`) return { member_count: 1 };
 		if (path === `/groups/${GROUP_ID}/requests`) return { items: [] };
 		throw new Error(`unexpected GET ${path}`);
 	},
-} as never;
+};
+let client: never;
+let reads: PeerReads;
 
 /**
- * The published signing keys `GET /agents/keys` would return for `ids`.
+ * The published keys `GET /agents/keys` would return for `ids`: the world's own
+ * responses, so each carries the certificate chain the batch consumers verify.
  *
  * An agent with no keys on disk is simply absent, which is how the server
  * answers for a revoked or erased one — and what `removeMlsGroupMember` reads
@@ -107,15 +112,13 @@ function publishedKeys(params?: Record<string, string>) {
 	const keys: Record<string, unknown> = {};
 	for (const id of String(params?.ids ?? "").split(",")) {
 		if (!id || !agentKeysExist(dir, id)) continue;
-		// The MLS basic-credential identity is the agent's raw Ed25519 key.
-		const jwk = signingPublicKeyToJWK(openMlsClient(dir, id).publicKey());
-		keys[id] = { signing_public_key: jwk, encryption_public_key: jwk };
+		keys[id] = world.published(id);
 	}
 	return keys;
 }
 
 function agent(agentId: string) {
-	saveAgentKeys(dir, agentId, generateAgentKeys());
+	world.save(dir, world.addAgent({ id: agentId }));
 }
 
 /** One claimable key package for `agentId`, minted by that agent's own client. */
@@ -133,6 +136,9 @@ function offerKeyPackage(agentId: string): void {
 
 beforeEach(() => {
 	dir = fs.mkdtempSync(join(tmpdir(), "rine-mlsops-"));
+	world = new World();
+	reads = withPeerReads(world, readsOnly);
+	client = reads as never;
 	posted = [];
 	vi.clearAllMocks();
 	vi.mocked(uploadKeyPackages).mockImplementation(async (_c, _a, p) => ({
@@ -238,7 +244,7 @@ describe("ensureMlsKeyPackages", () => {
 	});
 
 	it("is a no-op exactly at the low-water mark", async () => {
-		openMlsClient(dir, SELF_ID).generateKeyPackages(MLS_KEY_PACKAGE_LOW_WATER);
+		openMlsClient(dir, SELF_ID).generateKeyPackages(KEY_PACKAGE_LOW_WATER);
 		const status = await ensureMlsKeyPackages(dir, SELF_ID, client);
 		expect(status.published).toBe(0);
 		expect(uploadKeyPackages).not.toHaveBeenCalled();
@@ -248,6 +254,15 @@ describe("ensureMlsKeyPackages", () => {
 		openMlsClient(dir, SELF_ID).generateKeyPackages(1);
 		vi.mocked(uploadKeyPackages).mockRejectedValue(
 			new RineApiError(409, "key package inventory full"),
+		);
+		const status = await ensureMlsKeyPackages(dir, SELF_ID, client);
+		expect(status).toEqual({ available: 1, published: 0, capReached: true });
+	});
+
+	it("test_ensure_key_packages_when_the_refusal_carries_the_inventory_code_then_it_is_the_cap_whatever_the_detail", async () => {
+		openMlsClient(dir, SELF_ID).generateKeyPackages(1);
+		vi.mocked(uploadKeyPackages).mockRejectedValue(
+			new RineApiError(422, "refused", undefined, "key_package_inventory_full"),
 		);
 		const status = await ensureMlsKeyPackages(dir, SELF_ID, client);
 		expect(status).toEqual({ available: 1, published: 0, capReached: true });
@@ -304,7 +319,6 @@ describe("initMlsGroup", () => {
 		expect(loadMlsState(dir, SELF_ID, GROUP_ID)).toEqual({
 			groupId: GROUP_ID,
 			epoch: 1,
-			cipherSuite: 0xf057,
 		});
 	});
 
@@ -437,9 +451,24 @@ describe("removeMlsGroupMember", () => {
 			client,
 		);
 
-		expect(result).toEqual({ epoch: 2, removedLeaf: true });
+		expect(result).toEqual({
+			epoch: 2,
+			removedLeaf: true,
+			escrow: { gaps: [], queued: 0, dropped: 0, backlogged: 0 },
+		});
 		expect(posted[0]!.welcomes).toEqual([]);
 		expect(loadMlsState(dir, SELF_ID, GROUP_ID)!.epoch).toBe(2);
+	});
+
+	it("escrows the epoch the removal installed, so a recovered agent can read it", async () => {
+		await foundGroup();
+		reads.puts.length = 0;
+
+		await removeMlsGroupMember(dir, SELF_ID, GROUP_ID, MEMBER_ID, client);
+
+		expect(reads.puts.map(([path]) => path)).toContain(
+			`/groups/${GROUP_ID}/mls/escrow/2`,
+		);
 	});
 
 	it("declares the target on the commit, so the DELETE has something to spend", async () => {
@@ -470,7 +499,11 @@ describe("removeMlsGroupMember", () => {
 			client,
 		);
 
-		expect(result).toEqual({ epoch: 3, removedLeaf: false });
+		expect(result).toEqual({
+			epoch: 3,
+			removedLeaf: false,
+			escrow: { gaps: [], queued: 0, dropped: 0, backlogged: 0 },
+		});
 		expect(posted[0]!.removes).toEqual([MEMBER_ID]);
 		expect(posted[0]!.welcomes).toEqual([]);
 		expect(loadMlsState(dir, SELF_ID, GROUP_ID)!.epoch).toBe(3);
@@ -491,7 +524,11 @@ describe("removeMlsGroupMember", () => {
 			client,
 		);
 
-		expect(result).toEqual({ epoch: 2, removedLeaf: false });
+		expect(result).toEqual({
+			epoch: 2,
+			removedLeaf: false,
+			escrow: { gaps: [], queued: 0, dropped: 0, backlogged: 0 },
+		});
 		expect(posted[0]!.removes).toEqual([THIRD_ID]);
 	});
 
@@ -500,7 +537,51 @@ describe("removeMlsGroupMember", () => {
 			removeMlsGroupMember(dir, SELF_ID, GROUP_ID, MEMBER_ID, client),
 		).rejects.toThrow(`No MLS state for group ${GROUP_ID}`);
 	});
+
+	it("test_remove_when_the_first_commit_conflicts_then_it_syncs_and_retries_once", async () => {
+		await foundGroup();
+		vi.mocked(mlsCommit).mockClear().mockRejectedValueOnce(removalConflict());
+
+		const result = await removeMlsGroupMember(dir, SELF_ID, GROUP_ID, MEMBER_ID, client);
+
+		expect(mlsCommit).toHaveBeenCalledTimes(2);
+		expect(result.epoch).toBe(2);
+	});
+
+	it("test_remove_when_both_commits_conflict_then_the_wrapper_keeps_the_first_conflict", async () => {
+		await foundGroup();
+		const first = removalConflict();
+		vi.mocked(mlsCommit)
+			.mockClear()
+			.mockRejectedValueOnce(first)
+			.mockRejectedValueOnce(removalConflict());
+
+		const err = await removeMlsGroupMember(dir, SELF_ID, GROUP_ID, MEMBER_ID, client).then(
+			() => undefined,
+			(e: unknown) => e,
+		);
+
+		expect(mlsCommit).toHaveBeenCalledTimes(2);
+		expect(err).not.toBeInstanceOf(RineApiError);
+		expect((err as Error).message).toContain("failed after one retry");
+		expect((err as Error).cause).toBe(first);
+	});
+
+	it("test_remove_when_the_commit_is_refused_otherwise_then_it_is_not_retried", async () => {
+		await foundGroup();
+		const refusal = new RineApiError(403, "not an admin", undefined, "forbidden");
+		vi.mocked(mlsCommit).mockClear().mockRejectedValueOnce(refusal);
+
+		await expect(
+			removeMlsGroupMember(dir, SELF_ID, GROUP_ID, MEMBER_ID, client),
+		).rejects.toBe(refusal);
+		expect(mlsCommit).toHaveBeenCalledTimes(1);
+	});
 });
+
+function removalConflict(): RineApiError {
+	return new RineApiError(409, "stale epoch", undefined, "epoch_conflict");
+}
 
 // ── welcomes ─────────────────────────────────────────────────────────────────
 
@@ -511,7 +592,6 @@ describe("processMlsWelcomes", () => {
 		expect(loadMlsState(dir, MEMBER_ID, GROUP_ID)).toEqual({
 			groupId: GROUP_ID,
 			epoch: 1,
-			cipherSuite: 0xf057,
 		});
 		expect(uploadKeyPackages).toHaveBeenCalledWith(
 			client,
@@ -532,7 +612,12 @@ describe("processMlsWelcomes", () => {
 			],
 		});
 		const result = await processMlsWelcomes(dir, MEMBER_ID, client);
-		expect(result).toEqual({ processed: 0, groupIds: [] });
+		expect(result).toEqual({
+			processed: 0,
+			groupIds: [],
+			discarded: 0,
+			escrow: { gaps: [], queued: 0, dropped: 0, backlogged: 0 },
+		});
 	});
 
 	it("does not top up when there was nothing to process", async () => {
@@ -595,7 +680,12 @@ describe("syncMlsGroup", () => {
 		const result = await syncMlsGroup(dir, MEMBER_ID, GROUP_ID, client);
 
 		expect(vi.mocked(fetchHandshakes).mock.calls[0]![2]).toBe(1); // since_epoch
-		expect(result).toEqual({ epoch: 2, processed: 1, evicted: false });
+		expect(result).toEqual({
+			epoch: 2,
+			processed: 1,
+			evicted: false,
+			escrow: { gaps: [], queued: 0, dropped: 0, backlogged: 0 },
+		});
 		expect(mlsAck).toHaveBeenCalledWith(
 			client,
 			GROUP_ID,
@@ -748,6 +838,23 @@ describe("externalJoinMlsGroup", () => {
 			externalJoinMlsGroup(dir, THIRD_ID, GROUP_ID, client),
 		).rejects.toThrow("after one retry");
 		expect(mlsCommit).toHaveBeenCalledTimes(2);
+	});
+
+	it("test_externalJoin_when_both_attempts_conflict_then_the_wrapper_names_the_retry_and_keeps_the_first_conflict", async () => {
+		const first = conflict();
+		const second = new RineApiError(409, "still stale", undefined, "epoch_conflict");
+		vi.mocked(mlsCommit).mockRejectedValueOnce(first).mockRejectedValueOnce(second);
+
+		const err = await externalJoinMlsGroup(dir, THIRD_ID, GROUP_ID, client).then(
+			() => undefined,
+			(e: unknown) => e,
+		);
+
+		expect(mlsCommit).toHaveBeenCalledTimes(2);
+		expect(err).not.toBeInstanceOf(RineApiError);
+		expect((err as Error).message).toContain("after one retry");
+		expect((err as Error).message).toContain("409: still stale");
+		expect((err as Error).cause).toBe(first);
 	});
 
 	it("retries briefly while the GroupInfo is pending confirmation, then joins", async () => {

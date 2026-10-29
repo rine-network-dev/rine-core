@@ -2,23 +2,23 @@
 // loopback pipe, for the tier where the BROKER terminates TLS and forwards the
 // DECRYPTED HTTP request down the mux as plaintext. The relay no longer terminates
 // TLS or runs a local listener here — it just parses the forwarded request, runs
-// the SAME per-request adapter (HMAC-verify → hpke-v1 self-send), and synthesizes
-// the 204/400/500 response to copy back over the tunnel.
+// the SAME per-request adapter (HMAC-verify → hpke-hybrid-v2 self-send), and synthesizes
+// the response to copy back over the tunnel.
 //
 // FROZEN-CONTRACT: the trust boundary is UNCHANGED from zero-trust at REST — the
 // relay still HMAC-verifies (the secret never left the relay) and HPKE-seals
-// (`hpke-v1`, NO new encryption_version). Only the inbound bytes arrive as
+// (`hpke-hybrid-v2`, NO new encryption_version). Only the inbound bytes arrive as
 // plaintext over the mux instead of as raw TLS records (the broker decrypted
 // them). Same `handleWebhookRequest`, same response strings.
 
 import type { LocalPipe } from "./mux-client.js";
 import type { Frame } from "./mux-codec.js";
-import type { WebhookRequest } from "./relay-adapter.js";
-import { HTTP_204, HTTP_400, HTTP_500, parseHttpRequest } from "./tls-listener.js";
+import { FRAMING_REFUSAL, HTTP_500, parseHttpRequest, relayResponse } from "./http-frame.js";
+import type { RelayResult, WebhookRequest } from "./relay-adapter.js";
 
 export interface EdgePipeArgs {
 	/** Handle one decoded request; resolves when the relay is done with it. */
-	onRequest(req: WebhookRequest): Promise<void>;
+	onRequest(req: WebhookRequest): Promise<RelayResult>;
 }
 
 /**
@@ -38,12 +38,12 @@ export function makeEdgePipeFactory(
  * request bytes into the SHARED framer (`parseHttpRequest`); the broker already
  * frames a COMPLETE request bounded by Content-Length, so the framer
  * dispatches on that boundary and NEVER waits for EOF. On a complete request it
- * runs `onRequest` then pushes the synthesized 204/400/500 back as response bytes
+ * runs `onRequest` then pushes the synthesized response back as response bytes
  * and CLOSEs the conn (the relay has nothing else to send, so closing lets the
  * broker shut its terminated TLS stream promptly — onClose, mux-client.ts).
  */
 function openEdgePipe(
-	onRequest: (req: WebhookRequest) => Promise<void>,
+	onRequest: EdgePipeArgs["onRequest"],
 ): LocalPipe {
 	const parser = parseHttpRequest();
 	let dataCb: ((bytes: Uint8Array) => void) | undefined;
@@ -65,12 +65,12 @@ function openEdgePipe(
 		const result = parser.feed(chunk, false);
 		if (result === "pending") return;
 		handled = true;
-		if (result === "bad") {
-			respond(HTTP_400);
+		if (typeof result === "string") {
+			respond(FRAMING_REFUSAL[result]);
 			return;
 		}
 		onRequest(result)
-			.then(() => respond(HTTP_204))
+			.then((outcome) => respond(relayResponse(outcome)))
 			.catch(() => respond(HTTP_500));
 	};
 

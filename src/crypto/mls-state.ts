@@ -33,15 +33,12 @@ export { holdsAnyMlsState } from "./mls-store-probe.js";
 export interface MlsGroupState {
 	groupId: string;
 	epoch: number;
-	/** The group's own suite, read from its group context — what the server stores as `mls_cipher_suite`. */
-	cipherSuite: number;
 }
 
 function describe(groupId: string, group: MlsGroup): MlsGroupState {
 	return {
 		groupId,
 		epoch: group.epoch(),
-		cipherSuite: group.cipherSuite(),
 	};
 }
 

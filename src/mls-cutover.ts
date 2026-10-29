@@ -20,14 +20,17 @@
 import * as fs from "node:fs";
 import { join } from "node:path";
 import {
-  claimKeyPackages,
-  mlsToBase64,
-  uploadKeyPackages,
+	claimKeyPackages,
+	mlsToBase64,
+	uploadKeyPackages,
 } from "./crypto/mls-api.js";
+import { ensureDir, writeAtomic } from "./config.js";
 import { validatePathId } from "./crypto/keys.js";
+import { MlsKeyNotCurrentError } from "./crypto/mls-key-not-current.js";
 import { openMlsClient } from "./crypto/mls.js";
 import { RineApiError } from "./errors.js";
 import type { HttpClient } from "./http.js";
+import { diskKeyIsCurrent } from "./mls-key-current.js";
 
 /** Largest `count` the claim endpoint accepts in one request. */
 const DRAIN_PAGE = 100;
@@ -43,27 +46,27 @@ const DRAIN_MAX_PAGES = 4;
 const CUTOVER_VERSION = 2;
 
 export interface MlsCutoverResult {
-  /** Stale key packages claimed out of the server pool and discarded. */
-  drained: number;
-  /** Fresh key packages minted by this core and accepted by the server. */
-  stored: number;
+	/** Stale key packages claimed out of the server pool and discarded. */
+	drained: number;
+	/** Fresh key packages minted by this core and accepted by the server. */
+	stored: number;
 }
 
 interface MlsCutoverRecord extends MlsCutoverResult {
-  version: number;
-  completedAt: string;
+	version: number;
+	completedAt: string;
 }
 
 /** The ts-mls-era store: group blobs and the bare key packages' private halves. */
 function legacyStoreDir(configDir: string, agentId: string): string {
-  validatePathId(agentId, "agent ID");
-  return join(configDir, "keys", agentId, "mls");
+	validatePathId(agentId, "agent ID");
+	return join(configDir, "keys", agentId, "mls");
 }
 
 /** Written only after a cutover completed end to end, so a failure retries. */
 function cutoverMarkerPath(configDir: string, agentId: string): string {
-  validatePathId(agentId, "agent ID");
-  return join(configDir, "keys", agentId, "mls-cutover.json");
+	validatePathId(agentId, "agent ID");
+	return join(configDir, "keys", agentId, "mls-cutover.json");
 }
 
 /**
@@ -82,11 +85,11 @@ function cutoverMarkerPath(configDir: string, agentId: string): string {
  * {@link drainAndRepublishMlsKeyPackages} is run for it.
  */
 export function needsMlsKeyPackageCutover(
-  configDir: string,
-  agentId: string,
+	configDir: string,
+	agentId: string,
 ): boolean {
-  if (fs.existsSync(cutoverMarkerPath(configDir, agentId))) return false;
-  return fs.existsSync(legacyStoreDir(configDir, agentId));
+	if (fs.existsSync(cutoverMarkerPath(configDir, agentId))) return false;
+	return fs.existsSync(legacyStoreDir(configDir, agentId));
 }
 
 /**
@@ -98,18 +101,18 @@ export function needsMlsKeyPackageCutover(
  * key material to save a marker file is not a trade worth making.
  */
 export async function cutoverMlsKeyPackages(
-  configDir: string,
-  agentId: string,
-  client: HttpClient,
+	configDir: string,
+	agentId: string,
+	client: HttpClient,
 ): Promise<MlsCutoverResult | null> {
-  if (!needsMlsKeyPackageCutover(configDir, agentId)) return null;
-  const result = await drainAndRepublishMlsKeyPackages(
-    configDir,
-    agentId,
-    client,
-  );
-  writeCutoverMarker(configDir, agentId, result);
-  return result;
+	if (!needsMlsKeyPackageCutover(configDir, agentId)) return null;
+	const result = await drainAndRepublishMlsKeyPackages(
+		configDir,
+		agentId,
+		client,
+	);
+	writeCutoverMarker(configDir, agentId, result);
+	return result;
 }
 
 /**
@@ -128,37 +131,45 @@ export async function cutoverMlsKeyPackages(
  * the server's "No key packages available" — a clean, retriable refusal rather
  * than a broken join. If the upload itself fails the window stays open, and the
  * next MLS operation this agent performs closes it by retrying the cutover.
+ *
+ * A device holding an earlier key generation than the agent's current one must
+ * not run any of this: the server refuses its packages, and the claim has
+ * already emptied the pool by then. So the key is checked first, before anything
+ * is minted or claimed, and a stale one throws {@link MlsKeyNotCurrentError}.
  */
 export async function drainAndRepublishMlsKeyPackages(
-  configDir: string,
-  agentId: string,
-  client: HttpClient,
+	configDir: string,
+	agentId: string,
+	client: HttpClient,
 ): Promise<MlsCutoverResult> {
-  const mls = openMlsClient(configDir, agentId);
-  const packages = mls.drainAndRepublishKeyPackages().map(mlsToBase64);
-  const drained = await claimOutPool(client, agentId);
-  const { stored } = await uploadKeyPackages(client, agentId, packages);
-  return { drained, stored };
+	if (!(await diskKeyIsCurrent({ configDir, agentId, client }))) {
+		throw new MlsKeyNotCurrentError();
+	}
+	const mls = openMlsClient(configDir, agentId);
+	const packages = mls.drainAndRepublishKeyPackages().map(mlsToBase64);
+	const drained = await claimOutPool(client, agentId);
+	const { stored } = await uploadKeyPackages(client, agentId, packages);
+	return { drained, stored };
 }
 
 /** Claim the agent's own unconsumed packages until the server reports none left. */
 async function claimOutPool(
-  client: HttpClient,
-  agentId: string,
+	client: HttpClient,
+	agentId: string,
 ): Promise<number> {
-  let drained = 0;
-  for (let page = 0; page < DRAIN_MAX_PAGES; page++) {
-    let claimed: { packages: string[] };
-    try {
-      claimed = await claimKeyPackages(client, agentId, DRAIN_PAGE);
-    } catch (err) {
-      if (isPoolEmpty(err)) return drained;
-      throw err;
-    }
-    drained += claimed.packages.length;
-    if (claimed.packages.length < DRAIN_PAGE) return drained;
-  }
-  return drained;
+	let drained = 0;
+	for (let page = 0; page < DRAIN_MAX_PAGES; page++) {
+		let claimed: { packages: string[] };
+		try {
+			claimed = await claimKeyPackages(client, agentId, DRAIN_PAGE);
+		} catch (err) {
+			if (isPoolEmpty(err)) return drained;
+			throw err;
+		}
+		drained += claimed.packages.length;
+		if (claimed.packages.length < DRAIN_PAGE) return drained;
+	}
+	return drained;
 }
 
 /**
@@ -167,23 +178,22 @@ async function claimOutPool(
  * empty pool is the drain's success condition, never an error to propagate.
  */
 function isPoolEmpty(err: unknown): boolean {
-  return (
-    err instanceof RineApiError && /no key packages available/i.test(err.detail)
-  );
+	return (
+		err instanceof RineApiError && /no key packages available/i.test(err.detail)
+	);
 }
 
 function writeCutoverMarker(
-  configDir: string,
-  agentId: string,
-  result: MlsCutoverResult,
+	configDir: string,
+	agentId: string,
+	result: MlsCutoverResult,
 ): void {
-  const record: MlsCutoverRecord = {
-    version: CUTOVER_VERSION,
-    completedAt: new Date().toISOString(),
-    ...result,
-  };
-  const path = cutoverMarkerPath(configDir, agentId);
-  fs.mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(path, JSON.stringify(record), "utf-8");
-  fs.chmodSync(path, 0o600);
+	const record: MlsCutoverRecord = {
+		version: CUTOVER_VERSION,
+		completedAt: new Date().toISOString(),
+		...result,
+	};
+	const path = cutoverMarkerPath(configDir, agentId);
+	ensureDir(join(path, ".."));
+	writeAtomic(path, JSON.stringify(record));
 }

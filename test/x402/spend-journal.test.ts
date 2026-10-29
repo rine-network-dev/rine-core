@@ -62,6 +62,14 @@ function journalFile(dir: string): string {
 	return join(dir, "keys", AGENT_ID, "wallet-spend.json");
 }
 
+/** Write `body` as the agent's journal file and return its path. */
+function writeJournal(dir: string, body: string | Buffer): string {
+	const file = journalFile(dir);
+	fs.mkdirSync(join(dir, "keys", AGENT_ID), { recursive: true });
+	fs.writeFileSync(file, body);
+	return file;
+}
+
 function readPaidIds(dir: string): string[] {
 	const j = JSON.parse(fs.readFileSync(journalFile(dir), "utf-8"));
 	return j.paidIds ?? [];
@@ -93,15 +101,19 @@ describe("spend journal read/record", () => {
 		expect(readDailySpent(dir, AGENT_ID, DAY2)).toBe(250_000n);
 	});
 
+	it("test_readDailySpent_when_the_clock_moved_back_a_day_then_the_later_day_still_counts", () => {
+		recordSpend(dir, AGENT_ID, 1_000_000n, DAY2);
+		expect(readDailySpent(dir, AGENT_ID, DAY1_LATE)).toBe(1_000_000n);
+	});
+
 	it("writes_journal_0600", () => {
 		recordSpend(dir, AGENT_ID, 1n, DAY1);
 		expect(fs.statSync(journalFile(dir)).mode & 0o777).toBe(0o600);
 	});
 
 	it("record_preserves_paidIds", () => {
-		fs.mkdirSync(join(dir, "keys", AGENT_ID), { recursive: true });
-		fs.writeFileSync(
-			journalFile(dir),
+		writeJournal(
+			dir,
 			JSON.stringify({
 				day: "2026-07-18",
 				spentCanonical: "5",
@@ -110,6 +122,67 @@ describe("spend journal read/record", () => {
 		);
 		recordSpend(dir, AGENT_ID, 5n, DAY1);
 		expect(readPaidIds(dir)).toEqual(["m1"]);
+	});
+
+	it.each([
+		["truncated JSON", '{"day": "2026-07-18", "spent'],
+		["a non-numeric total", '{"day": "2026-07-18", "spentCanonical": "lots"}'],
+		["a missing day", '{"spentCanonical": "5"}'],
+		[
+			"non-string paid ids on a prior day",
+			'{"day": "2026-07-17", "spentCanonical": "5", "paidIds": [1]}',
+		],
+		["a day two days ahead", '{"day": "2026-07-20", "spentCanonical": "5"}'],
+		["a far-future year", '{"day": "2036-07-18", "spentCanonical": "5"}'],
+		["bytes that are not UTF-8", Buffer.from([0xff, 0xfe])],
+		[
+			"bytes that are not UTF-8 inside a string",
+			Buffer.concat([
+				Buffer.from('{"day": "2026-07-18", "spentCanonical": "5", "paidIds": ["'),
+				Buffer.from([0xff]),
+				Buffer.from('"]}'),
+			]),
+		],
+	])("refuses_payment_on_a_journal_holding_%s", async (_label, corrupt) => {
+		const file = writeJournal(dir, corrupt);
+		expect(() => readDailySpent(dir, AGENT_ID, DAY1)).toThrow(file);
+		await expect(
+			reserveSpend(dir, AGENT_ID, POLICY, makeRequirement(), {
+				nowSeconds: DAY1,
+			}),
+		).rejects.toThrow(file);
+		expect(() => recordSpend(dir, AGENT_ID, 1n, DAY1)).toThrow(file);
+		expect(fs.readFileSync(file)).toEqual(Buffer.from(corrupt));
+	});
+
+	it.each([
+		["a month end", "2026-01-31T12:00:00Z", "2026-02-01", true],
+		["a year end", "2026-12-31T12:00:00Z", "2027-01-01", true],
+		["a year end plus two days", "2026-12-31T12:00:00Z", "2027-01-02", false],
+	])(
+		"reads_a_journal_dated_across_%s_by_the_calendar_day",
+		(_label, now, journalDay, kept) => {
+			const file = writeJournal(
+				dir,
+				JSON.stringify({ day: journalDay, spentCanonical: "5" }),
+			);
+			const nowSeconds = Date.parse(now) / 1000;
+			if (kept) {
+				expect(readDailySpent(dir, AGENT_ID, nowSeconds)).toBe(5n);
+			} else {
+				expect(() => readDailySpent(dir, AGENT_ID, nowSeconds)).toThrow(file);
+			}
+		},
+	);
+
+	it("names_the_clock_when_the_journal_is_dated_days_ahead", () => {
+		const file = writeJournal(
+			dir,
+			'{"day": "2026-07-20", "spentCanonical": "5"}',
+		);
+		expect(() => readDailySpent(dir, AGENT_ID, DAY1)).toThrow(
+			`${file} is dated 2026-07-20, later than today's date 2026-07-18, so check the system clock; payments are refused until the clock is right or the file is repaired`,
+		);
 	});
 });
 
@@ -208,10 +281,23 @@ describe("reserveSpend", () => {
 		expect(readPaidIds(dir)).toEqual(["quote-1"]);
 	});
 
+	it("test_reserveSpend_when_the_clock_moved_back_a_day_then_cap_and_paidIds_hold", async () => {
+		await reserveSpend(dir, AGENT_ID, POLICY, makeRequirement(), {
+			messageId: "quote-1",
+			nowSeconds: DAY2,
+		});
+		await expect(
+			reserveSpend(dir, AGENT_ID, POLICY, makeRequirement(), {
+				messageId: "quote-1",
+				nowSeconds: DAY1_LATE,
+			}),
+		).rejects.toMatchObject({ code: X402_ERROR.ALREADY_PAID });
+		expect(readDailySpent(dir, AGENT_ID, DAY1_LATE)).toBe(1_000_000n);
+	});
+
 	it("tolerates_an_old_journal_without_paidIds", async () => {
-		fs.mkdirSync(join(dir, "keys", AGENT_ID), { recursive: true });
-		fs.writeFileSync(
-			journalFile(dir),
+		writeJournal(
+			dir,
 			JSON.stringify({ day: "2026-07-18", spentCanonical: "500000" }), // v1, no paidIds
 		);
 		const v = await reserveSpend(dir, AGENT_ID, POLICY, makeRequirement(), {

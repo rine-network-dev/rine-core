@@ -1,30 +1,51 @@
+import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { CredentialEntry, Credentials, TokenCache } from "./types.js";
+import { UPGRADE_DETAIL } from "./crypto/upgrade-detail.js";
+import { refusesHardLinks } from "./hard-links.js";
+import type { TokenCache } from "./types.js";
 
 export const DEFAULT_API_URL = "https://rine.network";
 
+export const PROFILES_FILE = "profiles.json";
+/** The retired sign-in file. Discovery refuses a dir that holds only this one. */
+const LEGACY_SIGN_IN_FILE = "credentials.json";
+
+function refuseRetiredSignIn(dir: string): void {
+	if (
+		!fs.existsSync(join(dir, PROFILES_FILE)) &&
+		fs.existsSync(join(dir, LEGACY_SIGN_IN_FILE))
+	) {
+		throw new Error(UPGRADE_DETAIL);
+	}
+}
+
 /**
- * Resolve config directory.
+ * Resolve the runtime config directory.
  * Priority: RINE_CONFIG_DIR > ~/.config/rine > cwd/.rine
- * Reading: first candidate with credentials.json wins.
+ * Reading: first candidate with profiles.json wins. A candidate that holds the
+ * retired sign-in file and no profiles.json stops discovery with the upgrade
+ * text; it is never silently skipped.
  * Writing: first candidate where mkdir succeeds.
  */
 export function resolveConfigDir(): string {
-	if (process.env.RINE_CONFIG_DIR) return process.env.RINE_CONFIG_DIR;
+	if (process.env.RINE_CONFIG_DIR) {
+		refuseRetiredSignIn(process.env.RINE_CONFIG_DIR);
+		return process.env.RINE_CONFIG_DIR;
+	}
 
 	const candidates = [
 		join(homedir(), ".config", "rine"),
 		join(process.cwd(), ".rine"),
 	];
 
-	// Return first candidate that already has credentials (reading case)
 	for (const dir of candidates) {
-		if (fs.existsSync(join(dir, "credentials.json"))) return dir;
+		refuseRetiredSignIn(dir);
+		if (fs.existsSync(join(dir, PROFILES_FILE))) return dir;
 	}
 
-	// No credentials anywhere — return first candidate we can write to (registration case)
+	// No profiles anywhere — return first candidate we can write to (onboarding case)
 	for (const dir of candidates) {
 		try {
 			fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -41,44 +62,106 @@ export function resolveApiUrl(): string {
 	return (process.env.RINE_API_URL ?? DEFAULT_API_URL).replace(/\/$/, "");
 }
 
-function ensureDir(dir: string): void {
+export function ensureDir(dir: string): void {
 	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 }
 
-/**
- * Atomically write a 0600 file (tmp + rename). Shared by the credential/token
- * stores and by the x402 wallet policy + spend journal, which need crash-safe
- * writes next to the wallet key.
- */
-export function writeAtomic(path: string, content: string): void {
-	const tmpPath = `${path}.tmp`;
-	fs.writeFileSync(tmpPath, content, "utf-8");
-	// Tighten to 0600 BEFORE the rename so the destination (e.g. wallet.key) is
-	// never briefly world-readable at the umask default between rename and chmod.
-	fs.chmodSync(tmpPath, 0o600);
-	fs.renameSync(tmpPath, path);
+/** Create `path` with `content`, failing when it exists; a failed write leaves no file. */
+function createExclusive(path: string, content: string | Uint8Array): void {
+	const fd = fs.openSync(path, "wx", 0o600);
+	try {
+		fs.writeFileSync(fd, content);
+		fs.fsyncSync(fd);
+	} catch (error) {
+		fs.closeSync(fd);
+		fs.rmSync(path, { force: true });
+		throw error;
+	}
+	fs.closeSync(fd);
 }
 
-export function loadCredentials(configDir: string): Credentials {
-	const path = join(configDir, "credentials.json");
+/**
+ * Write `content` to a fresh 0600 temp file beside `path` and return its name.
+ * The name is random and opened exclusively, so a symlink planted at a
+ * predictable temp path is never followed and a stale temp file is never
+ * reused; 0600 is in force before any byte is written, so the content (e.g.
+ * wallet.key) is never readable at the umask default. A failed write removes it.
+ */
+function writeTemp(path: string, content: string | Uint8Array): string {
+	const tmpPath = `${path}.${randomBytes(8).toString("hex")}.tmp`;
+	const fd = fs.openSync(tmpPath, "wx", 0o600);
 	try {
-		const raw = fs.readFileSync(path, "utf-8");
-		return JSON.parse(raw) as Credentials;
-	} catch {
-		return {};
+		fs.writeFileSync(fd, content);
+		// On disk before it is put in place, so a crash never leaves the target empty.
+		fs.fsyncSync(fd);
+	} catch (error) {
+		fs.closeSync(fd);
+		fs.rmSync(tmpPath, { force: true });
+		throw error;
+	}
+	fs.closeSync(fd);
+	return tmpPath;
+}
+
+/**
+ * Atomically write a 0600 file (tmp + rename), replacing any file at `path`:
+ * the crash-safe write of the agent key files, the profile/token stores, the
+ * owner-dir root files and the x402 wallet policy + spend journal.
+ */
+export function writeAtomic(path: string, content: string | Uint8Array): void {
+	const tmpPath = writeTemp(path, content);
+	try {
+		fs.renameSync(tmpPath, path);
+	} catch (error) {
+		fs.rmSync(tmpPath, { force: true });
+		throw error;
 	}
 }
 
-export function saveCredentials(configDir: string, creds: Credentials): void {
-	ensureDir(configDir);
-	writeAtomic(
-		join(configDir, "credentials.json"),
-		JSON.stringify(creds, null, 2),
-	);
+/**
+ * Put the file at `source` at `path` unless `path` exists (then false): a hard
+ * link, so an existing file is never replaced. A filesystem without hard links
+ * (some network and FUSE mounts) gets an `O_EXCL` copy instead, exclusive but not
+ * atomic: a reader can see it before the write lands, and a crash mid-write can
+ * leave it short. Mirrors Python `rine._atomic_file.link_exclusive`.
+ */
+export function linkExclusive(source: string, path: string): boolean {
+	try {
+		fs.linkSync(source, path);
+		return true;
+	} catch (error) {
+		if (!refusesHardLinks(error)) {
+			if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+			throw error;
+		}
+	}
+	try {
+		createExclusive(path, fs.readFileSync(source));
+		return true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+		throw error;
+	}
 }
 
-export function loadTokenCache(configDir: string): TokenCache {
-	const path = join(configDir, "token_cache.json");
+/**
+ * Create a 0600 file holding `content` unless one exists (then false): a temp
+ * file put in place by {@link linkExclusive}, and removed either way.
+ */
+export function createAtomicExclusive(
+	path: string,
+	content: string | Uint8Array,
+): boolean {
+	const tmpPath = writeTemp(path, content);
+	try {
+		return linkExclusive(tmpPath, path);
+	} finally {
+		fs.rmSync(tmpPath, { force: true });
+	}
+}
+
+export function loadTokenCache(dir: string): TokenCache {
+	const path = join(dir, "token_cache.json");
 	try {
 		const raw = fs.readFileSync(path, "utf-8");
 		return JSON.parse(raw) as TokenCache;
@@ -87,21 +170,19 @@ export function loadTokenCache(configDir: string): TokenCache {
 	}
 }
 
-export function saveTokenCache(configDir: string, cache: TokenCache): void {
-	ensureDir(configDir);
-	writeAtomic(
-		join(configDir, "token_cache.json"),
-		JSON.stringify(cache, null, 2),
-	);
+export function saveTokenCache(dir: string, cache: TokenCache): void {
+	ensureDir(dir);
+	writeAtomic(join(dir, "token_cache.json"), JSON.stringify(cache, null, 2));
 }
 
+/** Cache `token` under `principal` (the principal string). */
 export function cacheToken(
-	configDir: string,
-	profile: string,
+	dir: string,
+	principal: string,
 	token: { access_token: string; expires_in: number },
 ): void {
-	const cache = loadTokenCache(configDir);
-	cache[profile] = {
+	const cache = loadTokenCache(dir);
+	cache[principal] = {
 		access_token: token.access_token,
 		expires_at: Date.now() / 1000 + token.expires_in,
 	};
@@ -110,26 +191,8 @@ export function cacheToken(
 	// successful auth flow — the caller already holds the fresh token in memory.
 	// This is the token-storm-diagnosis fix: a cache write failure never crashes auth.
 	try {
-		saveTokenCache(configDir, cache);
+		saveTokenCache(dir, cache);
 	} catch {
 		// swallow — cache miss on next call is the only consequence
 	}
-}
-
-/**
- * Resolves credentials for a profile. Priority:
- * 1. RINE_CLIENT_ID + RINE_CLIENT_SECRET env vars (both required)
- * 2. credentials.json for the given profile
- */
-export function getCredentialEntry(
-	configDir: string,
-	profile = "default",
-): CredentialEntry | undefined {
-	const envId = process.env.RINE_CLIENT_ID;
-	const envSecret = process.env.RINE_CLIENT_SECRET;
-	if (envId && envSecret) {
-		return { client_id: envId, client_secret: envSecret };
-	}
-	const creds = loadCredentials(configDir);
-	return creds[profile];
 }

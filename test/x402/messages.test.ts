@@ -2,13 +2,7 @@ import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-	type AgentKeys,
-	generateAgentKeys,
-	saveAgentKeys,
-	signingPublicKeyToJWK,
-	toBase64Url,
-} from "../../src/crypto/keys.js";
+import { World } from "../crypto/world.js";
 import { decryptMessage, encryptMessage } from "../../src/crypto/message.js";
 import { X402Error } from "../../src/x402/errors.js";
 import {
@@ -90,22 +84,10 @@ function makeTmpDir(): string {
 const SENDER_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
 const RECIPIENT_ID = "b2c3d4e5-f6a7-8901-bcde-f12345678901";
 
-function mockClientWithKeys(keys: AgentKeys) {
+function mockClientWithKeys(world: World) {
+	const base = world.client();
 	return {
-		get: vi.fn().mockImplementation((path: string) => {
-			if (path.includes("/keys")) {
-				return Promise.resolve({
-					agent_id: SENDER_ID,
-					signing_public_key: signingPublicKeyToJWK(keys.signing.publicKey),
-					encryption_public_key: {
-						kty: "OKP",
-						crv: "X25519",
-						x: toBase64Url(keys.encryption.publicKey),
-					},
-				});
-			}
-			return Promise.reject(new Error(`Unexpected GET: ${path}`));
-		}),
+		get: vi.fn(base.get),
 		post: vi.fn(),
 	};
 }
@@ -271,15 +253,17 @@ describe("parseX402Payload", () => {
 
 describe("verbatim-object round-trip through the real E2EE envelope", () => {
 	let dir: string;
-	let senderKeys: AgentKeys;
-	let recipientKeys: AgentKeys;
+	let world: World;
+	let sender: ReturnType<World["addAgent"]>;
+	let recipient: ReturnType<World["addAgent"]>;
 
 	beforeEach(() => {
 		dir = makeTmpDir();
-		senderKeys = generateAgentKeys();
-		saveAgentKeys(dir, SENDER_ID, senderKeys);
-		recipientKeys = generateAgentKeys();
-		saveAgentKeys(dir, RECIPIENT_ID, recipientKeys);
+		world = new World();
+		sender = world.addAgent({ id: SENDER_ID });
+		recipient = world.addAgent({ id: RECIPIENT_ID });
+		world.save(dir, sender);
+		world.save(dir, recipient);
 	});
 	afterEach(() => fs.rmSync(dir, { recursive: true }));
 
@@ -290,10 +274,14 @@ describe("verbatim-object round-trip through the real E2EE envelope", () => {
 		const enc = await encryptMessage(
 			dir,
 			SENDER_ID,
-			recipientKeys.encryption.publicKey,
+			RECIPIENT_ID,
+			{
+				encryption: recipient.derived.x25519.publicKey,
+				pqEncryption: recipient.derived.mlKem768.publicKey,
+			},
 			built.payload,
 		);
-		const client = mockClientWithKeys(senderKeys);
+		const client = mockClientWithKeys(world);
 		const dec = await decryptMessage(
 			dir,
 			RECIPIENT_ID,

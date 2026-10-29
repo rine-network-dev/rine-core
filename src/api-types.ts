@@ -1,10 +1,23 @@
+import type { EncryptionVersion } from "./encryption-versions.js";
+
+/**
+ * A wire field whose known values are `T`. Any other string still type-checks,
+ * so a value a newer server adds degrades instead of breaking a read, while
+ * editors offer the known values.
+ */
+type KnownOr<T extends string> = T | (string & {});
+
+type JoinRequestStatus = KnownOr<"pending" | "approved" | "denied" | "invited">;
+
+type Vote = KnownOr<"approve" | "deny">;
+
 export interface GroupRead {
 	id: string;
 	name: string;
 	handle: string;
 	description: string | null;
-	enrollment_policy: string;
-	visibility: string;
+	enrollment_policy: KnownOr<"open" | "closed" | "majority" | "unanimity">;
+	visibility: KnownOr<"public" | "private">;
 	isolated: boolean;
 	vote_duration_hours: number;
 	member_count: number;
@@ -26,7 +39,7 @@ export interface GroupRead {
 	// LIVE group membership at the moment of the read.
 	conversation_id: string | null;
 	// Which of the CALLER'S OWN agents hold a seat in this group — the question
-	// `member_count` never answered. An org-scoped list is not proof that the
+	// `member_count` never answered. A key-scoped list is not proof that the
 	// agent doing the asking may post: the group row said how many members the
 	// group has, and nothing at all about whether any of them was yours.
 	//
@@ -39,7 +52,7 @@ export interface GroupRead {
 	// be pasted into the header that makes the next call work.
 	//
 	// Purely additive, and it narrows nothing: `member_count` is still the whole
-	// roster, `GET /groups` still lists every group the org may see, and the
+	// roster, `GET /groups` still lists every group the credential may see, and the
 	// list names no agent outside the caller's own org.
 	//
 	// Optional, unlike `conversation_id` above: this field is newer than the
@@ -55,7 +68,7 @@ export interface GroupMemberRead {
 	id: string;
 	group_id: string;
 	agent_id: string;
-	role: string;
+	role: KnownOr<"admin" | "member">;
 	joined_at: string;
 	agent_handle?: string;
 	// Whether this roster row is one of the caller's own org's agents.
@@ -78,11 +91,11 @@ export interface JoinRequestRead {
 	agent_id: string;
 	invited_by?: string;
 	message?: string;
-	status: string;
+	status: JoinRequestStatus;
 	expires_at?: string;
 	created_at: string;
 	resolved_at?: string;
-	your_vote?: string;
+	your_vote?: Vote;
 	// Where the vote stands. A request is decided by the members the group had
 	// when it was filed and only by those still in it, so `electorate_size` is
 	// the denominator BOTH bars come from — approvals and denials alike — and
@@ -122,8 +135,8 @@ export interface AgentRead {
 	 */
 	handle: string | null;
 	human_oversight: boolean;
-	incoming_policy: string;
-	outgoing_policy: string;
+	incoming_policy: KnownOr<"accept_all" | "groups_only">;
+	outgoing_policy: KnownOr<"send_all" | "groups_only">;
 	created_at: string;
 	revoked_at?: string | null;
 	unlisted?: boolean;
@@ -149,6 +162,7 @@ export interface MessageRead {
 	from_agent_id?: string;
 	recipient_handle?: string;
 	to_agent_id?: string;
+	// Open-ended: the server accepts any dotted namespaced type, not a fixed set.
 	type: string;
 	encrypted_payload: string;
 	// Sender self-read copy, sealed to the sender's own key. Returned only to the
@@ -157,7 +171,7 @@ export interface MessageRead {
 	self_encrypted_payload?: string | null;
 	// Viewer-relative tag: `sent` when `from_agent_id == caller`, else `received`.
 	direction?: "sent" | "received";
-	encryption_version: string;
+	encryption_version: KnownOr<EncryptionVersion>;
 	sender_signing_kid?: string;
 	content_type?: string;
 	created_at: string;
@@ -176,18 +190,24 @@ export interface AgentKeysResponse {
 	agent_id: string;
 	signing_public_key: { kty: string; crv: string; x: string };
 	encryption_public_key: { kty: string; crv: string; x: string };
-	pq_encryption_public_key?: { kty: string; alg: string; x: string };
+	mls_signing_public_key: { kty: string; crv: string; x: string };
+	pq_encryption_public_key: { kty: string; alg: string; x: string };
+	pq_signing_public_key: { kty: string; alg: string; x: string };
+	org_id: string;
+	org_signing_public_key: string;
+	org_pq_signing_public_key: string;
+	branch: string;
+	branch_certificate: string;
+	key_gen: number;
+	agent_certificate: string;
+	/** Present on history reads only: when this generation was replaced. */
+	superseded_at?: string;
+	/** When the agent, or its branch if earlier, was revoked; null while neither is. */
+	revoked_at?: string | null;
 }
 
 export interface BatchKeysResponse {
-	keys: Record<
-		string,
-		{
-			signing_public_key: { kty: string; crv: string; x: string };
-			encryption_public_key: { kty: string; crv: string; x: string };
-			pq_encryption_public_key?: { kty: string; alg: string; x: string };
-		}
-	>;
+	keys: Record<string, AgentKeysResponse>;
 }
 
 export interface WebhookRead {
@@ -202,18 +222,19 @@ export interface WebhookRead {
 export interface WebhookDeliveryRead {
 	id: string;
 	message_id: string;
-	status: string;
+	status: KnownOr<"pending" | "processing" | "delivered" | "failed" | "dead">;
 	attempts: number;
 	last_error?: string;
 	created_at: string;
 }
 
 // Funnel TLS-termination tier — the TS mirror of the Python `FunnelTier` StrEnum
-// (funnel_naming.py) and the single source of truth for the tier on this side of
-// the wire. `zero_trust` → the relay terminates TLS (issues a
+// (src/rine/core/funnel_tier.py) and the single source of truth for the tier on
+// this side of the wire. `zero_trust` → the relay terminates TLS (issues a
 // per-agent wildcard cert + runs a local listener); `shared_edge` → the broker
 // terminates (Phase B). The values are byte-identical to the Python enum and the
-// DB `VARCHAR(16)` CHECK; no other spelling of a tier appears anywhere.
+// `VARCHAR(16)` CHECK on `FunnelHook.termination` (the src/rine/db/models/
+// package); no other spelling of a tier appears anywhere.
 export type FunnelTier = "zero_trust" | "shared_edge";
 
 // The exhaustive tier value set. `FUNNEL_TIERS` is the runtime witness of the
@@ -253,8 +274,8 @@ export interface HookListResponse {
 
 export interface VoteResponse {
 	request_id: string;
-	your_vote: string;
-	status: string;
+	your_vote: Vote;
+	status: JoinRequestStatus;
 }
 
 export interface OrgRead {
@@ -266,4 +287,15 @@ export interface OrgRead {
 	trust_tier: number;
 	agent_count: number;
 	created_at: string;
+}
+
+/** `GET /whoami`: answers every principal kind, scoped to what the caller may see. */
+export interface WhoAmIRead {
+	org: OrgRead;
+	principal: {
+		kind: "org" | "branch" | "agent" | "org_reader" | "branch_reader";
+		branch: string | null;
+		agent_id: string | null;
+	};
+	agents: AgentRead[];
 }

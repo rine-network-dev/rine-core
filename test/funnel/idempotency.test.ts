@@ -53,12 +53,9 @@ function signedReq(
 }
 
 beforeEach(() => {
-	vi.spyOn(message, "fetchRecipientKeys").mockResolvedValue({
-		encryption: new Uint8Array(32),
-	} as never);
-	vi.spyOn(message, "encryptMessage").mockResolvedValue({
+	vi.spyOn(message, "sealForAgent").mockResolvedValue({
 		encrypted_payload: "BASE64URL_OPAQUE_CIPHERTEXT",
-		encryption_version: "hpke-v1",
+		encryption_version: "hpke-hybrid-v2",
 		sender_signing_kid: `rine:${AGENT_ID}`,
 	} as never);
 });
@@ -144,7 +141,7 @@ describe("relay adapter — replay de-dup", () => {
 		});
 		// No SECOND post and no SECOND encrypt — the duplicate never mints a message.
 		expect(deps.client.post).toHaveBeenCalledTimes(1);
-		expect(message.encryptMessage).toHaveBeenCalledTimes(1);
+		expect(message.sealForAgent).toHaveBeenCalledTimes(1);
 	});
 
 	it("drops a body-identical replay even without a delivery-id header (body-hash key)", async () => {

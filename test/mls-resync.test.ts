@@ -17,6 +17,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../src/mls-escrow-key.js", () => escrowKeyModule());
+
 vi.mock("../src/crypto/mls-api.js", async () => {
 	const actual = await vi.importActual<
 		typeof import("../src/crypto/mls-api.js")
@@ -38,7 +40,13 @@ vi.mock("../src/crypto/mls-api.js", async () => {
 	};
 });
 
-import { generateAgentKeys, saveAgentKeys } from "../src/crypto/keys.js";
+import { World } from "./crypto/world.js";
+import {
+	type PeerReads,
+	escrowKeyModule,
+	escrowKeyOutage,
+	withPeerReads,
+} from "./mls-escrow-harness.js";
 import {
 	claimKeyPackages,
 	claimKeyPackagesBatch,
@@ -68,17 +76,24 @@ const THIRD_ID = "d4e5f6a7-b8c9-0123-def1-234567890123";
 const GROUP_ID = "c3d4e5f6-a7b8-9012-cdef-123456789012";
 
 let dir: string;
+let world: World;
 /** Every commit body the code posted, in order. */
 let posted: MlsCommitBody[];
 
-const client = {
+/**
+ * The reads the admission path makes outside `crypto/mls-api.js`: the group's
+ * size. The roster and the published keys come from the world, so every peer
+ * this test admits carries a chain the batch consumers verify.
+ */
+const fakeClient = {
 	get: async (path: string) => {
-		if (path === "/agents/keys") return { keys: {} };
 		if (path === `/groups/${GROUP_ID}`) return { member_count: 2 };
 		if (path === `/groups/${GROUP_ID}/requests`) return { items: [] };
 		throw new Error(`unexpected GET ${path}`);
 	},
-} as never;
+};
+let client: never;
+let reads: PeerReads;
 
 function loadGroup(agentId: string) {
 	return openMlsClient(dir, agentId).loadGroup(mlsGroupIdBytes(GROUP_ID));
@@ -133,6 +148,7 @@ function adminAdvancesGroup(): { epoch: number; commit: string } {
 	vi.mocked(fetchGroupInfo).mockResolvedValue({
 		group_info: mlsToBase64(bundle.groupInfo),
 		epoch: bundle.epoch,
+		confirmed_epoch: bundle.epoch,
 	});
 	return { epoch: bundle.epoch, commit };
 }
@@ -160,6 +176,9 @@ function refuseReplay(): void {
 
 beforeEach(() => {
 	dir = fs.mkdtempSync(join(tmpdir(), "rine-mlsresync-"));
+	world = new World();
+	reads = withPeerReads(world, fakeClient);
+	client = reads as never;
 	posted = [];
 	vi.clearAllMocks();
 	vi.mocked(mlsCommit).mockImplementation(async (_c, _g, body) => {
@@ -173,7 +192,7 @@ beforeEach(() => {
 		epoch: null,
 	});
 	for (const id of [FOUNDER_ID, SELF_ID, THIRD_ID]) {
-		saveAgentKeys(dir, id, generateAgentKeys());
+		world.save(dir, world.addAgent({ id }));
 	}
 });
 
@@ -225,6 +244,26 @@ describe("recoverMlsGroup — the cheap rung", () => {
 });
 
 describe("recoverMlsGroup — the expensive rung", () => {
+	it("settles the escrow the replaced state still held, then escrows the new epoch", async () => {
+		// SELF cannot reach an escrow key while it joins, so epoch 1's exports stay
+		// only in its stored snapshot: the resync is about to save over it.
+		escrowKeyOutage.add(SELF_ID);
+		try {
+			await foundGroup();
+		} finally {
+			escrowKeyOutage.clear();
+		}
+		reads.puts.length = 0;
+		const { epoch } = adminAdvancesGroup();
+		refuseReplay();
+
+		await recoverMlsGroup(dir, SELF_ID, GROUP_ID, client);
+
+		const paths = reads.puts.map(([path]) => path);
+		expect(paths).toContain(`/groups/${GROUP_ID}/mls/escrow/1`);
+		expect(paths).toContain(`/groups/${GROUP_ID}/mls/escrow/${epoch + 1}`);
+	});
+
 	it("resyncs on the server's refusal, in one commit that admits nobody", async () => {
 		await foundGroup();
 		const staleEpoch = loadGroup(SELF_ID).epoch();

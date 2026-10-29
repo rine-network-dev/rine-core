@@ -2,17 +2,13 @@ import * as fs from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AgentKeysResponse } from "../src/api-types.js";
 import {
 	deleteSenderKey,
 	distributeSenderKey,
 	getOrCreateSenderKey,
 } from "../src/sender-key-ops.js";
-import {
-	generateAgentKeys,
-	pqPublicKeyToJWK,
-	saveAgentKeys,
-	toBase64Url,
-} from "../src/crypto/keys.js";
+import { toBase64Url } from "../src/crypto/keys.js";
 import type { SenderKeyState } from "../src/crypto/sender-keys.js";
 import { generateSenderKey } from "../src/crypto/sender-keys.js";
 import {
@@ -22,6 +18,7 @@ import {
 	senderKeysRetired,
 } from "../src/crypto/sender-keys-helpers.js";
 import { ingestSenderKeyDistribution } from "../src/crypto/index.js";
+import { World, type WorldAgent } from "./crypto/world.js";
 
 function makeTmpDir(): string {
 	return fs.mkdtempSync(join(tmpdir(), "rine-skops-test-"));
@@ -70,65 +67,29 @@ const SIBLING_REFUSAL =
 	" acting agent is chosen with --agent on the rine CLI, agent on every" +
 	" other surface. Nothing was sent, and no sender key was distributed.";
 
-function setupAgent(dir: string, agentId: string) {
-	const keys = generateAgentKeys();
-	saveAgentKeys(dir, agentId, keys);
-	return keys;
+let world: World;
+
+function setupAgent(dir: string, agentId: string): void {
+	world.save(dir, world.addAgent({ id: agentId }));
 }
 
-function makeBatchKeysResponse(agentIds: string[]) {
-	const keys: Record<
-		string,
-		{ signing_public_key: object; encryption_public_key: object }
-	> = {};
-	for (const id of agentIds) {
-		const k = generateAgentKeys();
-		keys[id] = {
-			signing_public_key: {
-				kty: "OKP",
-				crv: "Ed25519",
-				x: toBase64Url(k.signing.publicKey),
-			},
-			encryption_public_key: {
-				kty: "OKP",
-				crv: "X25519",
-				x: toBase64Url(k.encryption.publicKey),
-			},
-		};
-	}
-	return { keys };
+/** The world's newest generation of `id`, minted on first use. */
+function ensureAgent(id: string): WorldAgent {
+	const generations = world.agents.get(id);
+	const newest = generations?.[generations.length - 1];
+	return newest ?? world.addAgent({ id });
 }
 
 /**
- * Batch fixture where each recipient also advertises a REAL ML-KEM
- * pq_encryption_public_key, so the hybrid encrypt path genuinely runs.
+ * `GET /agents/keys` for `agentIds`, in the batch shape the server sends.
+ *
+ * Every response is the world's own, so it carries the org, branch and
+ * certificate fields the chain check requires — a hand-built stub with only
+ * `signing_public_key` / `encryption_public_key` is refused outright.
  */
-function makeHybridBatchKeysResponse(agentIds: string[]) {
-	const keys: Record<
-		string,
-		{
-			signing_public_key: object;
-			encryption_public_key: object;
-			pq_encryption_public_key: object;
-		}
-	> = {};
-	for (const id of agentIds) {
-		const k = generateAgentKeys();
-		if (!k.pqEncryption) throw new Error("expected generated PQ key");
-		keys[id] = {
-			signing_public_key: {
-				kty: "OKP",
-				crv: "Ed25519",
-				x: toBase64Url(k.signing.publicKey),
-			},
-			encryption_public_key: {
-				kty: "OKP",
-				crv: "X25519",
-				x: toBase64Url(k.encryption.publicKey),
-			},
-			pq_encryption_public_key: pqPublicKeyToJWK(k.pqEncryption.publicKey),
-		};
-	}
+function batchKeys(agentIds: string[]) {
+	const keys: Record<string, AgentKeysResponse> = {};
+	for (const id of agentIds) keys[id] = ensureAgent(id).response;
 	return { keys };
 }
 
@@ -156,7 +117,7 @@ function makeKeyFetchClient(
 					return Promise.reject(new Error("Maximum 200 IDs per request"));
 				}
 				return Promise.resolve(
-					makeBatchKeysResponse(ids.filter((id) => recipientIds.includes(id))),
+					batchKeys(ids.filter((id) => recipientIds.includes(id))),
 				);
 			}),
 		post: vi.fn().mockResolvedValue({ id: "msg-1" }),
@@ -176,6 +137,7 @@ describe("distributeSenderKey", () => {
 
 	beforeEach(() => {
 		dir = makeTmpDir();
+		world = new World();
 		setupAgent(dir, SENDER_ID);
 	});
 	afterEach(() => fs.rmSync(dir, { recursive: true }));
@@ -183,9 +145,7 @@ describe("distributeSenderKey", () => {
 	it("distributes to all recipients", async () => {
 		const state = generateSenderKey(GROUP_ID, SENDER_ID);
 		const client = {
-			get: vi
-				.fn()
-				.mockResolvedValue(makeBatchKeysResponse([RECIPIENT_A, RECIPIENT_B])),
+			get: vi.fn().mockResolvedValue(batchKeys([RECIPIENT_A, RECIPIENT_B])),
 			post: vi.fn().mockResolvedValue({ id: "msg-1" }),
 		};
 
@@ -206,16 +166,14 @@ describe("distributeSenderKey", () => {
 		for (const call of client.post.mock.calls) {
 			expect(call[0]).toBe("/messages");
 			expect(call[1].type).toBe("rine.v1.sender_key_distribution");
-			expect(call[1].encryption_version).toBe("hpke-v1");
+			expect(call[1].encryption_version).toBe("hpke-hybrid-v2");
 		}
 	});
 
-	it("seals distribution as hpke-hybrid-v1 when a recipient advertises a PQ key", async () => {
+	it("seals distribution as hpke-hybrid-v2 to the chain-verified keys of a recipient", async () => {
 		const state = generateSenderKey(GROUP_ID, SENDER_ID);
 		const client = {
-			get: vi
-				.fn()
-				.mockResolvedValue(makeHybridBatchKeysResponse([RECIPIENT_A])),
+			get: vi.fn().mockResolvedValue(batchKeys([RECIPIENT_A])),
 			post: vi.fn().mockResolvedValue({ id: "msg-1" }),
 		};
 
@@ -235,14 +193,14 @@ describe("distributeSenderKey", () => {
 		const call = client.post.mock.calls[0]!;
 		expect(call[0]).toBe("/messages");
 		expect(call[1].type).toBe("rine.v1.sender_key_distribution");
-		expect(call[1].encryption_version).toBe("hpke-hybrid-v1");
+		expect(call[1].encryption_version).toBe("hpke-hybrid-v2");
 	});
 
 	it("reports missing keys as failures", async () => {
 		const state = generateSenderKey(GROUP_ID, SENDER_ID);
 		// Only return keys for RECIPIENT_A
 		const client = {
-			get: vi.fn().mockResolvedValue(makeBatchKeysResponse([RECIPIENT_A])),
+			get: vi.fn().mockResolvedValue(batchKeys([RECIPIENT_A])),
 			post: vi.fn().mockResolvedValue({ id: "msg-1" }),
 		};
 
@@ -258,6 +216,32 @@ describe("distributeSenderKey", () => {
 		expect(result.succeeded).toEqual([RECIPIENT_A]);
 		expect(result.failed).toEqual([RECIPIENT_B]);
 		expect(client.post).toHaveBeenCalledTimes(1);
+	});
+
+	it("test_distribute_when_a_recipients_key_chain_is_broken_then_it_fails_and_nothing_is_sealed_to_it", async () => {
+		const state = generateSenderKey(GROUP_ID, SENDER_ID);
+		const keys = batchKeys([RECIPIENT_A, RECIPIENT_B]).keys;
+		const forged = keys[RECIPIENT_B] as AgentKeysResponse;
+		forged.encryption_public_key = ensureAgent(RECIPIENT_A).response
+			.encryption_public_key;
+		const client = {
+			get: vi.fn().mockResolvedValue({ keys }),
+			post: vi.fn().mockResolvedValue({ id: "msg-1" }),
+		};
+
+		const result = await distributeSenderKey(
+			client as never,
+			dir,
+			SENDER_ID,
+			state,
+			GROUP_ID,
+			[RECIPIENT_A, RECIPIENT_B],
+		);
+
+		expect(result.succeeded).toEqual([RECIPIENT_A]);
+		expect(result.failed).toEqual([RECIPIENT_B]);
+		expect(client.post).toHaveBeenCalledTimes(1);
+		expect(client.post.mock.calls[0]?.[1].to_agent_id).toBe(RECIPIENT_A);
 	});
 
 	it("test_distribute_when_recipients_exceed_the_batch_cap_chunks_the_key_fetch", async () => {
@@ -283,7 +267,11 @@ describe("distributeSenderKey", () => {
 		expect(result.succeeded).toEqual(recipients);
 		expect(result.failed).toEqual([]);
 		expect(client.post).toHaveBeenCalledTimes(201);
-	});
+		// 201 is the smallest list that crosses the 200-id cap, and every recipient needs its own
+		// post-quantum key chain minted, verified and sealed to (a key chain binds its agent id, so
+		// one recipient cannot stand in for the rest): about 2.3 s alone. The 30 s timeout is a load margin
+		// for the parallel suite, where the same test crosses vitest's 5 s default.
+	}, 30_000);
 
 	it("test_distribute_when_one_key_chunk_fails_still_distributes_the_others", async () => {
 		const recipients = manyRecipients(250);
@@ -404,7 +392,7 @@ describe("getOrCreateSenderKey", () => {
 				}
 				if (path === "/agents/keys") {
 					const recipientIds = memberIds.filter((id) => id !== SENDER_ID);
-					return Promise.resolve(makeBatchKeysResponse(recipientIds));
+					return Promise.resolve(batchKeys(recipientIds));
 				}
 				if (path === "/agents") {
 					return Promise.resolve({
@@ -439,6 +427,7 @@ describe("getOrCreateSenderKey", () => {
 
 	beforeEach(() => {
 		dir = makeTmpDir();
+		world = new World();
 		setupAgent(dir, SENDER_ID);
 	});
 	afterEach(() => fs.rmSync(dir, { recursive: true }));
@@ -909,6 +898,7 @@ describe("deleteSenderKey", () => {
 
 	beforeEach(() => {
 		dir = makeTmpDir();
+		world = new World();
 		setupAgent(dir, SENDER_ID);
 	});
 	afterEach(() => fs.rmSync(dir, { recursive: true }));
@@ -1007,7 +997,7 @@ describe("deleteSenderKey", () => {
 				message_index: peer.messageIndex,
 				sender_agent_id: peer.senderAgentId,
 			}),
-			senderKid: `rine:${peer.senderAgentId}`,
+			senderKid: `rine:${peer.senderAgentId}#0`,
 			verified: true,
 			verificationStatus: "verified" as const,
 		};

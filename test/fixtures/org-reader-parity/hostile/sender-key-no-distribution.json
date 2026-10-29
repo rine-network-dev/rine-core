@@ -1,0 +1,125 @@
+{
+  "name": "sender-key-no-distribution",
+  "family": "sender-key",
+  "note": "a post whose distribution the org never received",
+  "api_url": "http://rine.invalid",
+  "org_id": "de4db70f-d37f-8be9-b275-3abdf05aa800",
+  "root_key": "DCoYVE0vnLZwN1n4OUylViWWrvcHOAeyQMsZlVnpcOY",
+  "own_agents": [
+    "0afd1ba5-5498-443b-b706-b64ce0873d1f",
+    "5cccc04e-c097-4a7f-aa8e-62e8eb05f7c5"
+  ],
+  "reader": {
+    "branch": null
+  },
+  "reads": [
+    {
+      "query": {
+        "group_id": "f9d25783-8872-5cd5-acac-f0410bac83fd",
+        "cursor": null,
+        "limit": 100
+      },
+      "exchanges": [
+        {
+          "method": "POST",
+          "path": "/oauth/token",
+          "query": {},
+          "status": 200,
+          "body": {
+            "access_token": "fixture-token",
+            "token_type": "bearer",
+            "expires_in": 900
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "group_id": "f9d25783-8872-5cd5-acac-f0410bac83fd",
+            "include": "payload",
+            "limit": "100"
+          },
+          "status": 200,
+          "body": {
+            "items": [
+              {
+                "id": "eae8eb5d-5e38-5e3c-95d3-97d43be0709f",
+                "created_at": "2026-10-24T12:00:10.000000Z",
+                "type": "rine.v1.dm",
+                "direction": "received",
+                "from": {
+                  "agent_id": "05375eb7-2d92-4fca-91d0-0ce6d7203b12",
+                  "handle": "05375eb7@example.test",
+                  "org_id": "6704b472-471d-8702-b9af-74fe69b09e6f",
+                  "own": false
+                },
+                "to": null,
+                "group": {
+                  "id": "f9d25783-8872-5cd5-acac-f0410bac83fd",
+                  "handle": "#room@example.test"
+                },
+                "conversation_id": "32685b3b-05a7-5eba-9e3a-82a5a356678c",
+                "encryption_version": "sender-key-v1",
+                "delivered_at": null,
+                "x402_status": null,
+                "x402_rail": null,
+                "payload": {
+                  "encrypted_payload": "AjNdzT4M-lAvpXigBix1OEIAAAAAc7k4Ahg_XniQvT83yoydWXnIl-Ptrv7uzsNT-k0KAzo5VOuOgpkIt6RBZ-P5aGLZXd5Unf3WGAsMgGnyXp2BuTZE0pw3uHUC8TDsmPnzViq0y4z8eyTgtjexjfafapQWRtjuziisNRgeCU4Iw1EZrnOCn62HI1FHdNiv-krKwmEBUd0NxuS5ez7jcenpCt8PTv2K6mASagw",
+                  "self_encrypted_payload": null,
+                  "key_gen": 0
+                }
+              }
+            ],
+            "next_cursor": null
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "type": "rine.v1.sender_key_distribution",
+            "include": "payload",
+            "limit": "100"
+          },
+          "status": 200,
+          "body": {
+            "items": [],
+            "next_cursor": null
+          }
+        }
+      ],
+      "page": {
+        "items": [
+          {
+            "id": "eae8eb5d-5e38-5e3c-95d3-97d43be0709f",
+            "created_at": "2026-10-24T12:00:10+00:00",
+            "type": "rine.v1.dm",
+            "direction": "received",
+            "from": {
+              "agent_id": "05375eb7-2d92-4fca-91d0-0ce6d7203b12",
+              "handle": "05375eb7@example.test",
+              "own": false
+            },
+            "to": null,
+            "group": {
+              "id": "f9d25783-8872-5cd5-acac-f0410bac83fd",
+              "handle": "#room@example.test"
+            },
+            "conversation_id": "32685b3b-05a7-5eba-9e3a-82a5a356678c",
+            "encryption_version": "sender-key-v1",
+            "epoch": null,
+            "text": null,
+            "verification": null,
+            "equivocation": false,
+            "gap": {
+              "reason": "NoDistribution",
+              "sender": "05375eb7-2d92-4fca-91d0-0ce6d7203b12"
+            }
+          }
+        ],
+        "findings": [],
+        "next_cursor": null
+      }
+    }
+  ]
+}

@@ -25,7 +25,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-import { cliSyncRemedy, mlsReadRefusal } from "../src/mls-read-refusal.js";
+import { cliSyncRemedy, mlsReadRefusal, sdkSyncRemedy } from "../src/mls-read-refusal.js";
 
 const py = readFileSync(
 	new URL("../../rine-sdk/src/rine/mls_read_words.py", import.meta.url)
@@ -72,6 +72,7 @@ describe("the Python twin of the unopenable-read sentence", () => {
 		// them the remedy rather than merely a sync.
 		expect(cliSyncRemedy("g1")).toBe("Run `rine group sync g1`");
 		expect(pyReturn("sdk_sync_remedy")).toBe('Call groups.sync("{group_id}")');
+		expect(sdkSyncRemedy("{group_id}")).toBe(pyReturn("sdk_sync_remedy"));
 	});
 
 	it("reads as one sentence once a surface's own remedy is substituted", () => {
@@ -86,5 +87,16 @@ describe("the Python twin of the unopenable-read sentence", () => {
 		expect(mlsReadRefusal("g1", 'Call groups.sync("g1")')).toContain(
 			`Call groups.sync("g1") to catch this agent's group state up`,
 		);
+	});
+
+	it("names any leaf-holding member, not an admin, as the one who resumes the admission", () => {
+		// The server gates only the founding commit on the designated admin; a
+		// post-init Add commit needs membership, so telling the reader to find an
+		// admin sends them after an actor the move does not need.
+		const sentence = mlsReadRefusal("g1", cliSyncRemedy("g1"));
+		expect(sentence).toContain(
+			"ask any other member that holds a leaf in the group to resume the admission (an admin is not required)",
+		);
+		expect(sentence).not.toContain("ask a group admin");
 	});
 });

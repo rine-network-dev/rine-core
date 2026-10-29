@@ -1,0 +1,164 @@
+{
+  "name": "keys-fault-escrow-uploader-503",
+  "family": "key-faults",
+  "note": "503 reading the escrow uploader's keys, to open its copy",
+  "api_url": "http://rine.invalid",
+  "org_id": "de4db70f-d37f-8be9-b275-3abdf05aa800",
+  "root_key": "DCoYVE0vnLZwN1n4OUylViWWrvcHOAeyQMsZlVnpcOY",
+  "own_agents": [
+    "0afd1ba5-5498-443b-b706-b64ce0873d1f",
+    "5cccc04e-c097-4a7f-aa8e-62e8eb05f7c5"
+  ],
+  "reader": {
+    "branch": null
+  },
+  "reads": [
+    {
+      "query": {
+        "group_id": "66f3e4e8-d6f4-4c70-926a-f094916082bd",
+        "cursor": null,
+        "limit": 100
+      },
+      "exchanges": [
+        {
+          "method": "POST",
+          "path": "/oauth/token",
+          "query": {},
+          "status": 200,
+          "body": {
+            "access_token": "fixture-token",
+            "token_type": "bearer",
+            "expires_in": 900
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "group_id": "66f3e4e8-d6f4-4c70-926a-f094916082bd",
+            "include": "payload",
+            "limit": "100"
+          },
+          "status": 200,
+          "body": {
+            "items": [
+              {
+                "id": "952b6ff1-22a2-4cea-82d8-0d5e1a746aaa",
+                "created_at": "2026-10-24T20:36:23.159912Z",
+                "type": "rine.v1.dm",
+                "direction": "received",
+                "from": {
+                  "agent_id": "05375eb7-2d92-4fca-91d0-0ce6d7203b12",
+                  "handle": "mx-cli@mx-cli-874177.rine.network",
+                  "org_id": "6704b472-471d-8702-b9af-74fe69b09e6f",
+                  "own": false
+                },
+                "to": null,
+                "group": {
+                  "id": "66f3e4e8-d6f4-4c70-926a-f094916082bd",
+                  "handle": "#mx-orgread-closed-874177@mx-ts-sdk-874177.rine.network"
+                },
+                "conversation_id": "8340796a-4561-4282-ae46-dda318c3e84d",
+                "encryption_version": "mls-v1",
+                "delivered_at": null,
+                "x402_status": null,
+                "x402_rail": null,
+                "payload": {
+                  "encrypted_payload": "BAABAAIQZvPk6Nb0THCSavCUkWCCvQAAAAAAAAACAQAcpheobXLlk-7jZANiPQjvMmBdJaa2IcsjAlXIn0DwdBA88B7dElB4sRlgmdvmcIu3hCmB8YcZFJEJPjI8lDjRcvDtHtuhperFgj7d5YZLO3aA4SoWws9JhFclulxRQQDrz0QLY-GSj4uoteRuKwIvq_neFRmDk-SuTt0S6lf2PVNuLGLK59oSHks7hlcFWeWvqaZIrtfYl1WmrLTjafXzk0gOYMEuAGBHVqLr8R8Fogm2izwol_xvzywfk0cuVNE7GcLT8JudZiLtH8yYs7TyQ_ix117AvcdF2rysZhPojz5bCi8J9BTR6khnGD7U91vj73tj7qvI4l43mcjwFDc7bypB1TaESSeanGO6U66K",
+                  "self_encrypted_payload": null,
+                  "key_gen": 0
+                }
+              }
+            ],
+            "next_cursor": null
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/orgs/me/mls-escrow",
+          "query": {
+            "group_id": "66f3e4e8-d6f4-4c70-926a-f094916082bd",
+            "from_epoch": "2",
+            "to_epoch": "2",
+            "limit": "500"
+          },
+          "status": 200,
+          "body": {
+            "rows": [
+              {
+                "epoch": 2,
+                "fp": "9ObdKPbbi2mbkjjw4kIcJQ",
+                "branch": "main",
+                "uploader_agent_id": "5cccc04e-c097-4a7f-aa8e-62e8eb05f7c5",
+                "uploader_key_gen": 0,
+                "uploader_sig": "_wdZJDFunRAGFqOoXr-4z3Q7QZamS0USecQkwgIXaA_8bG3CFJasj9lfSNPar-qg17eAnFo_Paig19ZiTH5oAQ",
+                "sealed": "BMxplfKxYiXr2krqCpQBpQ5rulMqfBKr4_EvXYY2e7B6Ckmk9O8nuky8t7oy-bW0lJRpr3c_hzxv5UqRovEoVKBe9xyayH7qJAPBjZ55-2e3cELCwbElyDUqGn8gVcZvGeCLVkwb77Mai9iDxaOJFTFdX3vEwkIcPIWUPtBsdX1Xm5MD_y6dgbv_6R4-L5_NRR8bu47SZ6cr7WUycpI3EI6Uu7K359ivf6XXr0vqKvnViYRmVtaXRX3jHjw3cZmJzjam9SFJUlDA3aW-C19Xe-mnunslUXj1PWsAou2z0n5C162p8IffeA6XCtdJupbyjJxV6SmK7nE02MKy7YPfezG49ka5ERfnZE1iYP-5h-q_1wCJfDC6ommsDaUjA9mrCs-tDPcoLZIm66tsipXXG0xqmh2MZHqB6XWaO1XWZoIv0UkwPjRrh-qSa8ES_vDYb-OY2yWhA-nfAEeM17wsPa16wEmSCxPRHmbb3kwjotvBm-lpdK1Y-qrpJwIP1NO9P8hxPbfN2PoL1KhMZZiPYBzjYXB2niMzmhWuvemXN3GB_zl8jNKyCpOhe51ZjGoDt1hlegGZ74pvJ--BKvqFJ_vqKSTIid4-_s9tWdDIsJl_e3PLJm31SwfpSwKByF4loI31M3rybJ_rWfNZz67cj1_HGugGIJlu5RBlvM2O7pcY_TMxbKRmd4QJBwfvA48KYHO69sIO2V-kgLP-DcIZeUkznoUCcspYxzTvGPPsvEypZoNdhpYRzIcGuGpAfB3rqRkozgLaUig-YJiDqwDsfZoMibJFKyORRrr5S8oNASiuH4WgHoTqbjVvoqnQFOGhrOilyTxViTv_B_tfWSiA4YaA6XPxpTDQb9vIO0RFGEkChmwTVK7QuqtOAkbmRae7qWQBq00X3yEHh9gyyE_RLa7_C49fLjKkMI3lh6nEpdgCedbwjsy9rCrgWIGISIEY-9XHJU9Ye3y7-S1iPo6J4GOL1dx-4YkaAgY3Th3VqqIVZLlSkVMR1G0KyIe6IYJS4IVUCyVBadEFdZwL5JqjmV9rwxtRFRj4xSVCQSC59s8vCz1UqhUae7aHe4ynjas4xwRup1ZLQxjOZ3v864oMpgbartz34-CA2Z7zPk7c88-6ctjx3eo-n3a1L2oKSEr2ZR_YazAnyQQ04V5Mg_vpdzTKEf8miE5oyaFQ-an70We4Q6tAuMVSO5CFoVCE5y3gK7_B-thtP_t3FXp007TerTn1XNjmqHkc9LTYFDoGppwN984xz8iENSySIJP8bTK_DawaNpn2wi1GckoMQnYCMWkHktd1jFdT5S-QlIlUi_FxhOwi_fRYxgMvJxL0YjLdjIqr9PmnXuInCQieVmyVm8fqbtgFYkbfxUB1RUm0TpIZqJ21OfbkhqVpZLJoszkS7PzXZrlsnXWNFyP2ki67FyOPH6QE-sxQrgsN75FsmUuHfAWZoTMQOqFrmsgiBTXjEj_67pEQgbbACREbi0DWijJl5twN3Bl1TtCpjS9L6svcwsGvEydv5tSXnSw5tLL_Fgr4AChUA9iCjPQBtOCx7jOX7heWyTj-9s2g3oX-j3QWN0U7c8TEsLaghiVd1pIUDxXHdCm2TWnFEAPCcqmjN5OJXxGnx6-QaQZ7L2m5mZTHJ-xxuSJEu4l3ikJ-EsFJTLGJTEYZnmPpitn0EFckt2IciEoV3CM2tTbZcjQQLIYWGoF-hmDcsnMwNcqQqV45t07zpszCvWoHU1USjR93uGze1WZ_ZPoT846mr1DdZOR-0a5FzBgyb29tJbmNkqMsC2dEnqvuyqtYlKcfm8W9jkkIHQB0u2iBiNE9AfY0k4n7y2o4s_Du8A",
+                "created_at": "2026-10-24T20:36:21.641578Z"
+              }
+            ],
+            "next_cursor": null
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/agents/5cccc04e-c097-4a7f-aa8e-62e8eb05f7c5/keys",
+          "query": {},
+          "status": 503,
+          "body": {
+            "detail": "Service unavailable"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/agents/5cccc04e-c097-4a7f-aa8e-62e8eb05f7c5/keys",
+          "query": {},
+          "status": 503,
+          "body": {
+            "detail": "Service unavailable"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/agents/5cccc04e-c097-4a7f-aa8e-62e8eb05f7c5/keys",
+          "query": {},
+          "status": 503,
+          "body": {
+            "detail": "Service unavailable"
+          }
+        }
+      ],
+      "page": {
+        "items": [
+          {
+            "id": "952b6ff1-22a2-4cea-82d8-0d5e1a746aaa",
+            "created_at": "2026-10-24T20:36:23.159912+00:00",
+            "type": "rine.v1.dm",
+            "direction": "received",
+            "from": {
+              "agent_id": "05375eb7-2d92-4fca-91d0-0ce6d7203b12",
+              "handle": "mx-cli@mx-cli-874177.rine.network",
+              "own": false
+            },
+            "to": null,
+            "group": {
+              "id": "66f3e4e8-d6f4-4c70-926a-f094916082bd",
+              "handle": "#mx-orgread-closed-874177@mx-ts-sdk-874177.rine.network"
+            },
+            "conversation_id": "8340796a-4561-4282-ae46-dda318c3e84d",
+            "encryption_version": "mls-v1",
+            "epoch": 2,
+            "text": null,
+            "verification": null,
+            "equivocation": false,
+            "gap": {
+              "reason": "KeysUnavailable",
+              "epoch": 2
+            }
+          }
+        ],
+        "findings": [],
+        "next_cursor": null
+      }
+    }
+  ]
+}

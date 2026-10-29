@@ -5,9 +5,12 @@ import {
 	groupMlsNeverFounded,
 } from "./crypto/group-predicates.js";
 import {
-	MLS_CIPHER_SUITE_DEFAULT,
 	MLS_CIPHER_SUITE_XWING,
 } from "./crypto/mls.js";
+import {
+	ENCRYPTION_VERSIONS,
+	type GroupEncryptionVersion,
+} from "./encryption-versions.js";
 import type { CreatedGroupMlsFields } from "./group-create-format.js";
 import {
 	type UnfoundedGroupRepair,
@@ -37,7 +40,7 @@ import {
 export interface GroupEncryption {
 	regime: "mls" | "sender-key";
 	/** The `encryption_version` every message in this group carries. */
-	version: "mls-v1" | "sender-key-v1";
+	version: GroupEncryptionVersion;
 	post_quantum: boolean;
 	/** True while the group is an MLS group whose ratchet tree is not founded yet. */
 	pending: boolean;
@@ -56,8 +59,14 @@ export interface GroupEncryption {
 }
 
 const XWING = "rine's post-quantum X-Wing ciphersuite";
-const CLASSICAL = "a classical ciphersuite — NOT post-quantum";
 const UNFOUNDED = " The group's ratchet tree is not founded yet.";
+
+/** The suite a group runs: X-Wing by name, any value this client does not know by its number. */
+function suiteLabel(suite: number): string {
+	return suite === MLS_CIPHER_SUITE_XWING
+		? XWING
+		: `ciphersuite 0x${suite.toString(16).padStart(4, "0")}`;
+}
 
 /**
  * The head BOTH sender-key answers open on — the ordinary one below, and the
@@ -137,22 +146,20 @@ export function groupEncryption(
 	const founded = groupIsMls(g) || g.mlsAdmission !== undefined;
 	// A latched group, and one whose init is in flight: both really do carry
 	// `mls-v1`, because the server refuses a sender-key send into either. The
-	// suite is the server's own `mls_cipher_suite`, and the fallback is the
-	// native core's default rather than a restated number — a group still
-	// founding carries no suite, and what it will get is decided in the core.
-	// A group whose founding just landed carries no suite either: the row
-	// predates the init, so it takes the same fallback for the same reason.
+	// suite is the server's own `mls_cipher_suite`. A group still founding
+	// carries none, and neither does one whose founding just landed (the row
+	// predates the init): both will run the one suite rine speaks.
 	if (founded || groupMlsInitInFlight(g)) {
-		const suite = g.mls_cipher_suite ?? MLS_CIPHER_SUITE_DEFAULT;
+		const suite = g.mls_cipher_suite ?? MLS_CIPHER_SUITE_XWING;
 		const postQuantum = suite === MLS_CIPHER_SUITE_XWING;
 		const pending = !founded;
 		return {
 			regime: "mls",
-			version: "mls-v1",
+			version: ENCRYPTION_VERSIONS.MLS_V1,
 			post_quantum: postQuantum,
 			pending,
 			mls_never_founded: false,
-			summary: `MLS (RFC 9420) on ${postQuantum ? XWING : CLASSICAL}.${pending ? UNFOUNDED : ""}`,
+			summary: `MLS (RFC 9420) on ${suiteLabel(suite)}.${pending ? UNFOUNDED : ""}`,
 		};
 	}
 	// Created to run MLS, never founded. Every field below is the traffic, and
@@ -162,7 +169,7 @@ export function groupEncryption(
 	if (groupMlsNeverFounded(g)) {
 		return {
 			regime: "sender-key",
-			version: "sender-key-v1",
+			version: ENCRYPTION_VERSIONS.SENDER_KEY_V1,
 			post_quantum: false,
 			pending: false,
 			mls_never_founded: true,
@@ -175,7 +182,7 @@ export function groupEncryption(
 	// land here.
 	return {
 		regime: "sender-key",
-		version: "sender-key-v1",
+		version: ENCRYPTION_VERSIONS.SENDER_KEY_V1,
 		post_quantum: false,
 		pending: false,
 		mls_never_founded: false,

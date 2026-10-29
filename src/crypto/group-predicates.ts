@@ -30,8 +30,8 @@
  * so; a group the server minted before MLS existed carries neither.
  */
 export interface MlsGroupFields {
-  mls_group_id?: string | null;
-  mls_pending?: boolean;
+	mls_group_id?: string | null;
+	mls_pending?: boolean;
 }
 
 /**
@@ -52,8 +52,8 @@ export interface MlsGroupFields {
  * that projects a row.
  */
 export interface GroupRegimeFields extends MlsGroupFields {
-  enrollment_policy: string;
-  mls_enabled?: boolean;
+	enrollment_policy: string;
+	mls_enabled?: boolean;
 }
 
 /**
@@ -70,7 +70,7 @@ export interface GroupRegimeFields extends MlsGroupFields {
  * answer; a surface that reads them labels a sender-key group "MLS".
  */
 export function groupIsMls(g: MlsGroupFields): boolean {
-  return g.mls_group_id != null;
+	return g.mls_group_id != null;
 }
 
 /**
@@ -84,7 +84,7 @@ export function groupIsMls(g: MlsGroupFields): boolean {
  * `MLS_PENDING_SELF_CLEAR_SECONDS`.
  */
 export function groupAcceptsMlsSendOnly(g: MlsGroupFields): boolean {
-  return groupIsMls(g) || g.mls_pending === true;
+	return groupIsMls(g) || g.mls_pending === true;
 }
 
 /**
@@ -104,7 +104,7 @@ export function groupAcceptsMlsSendOnly(g: MlsGroupFields): boolean {
  * "sender-key" says the opposite of what the group is doing.
  */
 export function groupMlsInitInFlight(g: MlsGroupFields): boolean {
-  return !groupIsMls(g) && groupAcceptsMlsSendOnly(g);
+	return !groupIsMls(g) && groupAcceptsMlsSendOnly(g);
 }
 
 /**
@@ -135,11 +135,11 @@ export function groupMlsInitInFlight(g: MlsGroupFields): boolean {
  * refusal.
  */
 export function groupMlsNeverFounded(g: GroupRegimeFields): boolean {
-  // `!groupAcceptsMlsSendOnly` is exactly "no latch and no init in flight" —
-  // the server would accept a sender-key send into this group right now.
-  return (
-    g.enrollment_policy !== "open" &&
-    g.mls_enabled === true &&
-    !groupAcceptsMlsSendOnly(g)
-  );
+	// `!groupAcceptsMlsSendOnly` is exactly "no latch and no init in flight" —
+	// the server would accept a sender-key send into this group right now.
+	return (
+		g.enrollment_policy !== "open" &&
+		g.mls_enabled === true &&
+		!groupAcceptsMlsSendOnly(g)
+	);
 }

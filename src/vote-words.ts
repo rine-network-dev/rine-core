@@ -2,19 +2,13 @@
  * How a join request is decided, in the one sentence every TypeScript surface
  * renders.
  *
- * The Python stack has held this string in a single place since electorates
- * shipped (`rine.vote_words.VOTE_ELECTORATE_RULE`, imported by three
- * connectors). TypeScript held it as a literal in six source files instead, so
- * re-pinning the rule — updating the Python constant and the docs, which is the
- * obvious move — left the CLI, the TypeScript SDK, the MCP server, eve and
- * mastra stating the previous rule, and no gate catches that. One export ends
- * it: every surface that puts the sentence in front of an operator or a model
- * imports it, and markdown is the only copy left to maintain by hand.
+ * The Python twin is `rine.vote_words.VOTE_ELECTORATE_RULE`. Every TypeScript
+ * surface that puts the sentence in front of an operator or a model imports
+ * it from here, so re-pinning the rule is one edit per stack plus the docs.
  *
  * It lives in `rine-core` rather than in the TypeScript SDK for the reason
  * `group-admission.ts` does: the CLI and the MCP server depend on core and not
- * on the SDK, so a constant that lived only in the SDK is one they could only
- * re-declare — which is the situation this module exists to end.
+ * on the SDK.
  */
 
 /**
@@ -56,8 +50,8 @@ export const VOTE_DURATION_DEFAULT_HOURS = 72;
  * What the vote window bounds, in the sentence every surface renders.
  *
  * 🔴 It bounds a join REQUEST, not a nomination alone: the server stamps the
- * same window on a request an agent filed for itself (`groups.py`, the
- * majority/unanimity join path) and on one a member nominated
+ * same window on a request an agent filed for itself (`join_or_apply` in
+ * `group_join.py`, the majority/unanimity join path) and on one a member nominated
  * (`group_admission_mint.py`). Copies that said "the TTL of a nomination"
  * described half the rule, which is how an operator comes to believe a
  * self-filed request outlives it. An invitation is the one thing it does not
@@ -72,3 +66,85 @@ export const VOTE_DURATION_RULE =
 	`and one a member nominated alike, and only on majority- and ` +
 	`unanimity-enrollment groups: nothing votes on an open or closed group, and ` +
 	`an invitation expires on its own separate clock.`;
+
+/**
+ * Whether this caller may vote on a join request, one clause per reason token
+ * the server sends in `you_may_vote_reason`.
+ *
+ * 🔴 Clause for clause the Python twin `rine.vote_words._ELIGIBILITY_CLAUSES`.
+ * {@link describeVoteEligibility} renders a reason from this table.
+ *
+ * `already_voted` is not here: its clause names the ballot, so it is composed
+ * rather than looked up.
+ */
+export const VOTE_ELIGIBILITY_CLAUSES = Object.freeze({
+	in_electorate: "you can vote",
+	electorate_not_recorded:
+		"you can vote (filed before the electorate was recorded; any member may)",
+	not_in_electorate:
+		"you cannot vote: you were not in the group when this was filed",
+	electorate_empty: "nobody eligible is still in the group",
+	bar_unreachable: "nobody can decide this request",
+	is_applicant: "this is your own request",
+	not_pending: "not open for voting",
+} as const);
+
+/** A reason token that has a fixed clause in {@link VOTE_ELIGIBILITY_CLAUSES}. */
+export type VoteEligibilityClauseReason = keyof typeof VOTE_ELIGIBILITY_CLAUSES;
+
+/** The reason whose clause names the ballot this caller already cast. */
+const ALREADY_VOTED = "already_voted";
+
+/**
+ * What a surface prints where the server's answer leaves a gap. The surfaces
+ * differ here on purpose (a table cell drops what a model-facing line dashes),
+ * and on nothing else.
+ */
+export interface VoteEligibilityFallbacks {
+	/** Stands in for the ballot when an `already_voted` row names none. */
+	readonly unnamedVote: string;
+	/**
+	 * Renders a reason the table does not hold, or a missing one. A token this
+	 * build predates is still the server's answer, so it is printed rather than
+	 * read as "you can vote".
+	 */
+	readonly unknownReason: (reason: string | undefined) => string;
+}
+
+/**
+ * Only the table's own keys: an inherited name such as `constructor` is a
+ * reason the server never sent a clause for.
+ */
+function hasClause(reason: string): reason is VoteEligibilityClauseReason {
+	return Object.hasOwn(VOTE_ELIGIBILITY_CLAUSES, reason);
+}
+
+/**
+ * The reason a server that predates the electorate implies for a row it sent
+ * none for, read off the row's `status`: an open request is one any member may
+ * vote on, and anything else (an invitation, a decided request) is not open for
+ * voting. A flat `electorate_not_recorded` would tell an agent "you can vote"
+ * about an invitation, which `POST …/vote` refuses.
+ *
+ * 🔴 The Python twin is `rine.vote_words.vote_eligibility_reason`.
+ */
+export function impliedVoteEligibilityReason(
+	status: string,
+): VoteEligibilityClauseReason {
+	return status === "pending" ? "electorate_not_recorded" : "not_pending";
+}
+
+/** The clause for one row's `you_may_vote_reason`. */
+export function describeVoteEligibility(
+	reason: string | undefined,
+	yourVote: string | null | undefined,
+	fallbacks: VoteEligibilityFallbacks,
+): string {
+	if (reason === ALREADY_VOTED) {
+		return `you already voted ${yourVote ?? fallbacks.unnamedVote}`.trimEnd();
+	}
+	if (reason !== undefined && hasClause(reason)) {
+		return VOTE_ELIGIBILITY_CLAUSES[reason];
+	}
+	return fallbacks.unknownReason(reason);
+}

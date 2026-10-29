@@ -16,7 +16,7 @@
 // No timers: eviction is lazy on `get`/`set`, so an idle client holds no callbacks.
 
 const DEFAULT_MAX_ENTRIES = 256;
-const DEFAULT_TTL_MS = 600_000; // 10 min — bounds the key-rotation staleness window.
+const DEFAULT_TTL_MS = 600_000; // 10 min — bounds both the key-rotation staleness window and the revocation window.
 
 export class TtlCache<V> {
 	private readonly entries = new Map<string, { value: V; expiry: number }>();
@@ -57,5 +57,17 @@ export class TtlCache<V> {
 	/** Drop `key` so the next `get` misses (forces a fresh fetch). */
 	delete(key: string): void {
 		this.entries.delete(key);
+	}
+
+	/** Drop every entry whose key and live value satisfy `match`. */
+	deleteWhere(match: (key: string, value: V) => boolean): void {
+		for (const [key, { value }] of this.entries) {
+			if (match(key, value)) this.entries.delete(key);
+		}
+	}
+
+	/** Drop every entry. */
+	clear(): void {
+		this.entries.clear();
 	}
 }

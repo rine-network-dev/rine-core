@@ -9,36 +9,20 @@
  */
 import { ACTING_AGENT_HEADER } from "./actor.js";
 import type { MessageRead, PaginatedResponse } from "./api-types.js";
-import type { DecryptResult } from "./crypto/index.js";
+import { SENDER_KEY_DISTRIBUTION_TYPE } from "./control-frames.js";
+import { ingestSenderKeyDistribution } from "./crypto/ingest.js";
+import { type DecryptResult, decryptMessage } from "./crypto/message.js";
 import {
-	decryptGroupMessage,
-	decryptMessage,
-	ingestSenderKeyDistribution,
 	liftRetirementIfMember,
 	senderKeysRetired,
-} from "./crypto/index.js";
+} from "./crypto/sender-keys-helpers.js";
+import { fetchGroupMembers } from "./group-members.js";
 import type { HttpClient } from "./http.js";
+import { decryptGroupMessage } from "./message-group.js";
 import {
 	SenderKeyUnavailableError,
 	unknownSenderKeyId,
 } from "./sender-key-words.js";
-
-/**
- * The agent ids the server currently names as members of a group.
- *
- * Read here rather than inferred, because it is the only fact that may lift a
- * retirement: membership is the server's to state, and a client that decided it
- * locally could un-retire material it left with.
- */
-async function fetchGroupMemberIds(
-	client: HttpClient,
-	groupId: string,
-): Promise<string[]> {
-	const resp = (await client.get(`/groups/${groupId}/members`)) as {
-		items?: { agent_id: string }[];
-	};
-	return (resp.items ?? []).map((item) => item.agent_id);
-}
 
 /**
  * Whether a retired group's keys may be taken again, lifting the marker when
@@ -74,7 +58,11 @@ export async function retirementBlocksRead(
 	if (!senderKeysRetired(configDir, agentId, groupId)) return false;
 	let members: string[];
 	try {
-		members = await fetchGroupMemberIds(client, groupId);
+		// Read rather than inferred: membership is the server's to state, and a
+		// client that decided it locally could un-retire material it left with.
+		members = (await fetchGroupMembers(client, groupId)).map(
+			(m) => m.agent_id,
+		);
 	} catch {
 		return true;
 	}
@@ -170,7 +158,7 @@ export async function fetchAndIngestPendingSKDistributions(
  * (`recoverGroup`) reads the second number; every read path takes the count
  * alone.
  *
- * 🔴 This function is why the leave-time wipe used to be point-in-time: a leave
+ * 🔴 This function is why a leave-time wipe alone would be point-in-time: a leave
  * removes the state file and takes nothing out of the inbox, so the DMs that
  * carried every peer key are still listed here. It does NOT route around the
  * retirement marker — the group a distribution belongs to is only known after
@@ -203,13 +191,13 @@ export async function scanPendingSKDistributions(
 	)
 		return { ingested: 0, unscanned: 0 };
 	const inbox = (await client.get(`/agents/${agentId}/messages`, {
-		type: "rine.v1.sender_key_distribution",
+		type: SENDER_KEY_DISTRIBUTION_TYPE,
 		limit: 100,
 	})) as PaginatedResponse<MessageRead>;
 	// `total` counts every row the server matched, the page holds at most the
 	// hundred asked for, and the difference is the part of the inbox that was
 	// never listed. The list route computes the total by default
-	// (`include_total`, `src/rine/api/messages.py`) but a server that omitted it
+	// (`include_total`, `src/rine/api/messages_inbox.py`) but a server that omitted it
 	// leaves nothing to subtract — and a shortfall invented out of a missing
 	// field is worse than none, so an absent total is no shortfall.
 	const beyondPage =
@@ -244,6 +232,8 @@ export async function scanPendingSKDistributions(
 				full.encrypted_payload,
 				client,
 				full.from_agent_id,
+				undefined,
+				full.created_at,
 			);
 			// A refused envelope carries no text, so it holds no key material to read.
 			if (result.plaintext === undefined) continue;
@@ -276,10 +266,8 @@ export async function scanPendingSKDistributions(
  * never what an agent reads.
  *
  * 🔴 A retry that ingested keys and still missed THIS one is the same verdict,
- * and comes back the same way. It used to propagate as it threw, which is the
- * raw control string — so every caller had to translate that arm itself, and
- * the three that did disagreed about what it meant. Both ends of the recovery
- * now speak the one sentence, and a caller reads the cause with
+ * and comes back the same way, never as the raw control string: both ends of
+ * the recovery speak the one sentence, and a caller reads the cause with
  * {@link asSenderKeyUnavailable} and nothing hand-rolled.
  *
  * This is the single home for the sender-key recovery dance: `rine_read`
@@ -288,6 +276,8 @@ export async function scanPendingSKDistributions(
  *
  * `fromAgentId` is the row's server-authenticated sender, threaded into both
  * attempts so the retry is bound exactly as strictly as the first try.
+ * `createdAt` is the row's server `created_at`, threaded into both attempts for the
+ * superseded-key window.
  */
 export async function decryptGroupMessageWithRecovery(
 	client: HttpClient,
@@ -296,6 +286,7 @@ export async function decryptGroupMessageWithRecovery(
 	groupId: string,
 	ciphertext: string,
 	fromAgentId: string,
+	createdAt?: string,
 ): Promise<DecryptResult> {
 	try {
 		return await decryptGroupMessage(
@@ -305,6 +296,7 @@ export async function decryptGroupMessageWithRecovery(
 			ciphertext,
 			client,
 			fromAgentId,
+			createdAt,
 		);
 	} catch (err) {
 		const missingKeyId = unknownSenderKeyId(err);
@@ -334,6 +326,7 @@ export async function decryptGroupMessageWithRecovery(
 				ciphertext,
 				client,
 				fromAgentId,
+				createdAt,
 			);
 		} catch (retryErr) {
 			// The scan brought key material but not this key. The recovery has

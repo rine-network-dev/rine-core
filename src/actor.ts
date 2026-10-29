@@ -23,8 +23,8 @@ import {
  * `actorFromEnv()` is the only environment read on this stack, and only a
  * *surface* calls it. `resolveAgent()` never does. `rine-mastra` builds a bare
  * SDK client for an operator-fixed actor, so an ambient `RINE_AGENT` reaching
- * it would silently re-actor every call it makes — a regression that was
- * written once and reverted. Keep the read here, and keep it opt-in.
+ * it would silently re-actor every call it makes. Keep the read here, and keep
+ * it opt-in.
  */
 
 /** The wire header naming which of an org's agents a request acts as. */
@@ -129,8 +129,8 @@ export function actorFromEnv(): string | undefined {
  * 🔴 It exists because {@link ignoredActorWarning} tells a caller what to do
  * next, and rungs 1 and 3 have different answers: "omit the parameter" is
  * unfollowable advice for somebody who passed no parameter, and on a one-agent
- * org that warning is the ONLY channel a stale `RINE_AGENT` has — the refusal
- * that used to carry it no longer happens. Typed rather than a string
+ * org that warning is the ONLY channel a stale `RINE_AGENT` has, because nothing
+ * refuses it. Typed rather than a string
  * prefix stitched on by the caller, so the two arms are one sentence each,
  * written once, and a third rung has to declare itself.
  */
@@ -162,7 +162,7 @@ export interface ResolvedActor {
 	 * 🔴 It is here so a surface that resolves an ACTOR and then resolves a bare
 	 * RECIPIENT pays `GET /agents` once instead of twice: `fetchAgents` is
 	 * uncached by design, and `refuseIfABareAgentName`'s collision guard reads the
-	 * very same org-scoped page the actor ladder just read. A memo inside
+	 * very same key-scoped page the actor ladder just read. A memo inside
 	 * `rine-core` is not the alternative — it would outlive a request this package
 	 * has no way to scope — so the list rides the value the caller already holds.
 	 *
@@ -412,8 +412,9 @@ export function unknownHandleRefusal(
  * Told to a caller whose bare name names more than one agent.
  *
  * A bare name is **not** unique in an org, and nothing on the server makes it
- * so: `agents.name` carries no unique index (`src/rine/db/models.py` indexes
- * `handle`, never `name`), `POST /agents`' duplicate check is a case-sensitive
+ * so: `agents.name` carries no unique index
+ * (`src/rine/db/models/org_agent.py` indexes `handle`, never `name`),
+ * `POST /agents`' duplicate check is a case-sensitive
  * count-then-insert, `PATCH /agents/{id}` renames with no duplicate check at all
  * in a slugless org, and `GET /agents` has no `ORDER BY`. So the list this
  * matched against is unordered and can hold two agents whose names differ only
@@ -438,8 +439,8 @@ export function ambiguousActorRefusal(
 			// 🔴 No `whenEmpty`, and it is not an omission. `matches` is what
 			// `resolveAgent` found for one name behind `matches.length > 1`
 			// (`resolve-agent.ts`), so this refusal has never had an empty-roster
-			// arm — and `@rine-network/core` exports it, so giving it one moved a
-			// byte of published output for an input our own callers cannot make.
+			// arm — and `@rine-network/core` exports it, so giving it one would move
+			// a byte of published output for an input our own callers cannot make.
 			// Rule 3 has nothing to suppress either: the line below says how to
 			// tell the candidates apart, it names no verb that would list them.
 			after: "A name is not unique in an org — name it by handle or UUID.",

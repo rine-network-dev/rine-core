@@ -1,24 +1,21 @@
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-	generateAgentKeys,
-	saveAgentKeys,
-	signingPublicKeyToJWK,
-	type AgentKeys,
-} from "../src/crypto/keys.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../src/mls-escrow-key.js", () => escrowKeyModule());
+
+import { World } from "./crypto/world.js";
+import { escrowKeyModule, withPeerReads } from "./mls-escrow-harness.js";
 import { initMlsGroup, externalJoinMlsGroup, syncMlsGroup } from "../src/mls-ops.js";
-import {
-	encryptMlsGroupMessage,
-	decryptGroupMessage,
-} from "../src/crypto/message.js";
+import { decryptGroupMessage } from "../src/message-group.js";
+import { encryptMlsGroupMessage } from "../src/message-mls.js";
 
 // ── A minimal, stateful in-memory MLS Delivery Service ───────────────────────
 // Models exactly the endpoints the orchestrators touch: mls/init, mls/commit,
-// mls/group-info (latest), mls/handshakes (since epoch), and the agent-profile
-// GET that decrypt uses to fetch the sender's signing key. No mocking of the
-// crypto — this is a real external-join round-trip.
+// mls/group-info (latest), mls/handshakes (since epoch), and the group roster
+// reads the admission path makes. No mocking of the crypto — this is a real
+// external-join round-trip.
 
 interface StoredObj { epoch: number; blob: string; }
 
@@ -26,13 +23,8 @@ class FakeMls {
 	private groupInfo: StoredObj | null = null;
 	private handshakes: StoredObj[] = [];
 	private mlsGroupId: string | null = null;
-	private profiles = new Map<string, unknown>();
 	/** Epoch sent on the most recent non-init commit (exposed for assertions). */
 	lastCommitEpoch: number | undefined;
-
-	registerProfile(agentId: string, signingJwk: unknown): void {
-		this.profiles.set(agentId, { signing_public_key: signingJwk });
-	}
 
 	get = async (path: string): Promise<unknown> => {
 		if (path.endsWith("/mls/group-info")) {
@@ -50,12 +42,9 @@ class FakeMls {
 				})),
 			};
 		}
-		// Agent profile lookup (used by decrypt's verifyEnvelopeSender).
-		const profileMatch = path.match(/agents\/([^/?]+)/);
-		if (profileMatch) {
-			const p = this.profiles.get(profileMatch[1]!);
-			if (p) return p;
-		}
+		// The admission path's outstanding-voucher read. The roster itself is
+		// answered by `withPeerReads` from the world.
+		if (path.endsWith("/requests")) return { items: [] };
 		throw new Error(`FakeMls: unhandled GET ${path}`);
 	};
 
@@ -83,12 +72,6 @@ function makeTmpDir(): string {
 	return fs.mkdtempSync(join(tmpdir(), "rine-mls-extjoin-"));
 }
 
-function setupAgent(dir: string, agentId: string): AgentKeys {
-	const keys = generateAgentKeys();
-	saveAgentKeys(dir, agentId, keys);
-	return keys;
-}
-
 describe("external join — full orchestrator round-trip", () => {
 	let dir: string;
 	const creatorId = "11111111-1111-4111-8111-111111111111";
@@ -103,12 +86,14 @@ describe("external join — full orchestrator round-trip", () => {
 	});
 
 	it("creator inits, joiner self-joins, member syncs, joiner sends, member decrypts", async () => {
-		const creatorKeys = setupAgent(dir, creatorId);
-		const joinerKeys = setupAgent(dir, joinerId);
+		const world = new World();
+		const creator = world.addAgent({ id: creatorId });
+		const joiner = world.addAgent({ id: joinerId });
+		world.save(dir, creator);
+		world.save(dir, joiner);
 
 		const server = new FakeMls();
-		server.registerProfile(joinerId, signingPublicKeyToJWK(joinerKeys.signing.publicKey));
-		const client = server as never;
+		const client = withPeerReads(world, server) as never;
 
 		// 1. Creator initializes the MLS group (publishes epoch-1 GroupInfo).
 		await initMlsGroup(dir, creatorId, GROUP_ID, client);

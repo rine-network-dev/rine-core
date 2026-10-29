@@ -2,17 +2,9 @@ import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-	generateAgentKeys,
-	saveAgentKeys,
-	signingPublicKeyToJWK,
-	toBase64Url,
-} from "../../src/crypto/keys.js";
-import type { AgentKeys } from "../../src/crypto/keys.js";
-import {
-	encryptGroupMessage,
-	encryptMessage,
-} from "../../src/crypto/message.js";
+import { A2A_CLEARTEXT_NOTICE } from "../../src/a2a-cleartext.js";
+import { encryptMessage } from "../../src/crypto/message.js";
+import { encryptGroupMessage } from "../../src/crypto/sender-key-seal.js";
 import { saveSenderKeyState } from "../../src/crypto/sender-keys-helpers.js";
 import { generateSenderKey } from "../../src/crypto/sender-keys.js";
 import {
@@ -23,6 +15,7 @@ import {
 	renderThreadText,
 } from "../../src/crypto/thread.js";
 import { SENDER_KEY_UNAVAILABLE_PREVIEW } from "../../src/sender-key-words.js";
+import { World, type WorldAgent } from "./world.js";
 
 const SENDER_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
 const RECIPIENT_ID = "b2c3d4e5-f6a7-8901-bcde-f12345678901";
@@ -33,37 +26,26 @@ function makeTmpDir(): string {
 	return fs.mkdtempSync(join(tmpdir(), "rine-thread-test-"));
 }
 
-function setupAgent(dir: string, agentId: string): AgentKeys {
-	const keys = generateAgentKeys();
-	saveAgentKeys(dir, agentId, keys);
-	return keys;
+/** The recipient's chain-verified encryption keys, as `fetchRecipientKeys` returns them. */
+function recipientKeysOf(agent: WorldAgent) {
+	return {
+		encryption: agent.derived.x25519.publicKey,
+		pqEncryption: agent.derived.mlKem768.publicKey,
+	};
 }
 
-/** Mock client serving the SENDER's public keys for sender-signature verify. */
-function clientWith(keys: AgentKeys) {
-	return {
-		get: vi.fn().mockImplementation((path: string) => {
-			if (path.includes("/keys")) {
-				return Promise.resolve({
-					agent_id: SENDER_ID,
-					signing_public_key: signingPublicKeyToJWK(keys.signing.publicKey),
-					encryption_public_key: {
-						kty: "OKP",
-						crv: "X25519",
-						x: toBase64Url(keys.encryption.publicKey),
-					},
-				});
-			}
-			return Promise.reject(new Error(`Unexpected GET: ${path}`));
-		}),
-		post: vi.fn(),
-	};
+/** A world client whose `get` is a spy, so a test can count key lookups. */
+function clientWith(world: World) {
+	const base = world.client();
+	// No `keyCache`: every row really goes to the network for its sender's key,
+	// which is what the sequential-render test measures.
+	return { get: vi.fn(base.get), post: base.post };
 }
 
 const baseRow = (over: Partial<ThreadRow>): ThreadRow => ({
 	type: "rine.v1.task_request",
 	encrypted_payload: "",
-	encryption_version: "hpke-v1",
+	encryption_version: "hpke-hybrid-v2",
 	created_at: "2026-06-20T00:00:00Z",
 	...over,
 });
@@ -76,13 +58,15 @@ const baseRow = (over: Partial<ThreadRow>): ThreadRow => ({
 // work IS this function.
 describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 	let dir: string;
-	let senderKeys: AgentKeys;
-	let recipientKeys: AgentKeys;
+	let world: World;
+	let recipient: WorldAgent;
 
 	beforeEach(() => {
 		dir = makeTmpDir();
-		senderKeys = setupAgent(dir, SENDER_ID);
-		recipientKeys = setupAgent(dir, RECIPIENT_ID);
+		world = new World();
+		world.save(dir, world.addAgent({ id: SENDER_ID }));
+		recipient = world.addAgent({ id: RECIPIENT_ID });
+		world.save(dir, recipient);
 	});
 	afterEach(() => fs.rmSync(dir, { recursive: true }));
 
@@ -90,12 +74,14 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 		const enc = await encryptMessage(
 			dir,
 			SENDER_ID,
-			recipientKeys.encryption.publicKey,
+			RECIPIENT_ID,
+			recipientKeysOf(recipient),
 			{ text: "from me" },
 		);
 		const row = baseRow({
 			direction: "sent",
 			sender_handle: "me@org",
+			to_agent_id: RECIPIENT_ID,
 			encrypted_payload: enc.encrypted_payload,
 			self_encrypted_payload: enc.self_encrypted_payload,
 		});
@@ -103,7 +89,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 			dir,
 			SENDER_ID,
 			row,
-			clientWith(senderKeys) as never,
+			clientWith(world) as never,
 		);
 		expect(entry.direction).toBe("sent");
 		expect(entry.text).toBe("from me");
@@ -114,7 +100,8 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 		const enc = await encryptMessage(
 			dir,
 			SENDER_ID,
-			recipientKeys.encryption.publicKey,
+			RECIPIENT_ID,
+			recipientKeysOf(recipient),
 			{ text: "to you" },
 		);
 		const row = baseRow({
@@ -127,7 +114,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 			dir,
 			RECIPIENT_ID,
 			row,
-			clientWith(senderKeys) as never,
+			clientWith(world) as never,
 		);
 		expect(entry.direction).toBe("received");
 		expect(entry.sender_handle).toBe("alice@org");
@@ -139,7 +126,8 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 		const enc = await encryptMessage(
 			dir,
 			SENDER_ID,
-			recipientKeys.encryption.publicKey,
+			RECIPIENT_ID,
+			recipientKeysOf(recipient),
 			{ text: "legacy" },
 		);
 		const row = baseRow({
@@ -151,7 +139,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 			dir,
 			SENDER_ID,
 			row,
-			clientWith(senderKeys) as never,
+			clientWith(world) as never,
 		);
 		expect(entry.text).toBe(THREAD_UNAVAILABLE);
 	});
@@ -167,7 +155,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 			dir,
 			RECIPIENT_ID,
 			row,
-			clientWith(senderKeys) as never,
+			clientWith(world) as never,
 		);
 		expect(entry.text).toBe(THREAD_UNAVAILABLE);
 		expect(entry.verification_status).toBe("unverifiable");
@@ -179,14 +167,15 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 		const enc = await encryptMessage(
 			dir,
 			SENDER_ID,
-			recipientKeys.encryption.publicKey,
+			RECIPIENT_ID,
+			recipientKeysOf(recipient),
 			{ text: "who sent this?" },
 		);
 		const row = baseRow({
 			direction: "received",
 			encrypted_payload: enc.encrypted_payload,
 		});
-		const client = clientWith(senderKeys);
+		const client = clientWith(world);
 
 		const entry = await decryptThreadRow(
 			dir,
@@ -204,7 +193,8 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 		const enc = await encryptMessage(
 			dir,
 			SENDER_ID,
-			recipientKeys.encryption.publicKey,
+			RECIPIENT_ID,
+			recipientKeysOf(recipient),
 			{ text: "release the funds" },
 		);
 		// Genuinely signed by SENDER_ID, but the server says a third agent sent it.
@@ -218,7 +208,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 			dir,
 			RECIPIENT_ID,
 			row,
-			clientWith(senderKeys) as never,
+			clientWith(world) as never,
 		);
 
 		expect(entry.text).toBe(THREAD_UNAVAILABLE);
@@ -254,7 +244,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 			dir,
 			RECIPIENT_ID,
 			row,
-			clientWith(senderKeys) as never,
+			clientWith(world) as never,
 		);
 
 		expect(entry.text).toBe(THREAD_UNAVAILABLE);
@@ -284,7 +274,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 			dir,
 			RECIPIENT_ID,
 			row,
-			clientWith(senderKeys) as never,
+			clientWith(world) as never,
 		);
 
 		expect(entry.text).toBe("group hello");
@@ -317,24 +307,13 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 	}
 
 	/** `clientWith`, plus an empty pending-distribution inbox for the recovery. */
-	function clientWithNoDistributions(keys: AgentKeys) {
-		const client = clientWith(keys);
-		client.get.mockImplementation((path: string) => {
-			if (path.includes("/keys")) {
-				return Promise.resolve({
-					agent_id: SENDER_ID,
-					signing_public_key: signingPublicKeyToJWK(keys.signing.publicKey),
-					encryption_public_key: {
-						kty: "OKP",
-						crv: "X25519",
-						x: toBase64Url(keys.encryption.publicKey),
-					},
-				});
-			}
-			if (path.endsWith("/messages")) return Promise.resolve({ items: [] });
-			return Promise.reject(new Error(`Unexpected GET: ${path}`));
+	function clientWithNoDistributions(world: World) {
+		const base = world.client();
+		const get = vi.fn(async (path: string, params?: Record<string, string | number | boolean>) => {
+			if (path.endsWith("/messages")) return { items: [] };
+			return base.get(path, params);
 		});
-		return client;
+		return { ...base, get };
 	}
 
 	it("names the cause and the move for a row whose sender key never arrived", async () => {
@@ -344,7 +323,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 			dir,
 			RECIPIENT_ID,
 			await unopenableGroupRow(),
-			clientWithNoDistributions(senderKeys) as never,
+			clientWithNoDistributions(world) as never,
 		);
 
 		expect(entry.text).toContain("sealed under sender key");
@@ -367,7 +346,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 			dir,
 			RECIPIENT_ID,
 			rows,
-			clientWithNoDistributions(senderKeys) as never,
+			clientWithNoDistributions(world) as never,
 		);
 
 		expect(entries[0]?.text).toContain("sealed under sender key");
@@ -379,7 +358,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 
 	it("explains again on the next render (the state is not module-global)", async () => {
 		const rows = [await unopenableGroupRow(), await unopenableGroupRow()];
-		const client = clientWithNoDistributions(senderKeys) as never;
+		const client = clientWithNoDistributions(world) as never;
 
 		const first = await decryptThreadRows(dir, RECIPIENT_ID, rows, client);
 		const second = await decryptThreadRows(dir, RECIPIENT_ID, rows, client);
@@ -402,7 +381,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 			dir,
 			RECIPIENT_ID,
 			rows,
-			clientWithNoDistributions(senderKeys) as never,
+			clientWithNoDistributions(world) as never,
 		);
 
 		expect(entries[0]?.text).toBe(THREAD_UNAVAILABLE);
@@ -424,7 +403,8 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 			const enc = await encryptMessage(
 				dir,
 				SENDER_ID,
-				recipientKeys.encryption.publicKey,
+				RECIPIENT_ID,
+				recipientKeysOf(recipient),
 				{ text: `row ${i}` },
 			);
 			rows.push(
@@ -436,7 +416,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 			);
 		}
 
-		const client = clientWith(senderKeys);
+		const client = clientWith(world);
 		const answer = client.get.getMockImplementation();
 		if (!answer) throw new Error("clientWith must install an implementation");
 		let inFlight = 0;
@@ -476,7 +456,8 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 		const enc = await encryptMessage(
 			dir,
 			SENDER_ID,
-			recipientKeys.encryption.publicKey,
+			RECIPIENT_ID,
+			recipientKeysOf(recipient),
 			{ text: "hello world" },
 		);
 		const row = baseRow({
@@ -488,9 +469,39 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 			dir,
 			RECIPIENT_ID,
 			row,
-			clientWith(senderKeys) as never,
+			clientWith(world) as never,
 		);
 		expect(entry.text).toBe("hello world");
+	});
+
+	it("test_thread_row_when_a2a_cleartext_then_readable_led_by_notice_and_unverifiable", async () => {
+		// The server sets the sender on every A2A row, and the body is the posted
+		// parts in unpadded base64url — no keys exist for it, so none are looked up.
+		const row = baseRow({
+			type: "rine.v1.a2a_message",
+			encryption_version: "none",
+			from_agent_id: SENDER_ID,
+			encrypted_payload: Buffer.from('[{"text": "plain"}]').toString("base64url"),
+		});
+		const client = clientWith(world);
+
+		const [entry] = await decryptThreadRows(dir, RECIPIENT_ID, [row], client as never);
+
+		expect(entry?.text).toBe(`[${A2A_CLEARTEXT_NOTICE}] [{"text":"plain"}]`);
+		expect(entry?.verification_status).toBe("unverifiable");
+		expect(client.get).not.toHaveBeenCalled();
+	});
+
+	it("test_thread_row_when_the_none_row_is_not_a2a_then_it_stays_unavailable", async () => {
+		const row = baseRow({
+			encryption_version: "none",
+			from_agent_id: SENDER_ID,
+			encrypted_payload: Buffer.from('{"text":"x"}').toString("base64url"),
+		});
+
+		const entry = await decryptThreadRow(dir, RECIPIENT_ID, row, clientWith(world) as never);
+
+		expect(entry.text).toBe(THREAD_UNAVAILABLE);
 	});
 });
 

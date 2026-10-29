@@ -12,6 +12,7 @@
 
 import * as fs from "node:fs";
 import { join } from "node:path";
+import { writeAtomic } from "../config.js";
 
 /** ACME directory selection. `RINE_ACME_STAGING=1` env is also honored. */
 export type AcmeOptions = { staging?: boolean };
@@ -87,13 +88,6 @@ export function accountKeyPath(configDir: string, opts: AcmeOptions): string {
 	return join(funnelCacheDir(configDir, opts), "acme-account.key");
 }
 
-function writeSecret(path: string, content: string): void {
-	const tmp = `${path}.tmp`;
-	fs.writeFileSync(tmp, content, { mode: 0o600 });
-	fs.renameSync(tmp, path);
-	fs.chmodSync(path, 0o600);
-}
-
 function ensureHandleDir(
 	configDir: string,
 	certKey: string,
@@ -113,7 +107,7 @@ export function saveMeta(
 	meta: CertMeta,
 ): void {
 	const dir = ensureHandleDir(configDir, certKey, opts);
-	writeSecret(join(dir, META_FILE), `${JSON.stringify(meta, null, 2)}\n`);
+	writeAtomic(join(dir, META_FILE), `${JSON.stringify(meta, null, 2)}\n`);
 }
 
 export function loadMeta(
@@ -138,8 +132,8 @@ export function saveCert(
 	const dir = ensureHandleDir(configDir, certKey, opts);
 	// Write key first, then cert, then meta — meta is the last write so a partial
 	// install (interrupted before meta lands) reads back as a cache miss.
-	writeSecret(join(dir, KEY_FILE), cert.keyPem);
-	writeSecret(join(dir, CERT_FILE), cert.certPem);
+	writeAtomic(join(dir, KEY_FILE), cert.keyPem);
+	writeAtomic(join(dir, CERT_FILE), cert.certPem);
 	saveMeta(configDir, certKey, opts, cert.meta);
 }
 

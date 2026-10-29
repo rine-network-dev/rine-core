@@ -44,6 +44,10 @@ import {
 	mlsErrorCode,
 } from "./crypto/index.js";
 import type { VerificationStatus } from "./crypto/index.js";
+import {
+	isDecryptableVersion,
+	isGroupEncryptionVersion,
+} from "./encryption-versions.js";
 import type {
 	OpenInboundArgs,
 	Opened,
@@ -55,25 +59,6 @@ import { decryptGroupMessageWithRecovery } from "./sender-key-recovery.js";
 import { asSenderKeyUnavailable } from "./sender-key-words.js";
 
 export * from "./inbound-readability-words.js";
-
-/**
- * The encryption versions a read may attempt at all.
- *
- * A payload carrying one of these that still fails is a FAILURE; a payload
- * carrying anything else was never ciphertext this build opens, and saying so
- * is a different answer. 🔴 It is what keeps an A2A artifact
- * (`encryption_version: "cleartext"`) dispatching exactly as it does today — a
- * gate that asked "is the payload non-empty" instead would try to decrypt it.
- *
- * Not exported: every caller wants the VERDICT, and a second surface for "is
- * this version decryptable" is a second place for the answer to drift.
- */
-const DECRYPTABLE_VERSIONS = new Set([
-	"hpke-v1",
-	"hpke-hybrid-v1",
-	"sender-key-v1",
-	"mls-v1",
-]);
 
 /**
  * Open one inbound envelope with this agent's own keys. NEVER throws.
@@ -134,7 +119,7 @@ function preGate(a: OpenInboundArgs): Unreadable | null {
 		return { kind: "not-ciphertext" };
 	}
 	if (a.encryptedPayload === "") return { kind: "not-ciphertext" };
-	if (!DECRYPTABLE_VERSIONS.has(a.encryptionVersion)) {
+	if (!isDecryptableVersion(a.encryptionVersion)) {
 		return { kind: "not-ciphertext" };
 	}
 	if (!agentKeysExist(a.configDir, a.agentId)) return { kind: "no-keys" };
@@ -148,8 +133,7 @@ function preGate(a: OpenInboundArgs): Unreadable | null {
  */
 function isGroupCiphertext(a: OpenInboundArgs): boolean {
 	return (
-		(a.encryptionVersion === "sender-key-v1" ||
-			a.encryptionVersion === "mls-v1") &&
+		isGroupEncryptionVersion(a.encryptionVersion) &&
 		a.groupId !== null &&
 		a.groupId !== ""
 	);
@@ -167,6 +151,8 @@ async function openDirect(
 			a.encryptedPayload,
 			a.client,
 			fromAgentId,
+			undefined,
+			a.createdAt,
 		);
 	} catch (err) {
 		return { kind: "failed", groupId: null, err };
@@ -202,6 +188,7 @@ async function openGroup(
 				groupId,
 				a.encryptedPayload,
 				fromAgentId,
+				a.createdAt,
 			),
 		);
 	} catch (err) {

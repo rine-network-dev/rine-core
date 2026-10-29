@@ -2,17 +2,18 @@ import * as fs from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { openHybrid } from "../../src/crypto/hybrid.js";
+import { fromBase64Url, loadAgentKeys } from "../../src/crypto/keys.js";
 import {
-	decryptGroupMessage,
 	decryptMessage,
-	encryptGroupMessage,
 	encryptMessage,
-	getAgentPublicKeys,
+	sealForAgent,
 } from "../../src/crypto/message.js";
-import { generateAgentKeys, saveAgentKeys, signingPublicKeyToJWK, toBase64Url } from "../../src/crypto/keys.js";
+import { encryptGroupMessage } from "../../src/crypto/sender-key-seal.js";
+import { decryptGroupMessage } from "../../src/message-group.js";
 import { saveSenderKeyState } from "../../src/crypto/sender-keys-helpers.js";
 import { generateSenderKey } from "../../src/crypto/sender-keys.js";
-import type { AgentKeys } from "../../src/crypto/keys.js";
+import { World, type WorldAgent } from "./world.js";
 
 function makeTmpDir(): string {
 	return fs.mkdtempSync(join(tmpdir(), "rine-msg-test-"));
@@ -22,54 +23,38 @@ const SENDER_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
 const RECIPIENT_ID = "b2c3d4e5-f6a7-8901-bcde-f12345678901";
 const GROUP_ID = "c3d4e5f6-a7b8-9012-cdef-123456789012";
 
-function setupAgent(dir: string, agentId: string): AgentKeys {
-	const keys = generateAgentKeys();
-	saveAgentKeys(dir, agentId, keys);
-	return keys;
-}
-
-function mockClientWithKeys(keys: AgentKeys) {
+/** The recipient's chain-verified encryption keys, as `fetchRecipientKeys` returns them. */
+function recipientKeysOf(agent: WorldAgent) {
 	return {
-		get: vi.fn().mockImplementation((path: string) => {
-			if (path.includes("/keys")) {
-				return Promise.resolve({
-					agent_id: SENDER_ID,
-					signing_public_key: signingPublicKeyToJWK(keys.signing.publicKey),
-					encryption_public_key: {
-						kty: "OKP",
-						crv: "X25519",
-						x: toBase64Url(keys.encryption.publicKey),
-					},
-				});
-			}
-			return Promise.reject(new Error(`Unexpected GET: ${path}`));
-		}),
-		post: vi.fn(),
+		encryption: agent.derived.x25519.publicKey,
+		pqEncryption: agent.derived.mlKem768.publicKey,
 	};
 }
 
 describe("DM encrypt/decrypt round-trip", () => {
 	let dir: string;
-	let senderKeys: AgentKeys;
-	let recipientKeys: AgentKeys;
+	let world: World;
+	let recipient: WorldAgent;
 
 	beforeEach(() => {
 		dir = makeTmpDir();
-		senderKeys = setupAgent(dir, SENDER_ID);
-		recipientKeys = setupAgent(dir, RECIPIENT_ID);
+		world = new World();
+		world.save(dir, world.addAgent({ id: SENDER_ID }));
+		recipient = world.addAgent({ id: RECIPIENT_ID });
+		world.save(dir, recipient);
 	});
 	afterEach(() => fs.rmSync(dir, { recursive: true }));
 
 	it("encrypts and decrypts with verified signature", async () => {
 		const payload = { task: "translate", text: "hello" };
 		const encrypted = await encryptMessage(
-			dir, SENDER_ID, recipientKeys.encryption.publicKey, payload,
+			dir, SENDER_ID, RECIPIENT_ID, recipientKeysOf(recipient), payload,
 		);
 
-		expect(encrypted.encryption_version).toBe("hpke-v1");
-		expect(encrypted.sender_signing_kid).toBe(`rine:${SENDER_ID}`);
+		expect(encrypted.encryption_version).toBe("hpke-hybrid-v2");
+		expect(encrypted.sender_signing_kid).toBe(`rine:${SENDER_ID}#0`);
 
-		const client = mockClientWithKeys(senderKeys);
+		const client = world.client();
 		const result = await decryptMessage(
 			dir,
 			RECIPIENT_ID,
@@ -81,12 +66,35 @@ describe("DM encrypt/decrypt round-trip", () => {
 		expect(JSON.parse(result.plaintext as string)).toEqual(payload);
 		expect(result.verified).toBe(true);
 		expect(result.verificationStatus).toBe("verified");
-		expect(result.senderKid).toBe(`rine:${SENDER_ID}`);
+		expect(result.senderKid).toBe(`rine:${SENDER_ID}#0`);
 	});
 
-	it("produces a self-seal blob for a classical sender", async () => {
+	it("test_seal_for_agent_when_opened_by_the_recipient_then_verified", async () => {
+		const payload = { task: "translate", text: "fetched keys" };
+		const client = world.client();
+		const encrypted = await sealForAgent(
+			client as never,
+			dir,
+			{ senderAgentId: SENDER_ID, recipientAgentId: RECIPIENT_ID },
+			payload,
+		);
+		expect(encrypted.encryption_version).toBe("hpke-hybrid-v2");
+
+		const result = await decryptMessage(
+			dir,
+			RECIPIENT_ID,
+			encrypted.encrypted_payload,
+			client as never,
+			SENDER_ID,
+		);
+
+		expect(JSON.parse(result.plaintext as string)).toEqual(payload);
+		expect(result.verificationStatus).toBe("verified");
+	});
+
+	it("produces a self-seal blob for the sender", async () => {
 		const encrypted = await encryptMessage(
-			dir, SENDER_ID, recipientKeys.encryption.publicKey, { hi: "self" },
+			dir, SENDER_ID, RECIPIENT_ID, recipientKeysOf(recipient), { hi: "self" },
 		);
 		expect(typeof encrypted.self_encrypted_payload).toBe("string");
 		expect(encrypted.self_encrypted_payload?.length).toBeGreaterThan(0);
@@ -95,18 +103,20 @@ describe("DM encrypt/decrypt round-trip", () => {
 	it("self-blob round-trips: the sender can decrypt its own message", async () => {
 		const payload = { secret: "codeword-banana", turn: 1 };
 		const encrypted = await encryptMessage(
-			dir, SENDER_ID, recipientKeys.encryption.publicKey, payload,
+			dir, SENDER_ID, RECIPIENT_ID, recipientKeysOf(recipient), payload,
 		);
 		expect(encrypted.self_encrypted_payload).toBeDefined();
 
-		// Self-read = decrypt with the SENDER's own id + the self-blob.
-		const client = mockClientWithKeys(senderKeys);
+		// Self-read = decrypt with the SENDER's own id + the self-blob, against the
+		// recipient the signature is scoped to.
+		const client = world.client();
 		const result = await decryptMessage(
 			dir,
 			SENDER_ID,
 			encrypted.self_encrypted_payload as string,
 			client as never,
 			SENDER_ID,
+			RECIPIENT_ID,
 		);
 
 		expect(JSON.parse(result.plaintext as string)).toEqual(payload);
@@ -114,15 +124,51 @@ describe("DM encrypt/decrypt round-trip", () => {
 		expect(result.verificationStatus).toBe("verified");
 	});
 
-	it("hpke-v1 recipient output stays valid (self-blob is additive)", async () => {
+	it("seals one envelope to both copies, so they decrypt to identical bytes", async () => {
+		const encrypted = await encryptMessage(
+			dir, SENDER_ID, RECIPIENT_ID, recipientKeysOf(recipient), { once: true },
+		);
+		const sender = loadAgentKeys(dir, SENDER_ID);
+		const receiver = loadAgentKeys(dir, RECIPIENT_ID);
+		const asRecipient = openHybrid(
+			receiver.encryption.privateKey,
+			receiver.pqEncryption.privateKey,
+			fromBase64Url(encrypted.encrypted_payload),
+			{ kind: "AgentMessage", recipientAgentId: RECIPIENT_ID },
+		);
+		const asSender = openHybrid(
+			sender.encryption.privateKey,
+			sender.pqEncryption.privateKey,
+			fromBase64Url(encrypted.self_encrypted_payload as string),
+			{ kind: "AgentMessage", recipientAgentId: SENDER_ID },
+		);
+		expect(Buffer.from(asSender).equals(Buffer.from(asRecipient))).toBe(true);
+	});
+
+	it("a self-read scoped to the sender itself is refused: the signature names the recipient", async () => {
+		const encrypted = await encryptMessage(
+			dir, SENDER_ID, RECIPIENT_ID, recipientKeysOf(recipient), { once: true },
+		);
+		const result = await decryptMessage(
+			dir,
+			SENDER_ID,
+			encrypted.self_encrypted_payload as string,
+			world.client() as never,
+			SENDER_ID,
+		);
+		expect(result.verificationStatus).toBe("invalid");
+		expect(result.plaintext).toBeUndefined();
+	});
+
+	it("hpke-hybrid-v2 recipient output stays valid (self-blob is additive)", async () => {
 		const payload = { msg: "recipient-still-works" };
 		const encrypted = await encryptMessage(
-			dir, SENDER_ID, recipientKeys.encryption.publicKey, payload,
+			dir, SENDER_ID, RECIPIENT_ID, recipientKeysOf(recipient), payload,
 		);
-		// Recipient path is unchanged: still hpke-v1, still opens for the recipient.
-		expect(encrypted.encryption_version).toBe("hpke-v1");
+		// Recipient path is unchanged: still hpke-hybrid-v2, still opens for the recipient.
+		expect(encrypted.encryption_version).toBe("hpke-hybrid-v2");
 
-		const client = mockClientWithKeys(senderKeys);
+		const client = world.client();
 		const result = await decryptMessage(
 			dir,
 			RECIPIENT_ID,
@@ -137,12 +183,13 @@ describe("DM encrypt/decrypt round-trip", () => {
 	it("withholds the text when the sender key doesn't match", async () => {
 		const payload = { msg: "spoofed" };
 		const encrypted = await encryptMessage(
-			dir, SENDER_ID, recipientKeys.encryption.publicKey, payload,
+			dir, SENDER_ID, RECIPIENT_ID, recipientKeysOf(recipient), payload,
 		);
 
-		// Return a different agent's signing key for verification
-		const imposterKeys = generateAgentKeys();
-		const client = mockClientWithKeys(imposterKeys);
+		// A chain-valid response for the same agent id, but a different signing key.
+		const imposterWorld = new World();
+		imposterWorld.addAgent({ id: SENDER_ID });
+		const client = imposterWorld.client();
 
 		const result = await decryptMessage(
 			dir,
@@ -160,7 +207,7 @@ describe("DM encrypt/decrypt round-trip", () => {
 	it("reports unverifiable when key fetch fails", async () => {
 		const payload = { msg: "test" };
 		const encrypted = await encryptMessage(
-			dir, SENDER_ID, recipientKeys.encryption.publicKey, payload,
+			dir, SENDER_ID, RECIPIENT_ID, recipientKeysOf(recipient), payload,
 		);
 
 		const client = { get: vi.fn().mockRejectedValue(new Error("network error")), post: vi.fn() };
@@ -178,12 +225,13 @@ describe("DM encrypt/decrypt round-trip", () => {
 
 describe("Group encrypt/decrypt round-trip", () => {
 	let dir: string;
-	let senderKeys: AgentKeys;
+	let world: World;
 
 	beforeEach(() => {
 		dir = makeTmpDir();
-		senderKeys = setupAgent(dir, SENDER_ID);
-		setupAgent(dir, RECIPIENT_ID);
+		world = new World();
+		world.save(dir, world.addAgent({ id: SENDER_ID }));
+		world.save(dir, world.addAgent({ id: RECIPIENT_ID }));
 	});
 	afterEach(() => fs.rmSync(dir, { recursive: true }));
 
@@ -205,7 +253,7 @@ describe("Group encrypt/decrypt round-trip", () => {
 		// Simulate key distribution by writing sender state to recipient's store
 		saveSenderKeyState(dir, RECIPIENT_ID, GROUP_ID, [senderState]);
 
-		const client = mockClientWithKeys(senderKeys);
+		const client = world.client();
 		const decrypted = await decryptGroupMessage(
 			dir,
 			RECIPIENT_ID,
@@ -239,9 +287,10 @@ describe("Group encrypt/decrypt round-trip", () => {
 
 		saveSenderKeyState(dir, RECIPIENT_ID, GROUP_ID, [senderState]);
 
-		// Return wrong keys — signature won't match
-		const imposterKeys = generateAgentKeys();
-		const client = mockClientWithKeys(imposterKeys);
+		// A chain-valid response for the same agent id, but a different signing key.
+		const imposterWorld = new World();
+		imposterWorld.addAgent({ id: SENDER_ID });
+		const client = imposterWorld.client();
 
 		await expect(
 			decryptGroupMessage(
@@ -276,7 +325,7 @@ describe("Group encrypt/decrypt round-trip", () => {
 		);
 
 		// Sender decrypts their own message — uses cached self-read key
-		const client = mockClientWithKeys(senderKeys);
+		const client = world.client();
 		const decrypted = await decryptGroupMessage(
 			dir,
 			SENDER_ID,
@@ -287,24 +336,5 @@ describe("Group encrypt/decrypt round-trip", () => {
 		);
 
 		expect(JSON.parse(decrypted.plaintext)).toEqual(payload);
-	});
-});
-
-describe("getAgentPublicKeys", () => {
-	let dir: string;
-
-	beforeEach(() => { dir = makeTmpDir(); });
-	afterEach(() => fs.rmSync(dir, { recursive: true }));
-
-	it("returns JWK-formatted public keys", () => {
-		const keys = setupAgent(dir, SENDER_ID);
-		const pubKeys = getAgentPublicKeys(dir, SENDER_ID);
-
-		expect(pubKeys.signing_public_key.kty).toBe("OKP");
-		expect(pubKeys.signing_public_key.crv).toBe("Ed25519");
-		expect(typeof pubKeys.signing_public_key.x).toBe("string");
-		expect(pubKeys.encryption_public_key.kty).toBe("OKP");
-		expect(pubKeys.encryption_public_key.crv).toBe("X25519");
-		expect(typeof pubKeys.encryption_public_key.x).toBe("string");
 	});
 });

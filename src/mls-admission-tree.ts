@@ -1,6 +1,9 @@
 import type { MlsGroup } from "@rine-network/mls";
+import { ascii } from "./crypto/bytes.js";
+import { BATCH_KEYS_MAX_IDS, verifyBatchKeys } from "./crypto/batch-keys.js";
+import type { VerifiedAgentKeys } from "./crypto/key-chain.js";
 import type { BatchKeysResponse } from "./api-types.js";
-import { jwkToPublicKey } from "./crypto/keys.js";
+import { fetchGroupMembers } from "./group-members.js";
 import type { HttpClient } from "./http.js";
 import {
 	type AdmissionLedger,
@@ -8,7 +11,6 @@ import {
 	admissionKey,
 	recordOutcome,
 } from "./mls-admission.js";
-import { MLS_CLAIM_AGENTS_MAX } from "./mls-founding.js";
 
 /**
  * The leaf `identity` occupies in this tree, or `null` when it occupies none.
@@ -39,19 +41,40 @@ export function isSeated(group: MlsGroup, identity: Uint8Array): boolean {
 	return leafIndexOf(group, identity) !== null;
 }
 
+export async function fetchVerifiedBatchKeys(
+	client: HttpClient,
+	agentIds: string[],
+	extraHeaders?: Record<string, string>,
+): Promise<Map<string, VerifiedAgentKeys>> {
+	const verified = new Map<string, VerifiedAgentKeys>();
+	for (let i = 0; i < agentIds.length; i += BATCH_KEYS_MAX_IDS) {
+		const chunk = agentIds.slice(i, i + BATCH_KEYS_MAX_IDS);
+		const batch = (await client.get(
+			"/agents/keys",
+			{ ids: chunk.join(",") },
+			extraHeaders,
+		)) as BatchKeysResponse;
+		for (const [agentId, keys] of verifyBatchKeys(client, batch.keys)) {
+			verified.set(agentId, keys);
+		}
+	}
+	return verified;
+}
+
 /**
- * Each agent's MLS basic-credential identity — its raw Ed25519 signing key —
- * fetched in server-sized chunks.
+ * Each agent's MLS basic-credential identity — its canonical agent id, as ASCII
+ * bytes — for every agent the server returns keys for, fetched in server-sized
+ * chunks.
  *
  * This is what tells a seated invitee from an unseated one. An agent whose key
  * the server does not return is simply absent from the map: it is either
  * revoked or gone, and both answers arrive properly named a step later, from
  * the claim (`no_key_package`) or from the commit (`rejected_by_server`).
  *
- * Chunked at `MLS_CLAIM_AGENTS_MAX`, which is the id cap `GET /agents/keys`
- * enforces and the batch claim mirrors. An unchunked read is the live defect
- * this chunking closes on the sender-key side, where one 201-recipient call throws
- * out of a send with nothing distributed at all.
+ * Chunked at {@link BATCH_KEYS_MAX_IDS}, the id cap `GET /agents/keys`
+ * enforces. An unchunked read is the live defect this chunking closes on the
+ * sender-key side, where one 201-recipient call throws out of a send with
+ * nothing distributed at all.
  */
 export async function fetchMlsIdentities(
 	client: HttpClient,
@@ -59,19 +82,10 @@ export async function fetchMlsIdentities(
 	extraHeaders?: Record<string, string>,
 ): Promise<Map<string, Uint8Array>> {
 	const identities = new Map<string, Uint8Array>();
-	for (let i = 0; i < agentIds.length; i += MLS_CLAIM_AGENTS_MAX) {
-		const chunk = agentIds.slice(i, i + MLS_CLAIM_AGENTS_MAX);
-		const batch = (await client.get(
-			"/agents/keys",
-			{ ids: chunk.join(",") },
-			extraHeaders,
-		)) as BatchKeysResponse;
-		for (const [agentId, keys] of Object.entries(batch.keys ?? {})) {
-			identities.set(
-				admissionKey(agentId),
-				jwkToPublicKey(keys.signing_public_key),
-			);
-		}
+	for (const agentId of (
+		await fetchVerifiedBatchKeys(client, agentIds, extraHeaders)
+	).keys()) {
+		identities.set(admissionKey(agentId), ascii(agentId));
 	}
 	return identities;
 }
@@ -151,11 +165,9 @@ export async function fetchGroupTree(
 	groupId: string,
 	extraHeaders?: Record<string, string>,
 ): Promise<GroupTree> {
-	const membersResp = (await client.get(
-		`/groups/${groupId}/members`,
-		undefined,
-		extraHeaders,
-	)) as { items?: { agent_id: string }[] };
+	const members = (await fetchGroupMembers(client, groupId, extraHeaders)).map(
+		(item) => item.agent_id,
+	);
 	const requests = (await client.get(
 		`/groups/${groupId}/requests`,
 		{ outstanding: "live" },
@@ -163,7 +175,6 @@ export async function fetchGroupTree(
 	)) as {
 		items?: { agent_id: string; status?: string; invited_by?: string | null }[];
 	};
-	const members = (membersResp.items ?? []).map((item) => item.agent_id);
 	const live = requests.items ?? [];
 	const occupied = new Set(members.map(admissionKey));
 	for (const row of live) occupied.add(admissionKey(row.agent_id));

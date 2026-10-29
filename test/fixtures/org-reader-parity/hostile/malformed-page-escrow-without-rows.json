@@ -1,0 +1,94 @@
+{
+  "name": "malformed-page-escrow-without-rows",
+  "family": "malformed",
+  "note": "the escrow answers with no rows",
+  "api_url": "http://rine.invalid",
+  "org_id": "de4db70f-d37f-8be9-b275-3abdf05aa800",
+  "root_key": "DCoYVE0vnLZwN1n4OUylViWWrvcHOAeyQMsZlVnpcOY",
+  "own_agents": [
+    "0afd1ba5-5498-443b-b706-b64ce0873d1f",
+    "5cccc04e-c097-4a7f-aa8e-62e8eb05f7c5"
+  ],
+  "reader": {
+    "branch": null
+  },
+  "reads": [
+    {
+      "query": {
+        "group_id": "66f3e4e8-d6f4-4c70-926a-f094916082bd",
+        "cursor": null,
+        "limit": 100
+      },
+      "exchanges": [
+        {
+          "method": "POST",
+          "path": "/oauth/token",
+          "query": {},
+          "status": 200,
+          "body": {
+            "access_token": "fixture-token",
+            "token_type": "bearer",
+            "expires_in": 900
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/org/activity",
+          "query": {
+            "group_id": "66f3e4e8-d6f4-4c70-926a-f094916082bd",
+            "include": "payload",
+            "limit": "100"
+          },
+          "status": 200,
+          "body": {
+            "items": [
+              {
+                "id": "adb1ae88-44b5-4f71-ac31-5a908793d66b",
+                "created_at": "2026-10-24T20:36:28.481849Z",
+                "type": "rine.v1.dm",
+                "direction": "sent",
+                "from": {
+                  "agent_id": "5cccc04e-c097-4a7f-aa8e-62e8eb05f7c5",
+                  "handle": "mx-ts-sdk@mx-ts-sdk-874177.rine.network",
+                  "org_id": "de4db70f-d37f-8be9-b275-3abdf05aa800",
+                  "own": true
+                },
+                "to": null,
+                "group": {
+                  "id": "66f3e4e8-d6f4-4c70-926a-f094916082bd",
+                  "handle": "#mx-orgread-closed-874177@mx-ts-sdk-874177.rine.network"
+                },
+                "conversation_id": "8340796a-4561-4282-ae46-dda318c3e84d",
+                "encryption_version": "mls-v1",
+                "delivered_at": null,
+                "x402_status": null,
+                "x402_rail": null,
+                "payload": {
+                  "encrypted_payload": "BAABAAIQZvPk6Nb0THCSavCUkWCCvQAAAAAAAAAFAQAc31mw0K6yfl1IZSO63RRswdjaFmzCvYG4Mvb8UEEQBTU-zvK-l1bEjLj7n4vDXzM1gXBtg2Pp1GaFxIh-oE5EMJMqkcFXYJCrauMJf0ISaoWWqrRa52aIm7567mATEhvHbsXzAByooX5sJudM2HJnkjKG8HKujnMWn1v3gCSlACnQ2u7Ti5BVV-ZRUq_ic6gwCwJBcBzjcF6DP1sAKx5urV5YpWzYMrHuLf1E8Cy7F3swUq7Walyk9R9ujsF-gTvjplMOH6TY-75ejW-KwFl0mMVWymW1_g8e_eZzKX3xxanvg2FgI1o99aBrPWiSR7kan8bkwBV2FcJEQb0pzWg9-4CIQGiVOd5dGVJCmAc8-uqGIU65yfJLobY5mUU8EjLxn6H7FPfy69TCnNOoYTs",
+                  "self_encrypted_payload": null,
+                  "key_gen": 0
+                }
+              }
+            ],
+            "next_cursor": null
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/orgs/me/mls-escrow",
+          "query": {
+            "group_id": "66f3e4e8-d6f4-4c70-926a-f094916082bd",
+            "from_epoch": "5",
+            "to_epoch": "5",
+            "limit": "500"
+          },
+          "status": 200,
+          "body": {
+            "next_cursor": null
+          }
+        }
+      ],
+      "raised": "KeyError"
+    }
+  ]
+}

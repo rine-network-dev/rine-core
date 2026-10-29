@@ -3,14 +3,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { decodeEnvelope } from "../../src/crypto/envelope.js";
-import {
-	fromBase64Url,
-	generateAgentKeys,
-	generateSigningKeyPair,
-	saveAgentKeys,
-	toBase64Url,
-} from "../../src/crypto/keys.js";
-import { encryptGroupMessage } from "../../src/crypto/message.js";
+import { fromBase64Url, saveAgentKeys, toBase64Url } from "../../src/crypto/keys.js";
+import { generateAgentKeys, generateSigningKeyPair } from "../helpers/keys.js";
+import { encryptGroupMessage } from "../../src/crypto/sender-key-seal.js";
 import { unknownSenderKeyId } from "../../src/sender-key-words.js";
 import {
 	advanceChain,
@@ -22,13 +17,15 @@ import {
 } from "../../src/crypto/sender-keys.js";
 import {
 	loadSenderKeyStates,
+	markSenderKeysRetired,
 	saveSenderKeyState,
+	senderKeysRetired,
 } from "../../src/crypto/sender-keys-helpers.js";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 function makeState(): SenderKeyState {
-	return generateSenderKey("group-1", "agent-1");
+	return generateSenderKey("00000000-0000-4000-b000-f00000000001", "agent-1");
 }
 
 function stateMap(state: SenderKeyState): Map<string, SenderKeyState> {
@@ -228,7 +225,7 @@ describe("sender key distribution ingestion roundtrip", () => {
 	it("ingested distribution payload can decrypt a message from that sender", async () => {
 		const signing = generateSigningKeyPair();
 
-		const senderState = generateSenderKey("group-dist", "sender-agent");
+		const senderState = generateSenderKey("00000000-0000-4000-b000-f00000000002", "sender-agent");
 		const plaintext = new TextEncoder().encode("group message");
 		const { encryptedPayload } = await sealGroup(
 			signing.privateKey,
@@ -373,5 +370,37 @@ describe("saveSenderKeyState / loadSenderKeyStates", () => {
 		const filePath = path.join(tmpDir, "keys", permAg, "sender_keys", `${permGr}.json`);
 		const stat = fs.statSync(filePath);
 		expect(stat.mode & 0o777).toBe(0o600);
+	});
+});
+
+describe("markSenderKeysRetired", () => {
+	let tmpDir: string;
+
+	beforeEach(() => {
+		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rine-sk-retire-test-"));
+	});
+
+	afterEach(() => {
+		fs.rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("test_markSenderKeysRetired_when_a_symlink_sits_at_the_marker_then_replaces_it_and_leaves_the_target_alone", () => {
+		const agent = "00000000-0000-4000-a000-333333333333";
+		const group = "00000000-0000-4000-b000-444444444444";
+		const dir = path.join(tmpDir, "keys", agent, "sender_keys");
+		fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+		const victim = path.join(tmpDir, "victim.txt");
+		fs.writeFileSync(victim, "untouched");
+		fs.chmodSync(victim, 0o644);
+		const marker = path.join(dir, `${group}.retired.json`);
+		fs.symlinkSync(victim, marker);
+
+		markSenderKeysRetired(tmpDir, agent, group);
+
+		expect(fs.readFileSync(victim, "utf-8")).toBe("untouched");
+		expect(fs.statSync(victim).mode & 0o777).toBe(0o644);
+		expect(fs.lstatSync(marker).isSymbolicLink()).toBe(false);
+		expect(fs.statSync(marker).mode & 0o777).toBe(0o600);
+		expect(senderKeysRetired(tmpDir, agent, group)).toBe(true);
 	});
 });

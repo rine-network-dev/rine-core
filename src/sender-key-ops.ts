@@ -5,14 +5,10 @@ import type {
 	BatchKeysResponse,
 	GroupMemberRead,
 } from "./api-types.js";
-import {
-	encryptMessage,
-	fromBase64Url,
-	jwkToPqPublicKey,
-	toBase64Url,
-	validatePathId,
-} from "./crypto/index.js";
-import type { PqJWK } from "./crypto/keys.js";
+import { SENDER_KEY_DISTRIBUTION_TYPE } from "./control-frames.js";
+import { BATCH_KEYS_MAX_IDS, verifyBatchKeys } from "./crypto/batch-keys.js";
+import { toBase64Url, validatePathId } from "./crypto/keys.js";
+import { encryptMessage } from "./crypto/message.js";
 import type { SenderKeyState } from "./crypto/sender-keys.js";
 import { generateSenderKey, needsRotation } from "./crypto/sender-keys.js";
 import {
@@ -25,6 +21,7 @@ import {
 	statesFromSender,
 	withSenderKeyStates,
 } from "./crypto/sender-keys-store.js";
+import { fetchGroupMembers } from "./group-members.js";
 import { unseatedGroupSendRefusal } from "./group-words.js";
 import type { HttpClient } from "./http.js";
 import { fetchAgents } from "./resolve-agent.js";
@@ -34,14 +31,6 @@ export interface DistributeResult {
 	succeeded: string[];
 	failed: string[];
 }
-
-/**
- * Ids one `GET /agents/keys` accepts. The server refuses 201 in a single call
- * ("Maximum 200 IDs per request"), so anything past 200 members has to be
- * fetched in chunks — asking for all of them at once made a group send fail
- * outright at 201 members, before a single distribution was attempted.
- */
-const BATCH_KEYS_MAX_IDS = 200;
 
 /**
  * Distribution DMs in flight at once. Each recipient costs one seal and one
@@ -65,8 +54,7 @@ const DISTRIBUTION_CONCURRENCY = 8;
  * under a key NOBODY holds: the caller distributes nothing, seals the message
  * anyway, and the chain key ratchets forward, so the message is undecryptable
  * for the whole group and no later distribution can recover it. One unreachable
- * chunk degrades the send; an unreachable endpoint stops it, which is what a
- * single unchunked fetch used to do for every failure.
+ * chunk degrades the send; an unreachable endpoint stops it.
  */
 async function fetchPublishedKeys(
 	client: HttpClient,
@@ -135,7 +123,10 @@ export async function distributeSenderKey(
 ): Promise<DistributeResult> {
 	if (recipientIds.length === 0) return { succeeded: [], failed: [] };
 
-	const publishedKeys = await fetchPublishedKeys(client, recipientIds);
+	const publishedKeys = verifyBatchKeys(
+		client,
+		await fetchPublishedKeys(client, recipientIds),
+	);
 
 	const distPayload = {
 		group_id: groupId,
@@ -151,27 +142,24 @@ export async function distributeSenderKey(
 		recipientIds,
 		DISTRIBUTION_CONCURRENCY,
 		async (recipientId, index) => {
-			const recipientKeyData = publishedKeys[recipientId];
+			const recipientKeyData = publishedKeys.get(recipientId);
 			if (!recipientKeyData) return;
 			try {
-				const recipientPk = fromBase64Url(
-					recipientKeyData.encryption_public_key.x,
-				);
-				const recipientPqPk = recipientKeyData.pq_encryption_public_key
-					? jwkToPqPublicKey(recipientKeyData.pq_encryption_public_key as PqJWK)
-					: undefined;
 				const encrypted = await encryptMessage(
 					configDir,
 					senderAgentId,
-					recipientPk,
+					recipientId,
+					{
+						encryption: recipientKeyData.encryption,
+						pqEncryption: recipientKeyData.pqEncryption,
+					},
 					distPayload,
-					recipientPqPk,
 				);
 				await client.post(
 					"/messages",
 					{
 						to_agent_id: recipientId,
-						type: "rine.v1.sender_key_distribution",
+						type: SENDER_KEY_DISTRIBUTION_TYPE,
 						...encrypted,
 					},
 					extraHeaders,
@@ -249,11 +237,11 @@ async function seatedOwnAgents(
  * membership instead of growing once per rotation for the life of the group.
  * That is a property of the rotation's write and not an invariant of the file: a
  * file an older client left holding three own rows keeps all three until the next
- * rotation trims it. `mergeSenderKeyStates` can no longer add one either — it
- * skips an own state whose (sender, key) pair is not already on disk, so a decrypt
- * carrying the row a rotation just dropped no longer resurrects it above the new
+ * rotation trims it. `mergeSenderKeyStates` does not add one either — it skips
+ * an own state whose (sender, key) pair is not already on disk, so a decrypt
+ * carrying the row a rotation just dropped does not resurrect it above the new
  * one. The cost of that is stated where it lands: a message this agent sent two or
- * more rotations ago can no longer be read back by its sender, because the
+ * more rotations ago cannot be read back by its sender, because the
  * self-read key was cached on a state that has since been dropped. Keeping one
  * superseded key is what makes rotation cheap without making the agent's own
  * recent history unreadable to it.
@@ -265,14 +253,12 @@ export async function getOrCreateSenderKey(
 	groupHandle: string,
 	extraHeaders?: Record<string, string>,
 ): Promise<{ state: SenderKeyState; groupId: string }> {
-	// One resolver for the whole stack (`resolve-group.ts`): this lookup and its
-	// refusal had three copies, and the transcript read was about to be a fourth.
+	// The stack's one handle resolver (`resolve-group.ts`) owns this lookup and
+	// its refusal.
 	const groupId = (await resolveGroupByHandle(client, groupHandle)).id;
 
-	const membersResp = (await client.get(`/groups/${groupId}/members`)) as {
-		items: GroupMemberRead[];
-	};
-	const memberIds = membersResp.items.map((m) => m.agent_id);
+	const members = await fetchGroupMembers(client, groupId);
+	const memberIds = members.map((m) => m.agent_id);
 	const senderIdLower = senderAgentId.toLowerCase();
 	// Before the first write, and it stays there: `distributeSenderKey` fans this
 	// agent's key out as real DMs to every member the server lists, so a refusal
@@ -285,7 +271,7 @@ export async function getOrCreateSenderKey(
 			unseatedGroupSendRefusal({
 				group: groupHandle,
 				agent: senderAgentId,
-				seated: await seatedOwnAgents(client, membersResp.items),
+				seated: await seatedOwnAgents(client, members),
 			}),
 		);
 	}
@@ -374,11 +360,10 @@ export async function getOrCreateSenderKey(
 	// exactly ONE of this agent's own superseded states, the key it was sending
 	// under until now. Nothing can be SENT under it again, but its cached
 	// `skippedKeys` are what let this agent re-read its own past messages
-	// (`crypto/message.ts` caches the self-read key there on every send), so
-	// dropping every superseded state would make an agent's own recent history
-	// unreadable to it on each rotation. Keeping one is still bounded — the defect
-	// it replaced was an array that grew once per rotation for the group's life.
-	// Older own states, including a stack an older client left behind, are
+	// (`crypto/sender-key-seal.ts` caches the self-read key there on every send),
+	// so dropping every superseded state would make an agent's own recent history
+	// unreadable to it on each rotation. Keeping one keeps the file bounded rather
+	// than growing once per rotation for the group's life. Older own states, including a stack an older client left behind, are
 	// dropped here. On a member removal also drop the states of agents no longer
 	// in the group.
 	//
@@ -446,7 +431,7 @@ async function recordDistribution(
  * Retire this agent's local sender-key material for one group: the key it sends
  * under, the one state it superseded, every peer key it ingested for that group,
  * and the cached message keys all of them left behind — including the self-read
- * cache `crypto/message.ts` writes on every send. All of it lives in the group's
+ * cache `crypto/sender-key-seal.ts` writes on every send. All of it lives in the group's
  * single state file, so retiring the group is removing that file.
  *
  * Retiring a group this agent holds no material for is not an error, so a leave
@@ -454,11 +439,11 @@ async function recordDistribution(
  * on which crypto the group runs: whichever of the two holds nothing costs one
  * unlink that finds no file.
  *
- * The wipe alone was point-in-time, so it no longer travels alone. Every peer
- * key removed here arrived as a `rine.v1.sender_key_distribution` DM which is
- * still in this agent's inbox — leaving a group takes nothing out of an inbox —
- * and {@link fetchAndIngestPendingSKDistributions}, re-exported from this very
- * module, used to put all of them back on the next group read that missed its
+ * The wipe alone would be point-in-time. Every peer key removed here arrived as
+ * a `rine.v1.sender_key_distribution` DM which is still in this agent's inbox —
+ * leaving a group takes nothing out of an inbox — and
+ * {@link fetchAndIngestPendingSKDistributions}, re-exported from this very
+ * module, would put all of them back on the next group read that missed its
  * key. So this also writes a RETIREMENT MARKER
  * ({@link markSenderKeysRetired}), and every ingest of a sender key for this
  * group is refused from here on. The marker is written whether or not there was
@@ -497,11 +482,7 @@ export function deleteSenderKey(
 	markSenderKeysRetired(configDir, agentId, groupId);
 }
 
-/**
- * The inbound half moved to its own module; the public surface is unchanged, so
- * every caller that reaches these through `@rine-network/core` — or directly
- * through this module — is unaffected.
- */
+/** The inbound half, which lives in its own module and is reachable from this one too. */
 export {
 	decryptGroupMessageWithRecovery,
 	fetchAndIngestPendingSKDistributions,

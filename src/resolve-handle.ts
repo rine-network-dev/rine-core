@@ -1,4 +1,5 @@
 import { HttpClient } from "./http.js";
+import { UUID_PATTERN, UUID_RE_ANY_CASE } from "./uuid.js";
 
 const DEFAULT_DOMAIN = ".rine.network";
 
@@ -10,11 +11,7 @@ export function normalizeHandle(handle: string): string {
 	return handle + DEFAULT_DOMAIN;
 }
 
-const UUID_ALIAS_RE =
-	/\/agents\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
-
-const UUID_RE =
-	/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_ALIAS_RE = new RegExp(`/agents/(${UUID_PATTERN})$`, "i");
 
 const UUID_HEX_RE = /^[0-9a-f]{32}$/i;
 
@@ -93,4 +90,4 @@ export async function resolveHandleViaWebFinger(
 	return handle;
 }
 
-export { UUID_RE };
+export { UUID_RE_ANY_CASE as UUID_RE };

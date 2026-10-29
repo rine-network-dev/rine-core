@@ -17,10 +17,12 @@
 // tls-listener; it cannot fire here).
 
 import { describe, expect, it } from "vitest";
-import { makeEdgePipeFactory } from "../../src/funnel/edge-pipe.js";
+import { type EdgePipeArgs, makeEdgePipeFactory } from "../../src/funnel/edge-pipe.js";
+import { MAX_BODY_BYTES } from "../../src/funnel/http-frame.js";
 import { type Frame, FrameType } from "../../src/funnel/mux-codec.js";
 import type { LocalPipe } from "../../src/funnel/mux-client.js";
 import type { WebhookRequest } from "../../src/funnel/relay-adapter.js";
+import { RELAYED, RELAY_FAILED, REPLAYED, REJECTED } from "./relay-outcomes.js";
 
 /** A minimal OPEN frame — `openEdgePipe` ignores the frame, so any will do. */
 const OPEN: Frame = {
@@ -33,7 +35,7 @@ const OPEN: Frame = {
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
 /** Drive one edge pipe; collect the response bytes + the onClose signal. */
-function drive(onRequest: (req: WebhookRequest) => Promise<void>): {
+function drive(onRequest: EdgePipeArgs["onRequest"]): {
 	pipe: LocalPipe;
 	response: () => string;
 	closed: () => boolean;
@@ -60,6 +62,7 @@ describe("funnel shared-edge edge-pipe", () => {
 		let received: WebhookRequest | undefined;
 		const h = drive(async (req) => {
 			received = req;
+			return RELAYED;
 		});
 		h.pipe.write(
 			enc("POST /h HTTP/1.1\r\nHost: x--a.edge.rine.network\r\nContent-Length: 5\r\n\r\nhello"),
@@ -76,6 +79,7 @@ describe("funnel shared-edge edge-pipe", () => {
 		let received: WebhookRequest | undefined;
 		const h = drive(async (req) => {
 			received = req;
+			return RELAYED;
 		});
 		// Head in one write, body in another — the broker may split a large request
 		// into <= max_frame DATA frames; the framer holds until the body completes.
@@ -101,10 +105,39 @@ describe("funnel shared-edge edge-pipe", () => {
 		expect(h.closed()).toBe(true);
 	});
 
+	it.each([
+		["a relayed delivery gets 204", RELAYED, "204"],
+		["a replayed delivery gets 204", REPLAYED, "204"],
+		["an HMAC rejection gets 204", REJECTED, "204"],
+		["a verified delivery the relay could not post gets 502", RELAY_FAILED, "502"],
+	])("%s", async (_name, outcome, status) => {
+		const h = drive(async () => outcome);
+		h.pipe.write(enc("POST /h HTTP/1.1\r\nContent-Length: 2\r\n\r\nhi"));
+		await flush();
+
+		expect(h.response()).toContain(status);
+		expect(h.closed()).toBe(true);
+	});
+
+	it("replies 413 and never calls the adapter for a body over the relayable cap", async () => {
+		let calls = 0;
+		const h = drive(async () => {
+			calls += 1;
+			return RELAYED;
+		});
+		h.pipe.write(enc(`POST /h HTTP/1.1\r\nContent-Length: ${MAX_BODY_BYTES + 1}\r\n\r\n`));
+		await flush();
+
+		expect(h.response()).toContain("413 Payload Too Large");
+		expect(h.closed()).toBe(true);
+		expect(calls).toBe(0);
+	});
+
 	it("dispatches exactly once — a second write after completion is ignored", async () => {
 		let calls = 0;
 		const h = drive(async () => {
 			calls += 1;
+			return RELAYED;
 		});
 		h.pipe.write(enc("POST /h HTTP/1.1\r\nContent-Length: 2\r\n\r\nhi"));
 		await flush();

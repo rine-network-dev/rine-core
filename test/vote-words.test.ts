@@ -12,7 +12,12 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { VOTE_ELECTORATE_RULE, inviteNominates } from "../src/index.js";
+import {
+	VOTE_ELECTORATE_RULE,
+	VOTE_ELIGIBILITY_CLAUSES,
+	describeVoteEligibility,
+	inviteNominates,
+} from "../src/index.js";
 
 describe("VOTE_ELECTORATE_RULE", () => {
 	it("is the founder-pinned sentence, character for character", () => {
@@ -56,5 +61,83 @@ describe("inviteNominates", () => {
 		expect(inviteNominates("some_future_policy")).toBe(false);
 		expect(inviteNominates(undefined)).toBe(false);
 		expect(inviteNominates(null)).toBe(false);
+	});
+});
+
+describe("VOTE_ELIGIBILITY_CLAUSES", () => {
+	it("test_VOTE_ELIGIBILITY_CLAUSES_when_read_then_matches_the_python_table_clause_for_clause", () => {
+		// Twin of `rine.vote_words._ELIGIBILITY_CLAUSES`, pinned as literals:
+		// a surface that reads a reason differently from the Python stack tells
+		// an operator a different thing about the same row.
+		expect(VOTE_ELIGIBILITY_CLAUSES).toEqual({
+			in_electorate: "you can vote",
+			electorate_not_recorded:
+				"you can vote (filed before the electorate was recorded; any member may)",
+			not_in_electorate:
+				"you cannot vote: you were not in the group when this was filed",
+			electorate_empty: "nobody eligible is still in the group",
+			bar_unreachable: "nobody can decide this request",
+			is_applicant: "this is your own request",
+			not_pending: "not open for voting",
+		});
+		expect(Object.isFrozen(VOTE_ELIGIBILITY_CLAUSES)).toBe(true);
+	});
+});
+
+describe("describeVoteEligibility", () => {
+	const cli = {
+		unnamedVote: "",
+		unknownReason: (reason: string | undefined) => reason ?? "",
+	};
+	const connector = {
+		unnamedVote: "—",
+		unknownReason: (reason: string | undefined) =>
+			reason ? `eligibility \`${reason}\`` : "eligibility not reported",
+	};
+
+	it("test_describeVoteEligibility_when_the_reason_is_in_the_table_then_returns_its_clause", () => {
+		for (const [reason, clause] of Object.entries(VOTE_ELIGIBILITY_CLAUSES)) {
+			expect(describeVoteEligibility(reason, null, cli)).toBe(clause);
+			expect(describeVoteEligibility(reason, "approve", connector)).toBe(
+				clause,
+			);
+		}
+	});
+
+	it("test_describeVoteEligibility_when_already_voted_then_names_the_ballot", () => {
+		expect(describeVoteEligibility("already_voted", "approve", cli)).toBe(
+			"you already voted approve",
+		);
+		expect(describeVoteEligibility("already_voted", "deny", connector)).toBe(
+			"you already voted deny",
+		);
+	});
+
+	it("test_describeVoteEligibility_when_already_voted_without_a_ballot_then_uses_the_surface_fallback", () => {
+		expect(describeVoteEligibility("already_voted", null, cli)).toBe(
+			"you already voted",
+		);
+		expect(describeVoteEligibility("already_voted", undefined, connector)).toBe(
+			"you already voted —",
+		);
+	});
+
+	it("test_describeVoteEligibility_when_the_reason_is_unknown_or_missing_then_uses_the_surface_fallback", () => {
+		expect(describeVoteEligibility("some_future_reason", null, cli)).toBe(
+			"some_future_reason",
+		);
+		expect(
+			describeVoteEligibility("some_future_reason", null, connector),
+		).toBe("eligibility `some_future_reason`");
+		expect(describeVoteEligibility(undefined, null, connector)).toBe(
+			"eligibility not reported",
+		);
+		// An inherited property name is a reason the table never held.
+		expect(describeVoteEligibility("constructor", null, cli)).toBe(
+			"constructor",
+		);
+		expect(describeVoteEligibility("toString", null, connector)).toBe(
+			"eligibility `toString`",
+		);
 	});
 });

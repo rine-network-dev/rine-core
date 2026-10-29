@@ -358,7 +358,7 @@ describe("resolveRecipient", () => {
 
 	it("reads a UUID no group answers to as an agent, after one indexed miss", async () => {
 		// The other half of the same arm, and the reason the group is asked
-		// FIRST: `GET /groups/{id}` is org-scoped and `GET /agents/{id}/keys` is
+		// FIRST: `GET /groups/{id}` is credential-scoped and `GET /agents/{id}/keys` is
 		// global, so agent-first would prefer a stranger's namespace over the
 		// caller's own org's. The agent arm itself is untouched — it still
 		// answers with the id and spends no request of its own.

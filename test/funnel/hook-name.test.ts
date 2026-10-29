@@ -10,7 +10,7 @@ import {
 	HOOK_NAME_MIN_LENGTH,
 	hookNameError,
 	isValidHookName,
-} from "../../src/funnel/secret-store.js";
+} from "../../src/funnel/hook-key-store.js";
 
 describe("hook name validation", () => {
 	describe("accepts certifiable names", () => {

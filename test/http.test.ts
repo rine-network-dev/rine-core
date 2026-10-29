@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpClient, fetchOAuthToken, getOrRefreshToken } from "../src/http.js";
 import { RineApiError } from "../src/errors.js";
 import { cacheToken } from "../src/config.js";
+import { principalString } from "../src/principal.js";
+import { TEST_SIGNER } from "./signer-fixture.js";
 
 function makeTmpDir(): string {
 	return fs.mkdtempSync(join(tmpdir(), "rine-http-test-"));
@@ -225,6 +227,23 @@ describe("HttpClient", () => {
 			}),
 		);
 	});
+
+	it("sends requests through an injected fetch instead of the global one", async () => {
+		mockFetch(200, { result: "global" });
+		const injected = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: () => Promise.resolve({ result: "injected" }),
+		});
+		const client = new HttpClient({
+			tokenFn: async () => "test-token",
+			apiUrl: "https://api.test",
+			fetch: injected,
+		});
+		expect(await client.get("/agents")).toEqual({ result: "injected" });
+		expect(injected).toHaveBeenCalledTimes(1);
+		expect(fetch).not.toHaveBeenCalled();
+	});
 });
 
 describe("HttpClient.publicGet", () => {
@@ -256,16 +275,25 @@ describe("HttpClient.publicGet", () => {
 describe("fetchOAuthToken", () => {
 	afterEach(() => vi.restoreAllMocks());
 
-	it("posts client credentials and returns token", async () => {
+	it("posts a client assertion and returns token", async () => {
 		mockFetch(200, { access_token: "tok", expires_in: 3600 });
-		const result = await fetchOAuthToken("https://api.test", "client-id", "client-secret");
+		const result = await fetchOAuthToken("https://api.test", TEST_SIGNER);
 		expect(result.access_token).toBe("tok");
 		expect(result.expires_in).toBe(3600);
+
+		const init = (fetch as unknown as { mock: { calls: unknown[][] } }).mock
+			.calls[0]?.[1] as RequestInit;
+		const body = new URLSearchParams(init.body as string);
+		expect(body.get("grant_type")).toBe("client_credentials");
+		expect(body.get("client_assertion_type")).toBe(
+			"urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+		);
+		expect(body.get("client_assertion")?.split(".")).toHaveLength(3);
 	});
 
 	it("throws RineApiError on failure", async () => {
 		mockFetch(400, { detail: "invalid_client" }, false);
-		await expect(fetchOAuthToken("https://api.test", "bad", "bad"))
+		await expect(fetchOAuthToken("https://api.test", TEST_SIGNER))
 			.rejects.toThrow(RineApiError);
 	});
 });
@@ -280,37 +308,38 @@ describe("getOrRefreshToken", () => {
 	});
 
 	it("returns envToken directly when provided", async () => {
-		const result = await getOrRefreshToken(dir, "https://api", undefined, "default", {
+		const result = await getOrRefreshToken(dir, "https://api", undefined, {
 			envToken: "env-tok",
 		});
 		expect(result).toBe("env-tok");
 	});
 
 	it("returns cached token when not expired", async () => {
-		cacheToken(dir, "default", { access_token: "cached", expires_in: 7200 });
-		const result = await getOrRefreshToken(
-			dir, "https://api",
-			{ client_id: "id", client_secret: "secret" },
-			"default",
-		);
+		cacheToken(dir, principalString(TEST_SIGNER.principal), {
+			access_token: "cached",
+			expires_in: 7200,
+		});
+		const result = await getOrRefreshToken(dir, "https://api", TEST_SIGNER);
 		expect(result).toBe("cached");
 	});
 
 	it("fetches new token when cache is expired", async () => {
 		// Write an expired cache entry
-		cacheToken(dir, "default", { access_token: "old", expires_in: -100 });
+		cacheToken(dir, principalString(TEST_SIGNER.principal), {
+			access_token: "old",
+			expires_in: -100,
+		});
 		mockFetch(200, { access_token: "fresh", expires_in: 3600 });
 
-		const result = await getOrRefreshToken(
-			dir, "https://api",
-			{ client_id: "id", client_secret: "secret" },
-			"default",
-		);
+		const result = await getOrRefreshToken(dir, "https://api", TEST_SIGNER);
 		expect(result).toBe("fresh");
 	});
 
-	it("throws when no credentials and no cache", async () => {
-		await expect(getOrRefreshToken(dir, "https://api", undefined, "default"))
-			.rejects.toThrow("No credentials found");
+	it("throws when no identity and no cache", async () => {
+		await expect(getOrRefreshToken(dir, "https://api", undefined))
+			.rejects.toMatchObject({
+				status: 0,
+				detail: expect.stringContaining("No identity found"),
+			});
 	});
 });

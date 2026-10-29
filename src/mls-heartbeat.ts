@@ -10,7 +10,15 @@
  */
 
 import type { HttpClient } from "./http.js";
+import { sweepPendingEscrow } from "./mls-escrow-sweep.js";
+import { MLS_HEARTBEAT_MIN_INTERVAL_MS } from "./mls-heartbeat-interval.js";
 import { ensureMlsKeyPackages } from "./mls-keypackages.js";
+import { settleRotation } from "./mls-seat-sweep.js";
+import {
+	ProcessGate,
+	actorGateKey,
+	resetProcessGates,
+} from "./process-gate.js";
 
 /** The agent an MLS operation acts as, and the client it acts through. */
 export interface MlsActor {
@@ -30,16 +38,9 @@ export interface MlsActor {
  * is most likely to add it. Spelled at every call site rather than defaulted:
  * a verb added later has to answer the question rather than inherit an answer.
  */
-export type MlsHeartbeatPace = "gated" | "forced";
+type MlsHeartbeatPace = "gated" | "forced";
 
-/**
- * Shortest gap between two gated heartbeats for one (config dir, agent) in one
- * process. Keyed on the agent and not on the group because the inventory is
- * per-agent: ten groups draw down one pool.
- */
-export const MLS_HEARTBEAT_MIN_INTERVAL_MS = 60_000;
-
-const lastHeartbeat = new Map<string, number>();
+const lastHeartbeat = new ProcessGate<number>();
 
 /**
  * Top this agent's key-package inventory back up as a side effect of doing MLS
@@ -70,14 +71,27 @@ const lastHeartbeat = new Map<string, number>();
  * batch of commits issued back to back still does not each start a top-up while
  * the first is in flight.
  *
+ * The same beat runs the cross-group escrow sweep ({@link sweepPendingEscrow}),
+ * which keeps its own once-per-interval gate, so a process's first MLS operation
+ * is also its startup sweep and a forced beat cannot make it run twice in an
+ * interval. A failed sweep leaves its files for the next pass and does not lift
+ * the key-package floor.
+ *
+ * A key rotation this host has not finished settling is finished here first
+ * ({@link settleRotation}): its key packages are republished and its group seats
+ * moved, at most once per generation, behind a record on disk.
+ *
  * Best-effort by contract: it runs behind work that has already succeeded, so
- * it never throws.
+ * a failed beat never throws. The one error that escapes is
+ * `MlsSettleSlotUnsetError`, a packaging defect in which nothing filled the
+ * settlement's re-seat slot (see `mls-settle-guard.ts`); it is never a state of
+ * a group.
  */
 export async function mlsHeartbeat(
 	actor: MlsActor,
 	pace: MlsHeartbeatPace,
 ): Promise<void> {
-	const key = `${actor.configDir} ${actor.agentId}`;
+	const key = actorGateKey(actor);
 	const previous = lastHeartbeat.get(key);
 	const now = Date.now();
 	if (
@@ -88,15 +102,24 @@ export async function mlsHeartbeat(
 		return;
 	}
 	lastHeartbeat.set(key, now);
+	// Settled BEFORE the top-up: a rotation replaces the whole published pool,
+	// and a top-up run first would count the private halves of the old pool.
+	await settleRotation(actor, { background: true });
 	try {
 		await ensureMlsKeyPackages(actor.configDir, actor.agentId, actor.client);
 	} catch {
 		// Retried on the next MLS operation rather than at the end of the floor.
 		lastHeartbeat.delete(key);
 	}
+	await sweepPendingEscrow(actor);
 }
 
-/** Forget every gate. Test-only: a process boundary is what clears it in life. */
+/**
+ * {@link resetProcessGates} under the heartbeat seam's name, which both stacks
+ * spell alike. Test-only: a process boundary is what clears the gates in life,
+ * so it stays off the package root (a published seam that defeats a rate limit
+ * gets used as one).
+ */
 export function resetMlsHeartbeatGate(): void {
-	lastHeartbeat.clear();
+	resetProcessGates();
 }

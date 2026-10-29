@@ -40,8 +40,9 @@ export function mlsReadRefusal(groupId: string, remedy: string): string {
 		"that opens it. Either it has no ratchet-tree leaf in the group yet — a seat on the " +
 		"roster is not a leaf in the tree — or the message was committed before its leaf " +
 		`existed, which no key can ever open. ${remedy} to catch this agent's group state up ` +
-		"and republish the key packages an admission claims, then ask a group admin to resume " +
-		"the admission; anything committed before a leaf exists for this agent stays closed."
+		"and republish the key packages an admission claims, then ask any other member that " +
+		"holds a leaf in the group to resume the admission (an admin is not required); " +
+		"anything committed before a leaf exists for this agent stays closed."
 	);
 }
 
@@ -56,4 +57,15 @@ export function mlsReadRefusal(groupId: string, remedy: string): string {
  */
 export function cliSyncRemedy(groupId: string): string {
 	return `Run \`rine group sync ${groupId}\``;
+}
+
+/**
+ * The SDK's remedy clause: the call, spelled as a caller would write it.
+ *
+ * Byte-identical to `sdk_sync_remedy` in the Python SDK's `rine/mls_read_words.py`,
+ * and bound to it by `test/mls-read-refusal-twin.test.ts`. `groups.sync` is the
+ * TypeScript SDK's verb as well.
+ */
+export function sdkSyncRemedy(groupId: string): string {
+	return `Call groups.sync("${groupId}")`;
 }

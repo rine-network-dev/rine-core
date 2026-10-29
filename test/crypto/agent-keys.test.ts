@@ -1,263 +1,690 @@
-import * as fs from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { bytesToHex } from "@noble/curves/utils.js";
 import { sha256 } from "@noble/hashes/sha2.js";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentKeysResponse } from "../../src/api-types.js";
 import { TtlCache } from "../../src/cache.js";
-import { fetchRecipientKeys } from "../../src/crypto/agent-keys.js";
 import {
-	type AgentKeys,
-	generateAgentKeys,
-	saveAgentKeys,
-	signingPublicKeyToJWK,
-	toBase64Url,
-} from "../../src/crypto/keys.js";
-import { decryptMessage, encryptMessage } from "../../src/crypto/message.js";
-import { HttpClient } from "../../src/http.js";
+	fetchAgentKeys,
+	fetchRecipientKeys,
+	verifyEnvelopeSender,
+} from "../../src/crypto/agent-keys.js";
+import type { InnerEnvelope } from "../../src/crypto/envelope.js";
+import { KeyChainError, verifyKeyChain } from "../../src/crypto/key-chain.js";
+import { pinsFor, sharePins } from "../../src/crypto/key-pins.js";
+import { signingKid } from "../../src/crypto/keys.js";
+import { type SigContext, signMessage } from "../../src/crypto/sign.js";
+import type { HttpClient } from "../../src/http.js";
+import {
+	type ResponseMutator,
+	SUPERSEDED_AT,
+	World,
+	type WorldAgent,
+} from "./world.js";
 
-const SENDER_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
-const RECIPIENT_ID = "b2c3d4e5-f6a7-8901-bcde-f12345678901";
+function fingerprint(publicKey: Uint8Array): string {
+	return bytesToHex(sha256(publicKey));
+}
 
-function keysResponse(agentId: string, keys: AgentKeys): AgentKeysResponse {
+function messageCtx(recipientAgentId = randomUUID()): SigContext {
+	return { kind: "MessageSig", recipientAgentId };
+}
+
+function envelopeFor(
+	agent: WorldAgent,
+	ctx: SigContext,
+	payload = new TextEncoder().encode("hello"),
+): InnerEnvelope {
 	return {
-		agent_id: agentId,
-		signing_public_key: signingPublicKeyToJWK(keys.signing.publicKey),
-		encryption_public_key: {
-			kty: "OKP",
-			crv: "X25519",
-			x: toBase64Url(keys.encryption.publicKey),
+		kid: signingKid(agent.id, agent.gen),
+		signature: signMessage(agent.derived.ed25519.privateKey, ctx, payload),
+		payload,
+	};
+}
+
+/** A client whose `get` can be flipped between two backing worlds. */
+function switchingClient(
+	first: ReturnType<World["client"]>,
+	second: ReturnType<World["client"]>,
+) {
+	let useSecond = false;
+	return {
+		keyCache: new TtlCache<AgentKeysResponse>(),
+		get: (path: string, params?: Record<string, string | number | boolean>) =>
+			(useSecond ? second : first).get(path, params),
+		flip: () => {
+			useSecond = true;
 		},
 	};
 }
 
-/** Derived independently of the implementation, straight from the raw key. */
-function fingerprint(keys: AgentKeys): string {
-	return bytesToHex(sha256(keys.signing.publicKey));
+describe("fetchAgentKeys", () => {
+	it("returns the world agent's verified derived public keys", async () => {
+		const world = new World();
+		const agent = world.addAgent();
+		const client = world.client();
+
+		const { keys, fromCache } = await fetchAgentKeys(client, agent.id);
+
+		expect(fromCache).toBe(false);
+		expect(keys.agentId).toBe(agent.id);
+		expect(keys.orgId).toBe(world.org.orgId);
+		expect(keys.keyGen).toBe(0);
+		expect(keys.signing).toEqual(agent.derived.ed25519.publicKey);
+		expect(keys.encryption).toEqual(agent.derived.x25519.publicKey);
+		expect(keys.pqEncryption).toEqual(agent.derived.mlKem768.publicKey);
+		expect(client.served).toEqual([`/agents/${agent.id}/keys`]);
+	});
+
+	it("serves a second call from the cache without touching the network", async () => {
+		const world = new World();
+		const agent = world.addAgent();
+		const client = world.client();
+
+		const first = await fetchAgentKeys(client, agent.id);
+		const second = await fetchAgentKeys(client, agent.id);
+
+		expect(second.fromCache).toBe(true);
+		expect(second.keys).toEqual(first.keys);
+		expect(client.served.length).toBe(1);
+	});
+
+	it("refetches when bypassCache is set", async () => {
+		const world = new World();
+		const agent = world.addAgent();
+		const client = world.client();
+
+		await fetchAgentKeys(client, agent.id);
+		const fresh = await fetchAgentKeys(client, agent.id, { bypassCache: true });
+
+		expect(fresh.fromCache).toBe(false);
+		expect(client.served.length).toBe(2);
+	});
+
+	it("reads a history generation and caches it under a separate key", async () => {
+		const world = new World();
+		const id = randomUUID();
+		world.addAgent({ id, gen: 0 });
+		world.addAgent({ id, gen: 1 });
+		const client = world.client();
+
+		const history = await fetchAgentKeys(client, id, { gen: 0 });
+		expect(history.keys.keyGen).toBe(0);
+		expect(client.served).toEqual([`/agents/${id}/keys?gen=0`]);
+
+		const current = await fetchAgentKeys(client, id);
+		expect(current.keys.keyGen).toBe(1);
+		expect(client.served.length).toBe(2);
+
+		const again = await fetchAgentKeys(client, id, { gen: 0 });
+		expect(again.fromCache).toBe(true);
+		expect(again.keys).toEqual(history.keys);
+		expect(client.served.length).toBe(2);
+	});
+});
+
+describe("fetchRecipientKeys", () => {
+	it("returns the recipient's encryption keys", async () => {
+		const world = new World();
+		const agent = world.addAgent();
+		const client = world.client();
+
+		const keys = await fetchRecipientKeys(client, agent.id);
+
+		expect(keys.encryption).toEqual(agent.derived.x25519.publicKey);
+		expect(keys.pqEncryption).toEqual(agent.derived.mlKem768.publicKey);
+	});
+
+	it("stays off the cache, so a peer's rotation is sealed to at once", async () => {
+		const world = new World();
+		const agent = world.addAgent();
+		const client = world.client();
+
+		await fetchRecipientKeys(client, agent.id);
+		await fetchRecipientKeys(client, agent.id);
+
+		expect(client.served.length).toBe(2);
+		expect(client.keyCache.get(agent.id)).toBeUndefined();
+	});
+});
+
+describe("key reads refuse a path-shaped agent id", () => {
+	it.each(["../orgs", "x?y=1", "..", ""])(
+		"never issues a GET for %j",
+		async (id) => {
+			const get = vi.fn();
+			const client = { get } as unknown as Pick<HttpClient, "get">;
+			await expect(fetchAgentKeys(client, id)).rejects.toThrow(
+				"non-canonical agent id",
+			);
+			await expect(fetchRecipientKeys(client, id)).rejects.toThrow(
+				"non-canonical agent id",
+			);
+			expect(get).not.toHaveBeenCalled();
+		},
+	);
+});
+
+interface BrokenCtx {
+	world: World;
+	agent: WorldAgent;
+	sibling: WorldAgent;
+	otherAgent: WorldAgent;
+	other: World;
 }
 
-describe("per-client key cache", () => {
-	let dir: string;
-	let recipientKeys: AgentKeys;
-	let senderKeys: AgentKeys;
+function brokenCtx(): BrokenCtx {
+	const world = new World();
+	const other = new World();
+	return {
+		world,
+		other,
+		agent: world.addAgent(),
+		sibling: world.addAgent(),
+		otherAgent: other.addAgent(),
+	};
+}
 
-	beforeEach(() => {
-		dir = fs.mkdtempSync(join(tmpdir(), "rine-keycache-test-"));
-		senderKeys = generateAgentKeys();
-		recipientKeys = generateAgentKeys();
-		saveAgentKeys(dir, SENDER_ID, senderKeys);
-		saveAgentKeys(dir, RECIPIENT_ID, recipientKeys);
-	});
-	afterEach(() => {
-		fs.rmSync(dir, { recursive: true });
-		vi.unstubAllGlobals();
-		vi.restoreAllMocks();
-	});
+const MUTATIONS: Record<string, (ctx: BrokenCtx) => ResponseMutator> = {
+	"branch_certificate from another org": ({ otherAgent }) => (r) => ({
+		...r,
+		branch_certificate: otherAgent.response.branch_certificate,
+	}),
+	"agent_certificate from another agent": ({ sibling }) => (r) => ({
+		...r,
+		agent_certificate: sibling.response.agent_certificate,
+	}),
+	"org_id from another org": ({ other }) => (r) => ({
+		...r,
+		org_id: other.org.orgId,
+	}),
+	"encryption_public_key mismatch": ({ sibling }) => (r) => ({
+		...r,
+		encryption_public_key: sibling.response.encryption_public_key,
+	}),
+	"key_gen bumped": () => (r) => ({ ...r, key_gen: r.key_gen + 1 }),
+};
 
-	it("serves a cache hit without touching the network", async () => {
-		const encrypted = await encryptMessage(
-			dir,
-			SENDER_ID,
-			recipientKeys.encryption.publicKey,
-			{ m: "hi" },
-		);
-		const cache = new TtlCache<AgentKeysResponse>();
-		cache.set(SENDER_ID, keysResponse(SENDER_ID, senderKeys));
-		const get = vi.fn();
-		const client = { get, post: vi.fn(), keyCache: cache };
+const CONSUMERS = [
+	"fetchAgentKeys",
+	"fetchRecipientKeys",
+	"verifyEnvelopeSender",
+] as const;
 
-		const result = await decryptMessage(
-			dir,
-			RECIPIENT_ID,
-			encrypted.encrypted_payload,
-			client as never,
-			SENDER_ID,
-		);
-		expect(result.verified).toBe(true);
-		expect(result.verificationStatus).toBe("verified");
-		expect(get).not.toHaveBeenCalled();
-	});
+describe.each(CONSUMERS)("%s refuses a broken chain", (consumer) => {
+	it.each(Object.keys(MUTATIONS))("with %s", async (name) => {
+		const ctx = brokenCtx();
+		const client = ctx.world.client(MUTATIONS[name]!(ctx));
 
-	it("verifies twice off one fetch on a client given no explicit cache", async () => {
-		// Every client builds a cache for itself. Without that default the whole
-		// verify-side cache — and the rotation refetch it gates — is unreachable in
-		// production, because no caller passes one in.
-		const encrypted = await encryptMessage(
-			dir,
-			SENDER_ID,
-			recipientKeys.encryption.publicKey,
-			{ m: "hi" },
-		);
-		const body = JSON.stringify(keysResponse(SENDER_ID, senderKeys));
-		const fetchSpy = vi.fn(
-			async () =>
-				new Response(body, {
-					status: 200,
-					headers: { "content-type": "application/json" },
-				}),
-		);
-		vi.stubGlobal("fetch", fetchSpy);
-		const client = new HttpClient({
-			apiUrl: "https://api.test",
-			tokenFn: async () => "token",
-		});
-
-		for (let i = 0; i < 2; i++) {
-			const result = await decryptMessage(
-				dir,
-				RECIPIENT_ID,
-				encrypted.encrypted_payload,
-				client,
-				SENDER_ID,
+		if (consumer === "fetchAgentKeys") {
+			await expect(fetchAgentKeys(client, ctx.agent.id)).rejects.toThrow(
+				KeyChainError,
 			);
-			expect(result.verified).toBe(true);
+			expect(client.keyCache.get(ctx.agent.id)).toBeUndefined();
+		} else if (consumer === "fetchRecipientKeys") {
+			await expect(fetchRecipientKeys(client, ctx.agent.id)).rejects.toThrow(
+				"recipient key chain invalid",
+			);
+		} else {
+			const sigCtx = messageCtx();
+			const env = envelopeFor(ctx.agent, sigCtx);
+			const result = await verifyEnvelopeSender(
+				env,
+				client as unknown as HttpClient,
+				ctx.agent.id,
+				sigCtx,
+			);
+			expect(result).toEqual({ verified: false, verificationStatus: "invalid" });
 		}
-		expect(fetchSpy).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("pins", () => {
+	it("refuses an own-org agent served by a different org", async () => {
+		const worldA = new World();
+		const worldB = new World();
+		const id = randomUUID();
+		worldA.addAgent({ id });
+		worldB.addAgent({ id });
+		const client = worldB.client();
+		const pins = pinsFor(client);
+		pins.ownOrgId = worldA.org.orgId;
+		pins.ownAgentIds.add(id);
+
+		await expect(fetchAgentKeys(client, id)).rejects.toThrow(KeyChainError);
 	});
 
-	it("refetches once past a stale cached key, then verifies and reports the change", async () => {
-		// The sender rotated: it signs with the CURRENT on-disk key, but the cache
-		// still holds a stale (different) signing key.
-		const stale = generateAgentKeys();
-		const encrypted = await encryptMessage(
-			dir,
-			SENDER_ID,
-			recipientKeys.encryption.publicKey,
-			{ m: "rotated" },
-		);
-		const cache = new TtlCache<AgentKeysResponse>();
-		cache.set(SENDER_ID, keysResponse(SENDER_ID, stale));
-		const get = vi.fn().mockResolvedValue(keysResponse(SENDER_ID, senderKeys));
-		const client = { get, post: vi.fn(), keyCache: cache };
+	it("refuses a non-canonical expected agent id before any comparison", async () => {
+		const world = new World();
+		const agent = world.addAgent();
+		const response = (await world
+			.client()
+			.get(`/agents/${agent.id}/keys`)) as AgentKeysResponse;
+		const upper = agent.id.toUpperCase();
 
-		const result = await decryptMessage(
-			dir,
-			RECIPIENT_ID,
-			encrypted.encrypted_payload,
-			client as never,
-			SENDER_ID,
+		expect(() =>
+			verifyKeyChain(
+				{ ...response, agent_id: upper },
+				{ agentId: upper },
+				pinsFor(world.client()),
+			),
+		).toThrow(expect.objectContaining({ fault: "malformed" }));
+	});
+
+	it("refuses an agent whose org moved after the first response", async () => {
+		const worldA = new World();
+		const worldB = new World();
+		const id = randomUUID();
+		worldA.addAgent({ id });
+		worldB.addAgent({ id });
+		const client = switchingClient(worldA.client(), worldB.client());
+
+		await fetchAgentKeys(client, id);
+		client.flip();
+
+		await expect(
+			fetchAgentKeys(client, id, { bypassCache: true }),
+		).rejects.toThrow(KeyChainError);
+	});
+
+	it("keeps an agent's org pinned across clients that share one pin set", async () => {
+		const worldA = new World();
+		const worldB = new World();
+		const id = randomUUID();
+		worldA.addAgent({ id });
+		worldB.addAgent({ id });
+		const first = worldA.client();
+		const second = worldB.client();
+		sharePins(second, pinsFor(first));
+
+		await fetchRecipientKeys(first, id);
+
+		await expect(fetchRecipientKeys(second, id)).rejects.toThrow(KeyChainError);
+	});
+
+	it("lets a client with its own pin set accept the re-homed agent", async () => {
+		const worldA = new World();
+		const worldB = new World();
+		const id = randomUUID();
+		worldA.addAgent({ id });
+		worldB.addAgent({ id });
+
+		await fetchRecipientKeys(worldA.client(), id);
+
+		await expect(fetchRecipientKeys(worldB.client(), id)).resolves.toBeDefined();
+	});
+
+	it("refuses a current-generation rollback but accepts the history read", async () => {
+		const world = new World();
+		const id = randomUUID();
+		world.addAgent({ id, gen: 1 });
+		world.addAgent({ id, gen: 2 });
+		const gen1 = world.agents.get(id)!.find((a) => a.gen === 1)!;
+		const base = world.client();
+		let serveGen1 = false;
+		const client = {
+			keyCache: base.keyCache,
+			get: async (
+				path: string,
+				params?: Record<string, string | number | boolean>,
+			) => {
+				if (!serveGen1) return base.get(path, params);
+				base.served.push(params ? `${path}?gen=${String(params["gen"])}` : path);
+				return structuredClone(gen1.response);
+			},
+		};
+
+		await fetchAgentKeys(client, id);
+		serveGen1 = true;
+
+		await expect(
+			fetchAgentKeys(client, id, { bypassCache: true }),
+		).rejects.toThrow(KeyChainError);
+
+		const history = await fetchAgentKeys(client, id, { gen: 1 });
+		expect(history.keys.keyGen).toBe(1);
+	});
+});
+
+describe("verifyEnvelopeSender", () => {
+	it("refetches a cached copy that fell behind a pin another read advanced", async () => {
+		const world = new World();
+		const id = randomUUID();
+		world.addAgent({ id, gen: 0 });
+		const client = world.client();
+		await fetchAgentKeys(client, id);
+		const second = world.addAgent({ id, gen: 1 });
+		await fetchRecipientKeys(client, id);
+		client.served.length = 0;
+
+		const result = await verifyEnvelopeSender(
+			envelopeFor(second, messageCtx(id)),
+			client as unknown as HttpClient,
+			id,
+			messageCtx(id),
 		);
-		expect(result.verified).toBe(true);
+
 		expect(result.verificationStatus).toBe("verified");
-		expect(result.keyChanged).toEqual({
-			agentId: SENDER_ID,
-			previousFingerprint: fingerprint(stale),
-			currentFingerprint: fingerprint(senderKeys),
+		expect(client.served).toHaveLength(1);
+	});
+
+	it("serves a row stamped after the cached fetch without a second key read", async () => {
+		const world = new World();
+		const agent = world.addAgent();
+		const client = world.client();
+		const ctx = messageCtx();
+
+		const verify = (createdAt: string) =>
+			verifyEnvelopeSender(
+				envelopeFor(agent, ctx),
+				client as unknown as HttpClient,
+				agent.id,
+				ctx,
+				createdAt,
+			);
+		const first = await verify("2025-06-01T00:00:00.000Z");
+		const second = await verify("2099-01-01T00:00:00.000Z");
+
+		expect(first.verified).toBe(true);
+		expect(second.verified).toBe(true);
+		expect(client.served).toHaveLength(1);
+	});
+
+	it("verifies a signature bound to the recipient", async () => {
+		const world = new World();
+		const agent = world.addAgent();
+		const client = world.client();
+		const ctx = messageCtx();
+
+		const result = await verifyEnvelopeSender(
+			envelopeFor(agent, ctx),
+			client as unknown as HttpClient,
+			agent.id,
+			ctx,
+		);
+
+		expect(result).toEqual({ verified: true, verificationStatus: "verified" });
+	});
+
+	it("reports invalid when the signature is bound to another recipient", async () => {
+		const world = new World();
+		const agent = world.addAgent();
+		const client = world.client();
+
+		const result = await verifyEnvelopeSender(
+			envelopeFor(agent, messageCtx()),
+			client as unknown as HttpClient,
+			agent.id,
+			messageCtx(),
+		);
+
+		expect(result.verified).toBe(false);
+		expect(result.verificationStatus).toBe("invalid");
+	});
+
+	it("reports sender-mismatch without any fetch", async () => {
+		const world = new World();
+		const agent = world.addAgent();
+		const client = world.client();
+		const ctx = messageCtx();
+
+		const result = await verifyEnvelopeSender(
+			envelopeFor(agent, ctx),
+			client as unknown as HttpClient,
+			randomUUID(),
+			ctx,
+		);
+
+		expect(result).toEqual({
+			verified: false,
+			verificationStatus: "sender-mismatch",
 		});
-		expect(get).toHaveBeenCalledTimes(1); // exactly one bypass refetch
-		// Cache refreshed to the current key.
-		expect(cache.get(SENDER_ID)).toEqual(keysResponse(SENDER_ID, senderKeys));
+		expect(client.served.length).toBe(0);
+	});
+
+	it.each([
+		["a bare agent id", (id: string) => id],
+		["a non-numeric generation", (id: string) => `rine:${id}#x`],
+		["an upper-case agent id", (id: string) => `rine:${id.toUpperCase()}#0`],
+		["an empty kid", () => ""],
+	])("reports sender-mismatch without any fetch for %s as the kid", async (_label, malformed) => {
+		const world = new World();
+		const agent = world.addAgent();
+		const client = world.client();
+		const ctx = messageCtx();
+
+		const result = await verifyEnvelopeSender(
+			{ ...envelopeFor(agent, ctx), kid: malformed(agent.id) },
+			client as unknown as HttpClient,
+			agent.id,
+			ctx,
+		);
+
+		expect(result).toEqual({
+			verified: false,
+			verificationStatus: "sender-mismatch",
+		});
+		expect(client.served.length).toBe(0);
+	});
+
+	it("verifies a superseded generation for a row stamped before it was superseded", async () => {
+		const world = new World();
+		const id = randomUUID();
+		const gen0 = world.addAgent({ id, gen: 0 });
+		world.addAgent({ id, gen: 1 });
+		const client = world.client();
+		const ctx = messageCtx();
+
+		const result = await verifyEnvelopeSender(
+			envelopeFor(gen0, ctx),
+			client as unknown as HttpClient,
+			id,
+			ctx,
+			"2025-12-31T23:59:59.000Z",
+		);
+
+		expect(result.verified).toBe(true);
+		expect(client.served).toContain(`/agents/${id}/keys?gen=0`);
+	});
+
+	it("verifies a row stamped exactly at the superseded instant", async () => {
+		const world = new World();
+		const id = randomUUID();
+		const gen0 = world.addAgent({ id, gen: 0 });
+		world.addAgent({ id, gen: 1 });
+		const ctx = messageCtx();
+
+		const result = await verifyEnvelopeSender(
+			envelopeFor(gen0, ctx),
+			world.client() as unknown as HttpClient,
+			id,
+			ctx,
+			SUPERSEDED_AT,
+		);
+
+		expect(result.verified).toBe(true);
+	});
+
+	it.each([
+		["a row stamped after it was superseded", "2026-01-01T00:00:00.001Z"],
+		["a row stamped a microsecond after it", "2026-01-01T00:00:00.000001Z"],
+		["a row with no created_at", undefined],
+		["a row with an unreadable created_at", "not a time"],
+	])("refuses a superseded generation for %s", async (_name, createdAt) => {
+		const world = new World();
+		const id = randomUUID();
+		const gen0 = world.addAgent({ id, gen: 0 });
+		world.addAgent({ id, gen: 1 });
+		const ctx = messageCtx();
+
+		const result = await verifyEnvelopeSender(
+			envelopeFor(gen0, ctx),
+			world.client() as unknown as HttpClient,
+			id,
+			ctx,
+			createdAt,
+		);
+
+		expect(result).toEqual({ verified: false, verificationStatus: "invalid" });
+	});
+
+	it("refuses a history read that carries no superseded_at", async () => {
+		const world = new World();
+		const id = randomUUID();
+		const gen0 = world.addAgent({ id, gen: 0 });
+		world.addAgent({ id, gen: 1 });
+		const ctx = messageCtx();
+		const client = world.client(({ superseded_at: _dropped, ...rest }: AgentKeysResponse & {
+			superseded_at?: string;
+		}) => rest);
+
+		const result = await verifyEnvelopeSender(
+			envelopeFor(gen0, ctx),
+			client as unknown as HttpClient,
+			id,
+			ctx,
+			"2025-01-01T00:00:00.000Z",
+		);
+
+		expect(result.verificationStatus).toBe("invalid");
+	});
+
+	it("needs no created_at for the sender's current generation", async () => {
+		const world = new World();
+		const id = randomUUID();
+		const gen1 = world.addAgent({ id, gen: 1 });
+		const ctx = messageCtx();
+
+		const result = await verifyEnvelopeSender(
+			envelopeFor(gen1, ctx),
+			world.client() as unknown as HttpClient,
+			id,
+			ctx,
+		);
+
+		expect(result.verified).toBe(true);
+	});
+
+	it("does not re-verify a repeated key and stops after one refetch", async () => {
+		const world = new World();
+		const id = randomUUID();
+		world.addAgent({ id, gen: 0 });
+		const client = world.client();
+		await fetchAgentKeys(client, id);
+		const ctx = messageCtx();
+		const imposter = world.addAgent();
+		const env: InnerEnvelope = {
+			kid: signingKid(id, 0),
+			signature: signMessage(
+				imposter.derived.ed25519.privateKey,
+				ctx,
+				new TextEncoder().encode("spoof"),
+			),
+			payload: new TextEncoder().encode("spoof"),
+		};
+
+		const result = await verifyEnvelopeSender(
+			env,
+			client as unknown as HttpClient,
+			id,
+			ctx,
+		);
+
+		expect(result.verified).toBe(false);
+		expect(result.verificationStatus).toBe("invalid");
+		expect(result.keyChanged).toBeUndefined();
+		expect(client.served.length).toBe(2);
 	});
 
 	it("reports the key change even when the replacement key also fails", async () => {
-		// A rotation that does not rescue the signature is still a rotation the
-		// recipient should be told about — the signal is about the key, not the
-		// verdict.
-		const cached = generateAgentKeys();
-		const replacement = generateAgentKeys();
-		const encrypted = await encryptMessage(
-			dir,
-			SENDER_ID,
-			recipientKeys.encryption.publicKey,
-			{ m: "spoof" },
-		);
-		const cache = new TtlCache<AgentKeysResponse>();
-		cache.set(SENDER_ID, keysResponse(SENDER_ID, cached));
-		const get = vi.fn().mockResolvedValue(keysResponse(SENDER_ID, replacement));
-		const client = { get, post: vi.fn(), keyCache: cache };
+		const world = new World();
+		const id = randomUUID();
+		const gen0 = world.addAgent({ id, gen: 0 });
+		const client = world.client();
+		await fetchAgentKeys(client, id);
+		const gen1 = world.addAgent({ id, gen: 1 });
+		const ctx = messageCtx();
+		const imposter = world.addAgent();
+		const env: InnerEnvelope = {
+			kid: signingKid(id, 1),
+			signature: signMessage(
+				imposter.derived.ed25519.privateKey,
+				ctx,
+				new TextEncoder().encode("spoof"),
+			),
+			payload: new TextEncoder().encode("spoof"),
+		};
 
-		const result = await decryptMessage(
-			dir,
-			RECIPIENT_ID,
-			encrypted.encrypted_payload,
-			client as never,
-			SENDER_ID,
+		const result = await verifyEnvelopeSender(
+			env,
+			client as unknown as HttpClient,
+			id,
+			ctx,
 		);
+
 		expect(result.verified).toBe(false);
 		expect(result.verificationStatus).toBe("invalid");
 		expect(result.keyChanged).toEqual({
-			agentId: SENDER_ID,
-			previousFingerprint: fingerprint(cached),
-			currentFingerprint: fingerprint(replacement),
+			agentId: id,
+			previousFingerprint: fingerprint(gen0.derived.ed25519.publicKey),
+			currentFingerprint: fingerprint(gen1.derived.ed25519.publicKey),
 		});
-		expect(get).toHaveBeenCalledTimes(1);
+		expect(client.served.length).toBe(2);
 	});
 
-	it("reports no change, and stops, when the refetch returns the same key", async () => {
-		const imposter = generateAgentKeys();
-		const encrypted = await encryptMessage(
-			dir,
-			SENDER_ID,
-			recipientKeys.encryption.publicKey,
-			{ m: "spoof" },
-		);
-		const cache = new TtlCache<AgentKeysResponse>();
-		cache.set(SENDER_ID, keysResponse(SENDER_ID, imposter));
-		const get = vi.fn().mockResolvedValue(keysResponse(SENDER_ID, imposter));
-		const client = { get, post: vi.fn(), keyCache: cache };
-
-		const result = await decryptMessage(
-			dir,
-			RECIPIENT_ID,
-			encrypted.encrypted_payload,
-			client as never,
-			SENDER_ID,
-		);
-		expect(result.verified).toBe(false);
-		expect(result.verificationStatus).toBe("invalid");
-		expect(result.keyChanged).toBeUndefined();
-		// One bounded refetch and then it stops: retrying until something verifies
-		// would let whoever answers the key endpoint keep guessing.
-		expect(get).toHaveBeenCalledTimes(1);
-	});
-
-	it("does not double-fetch when a freshly-fetched key is genuinely wrong", async () => {
-		const imposter = generateAgentKeys();
-		const encrypted = await encryptMessage(
-			dir,
-			SENDER_ID,
-			recipientKeys.encryption.publicKey,
-			{ m: "spoof" },
-		);
-		const get = vi.fn().mockResolvedValue(keysResponse(SENDER_ID, imposter));
-		const client = {
-			get,
-			post: vi.fn(),
-			keyCache: new TtlCache<AgentKeysResponse>(),
+	it("does not refetch a fresh fetch that fails", async () => {
+		const world = new World();
+		const id = randomUUID();
+		world.addAgent({ id, gen: 0 });
+		const client = world.client();
+		const ctx = messageCtx();
+		const imposter = world.addAgent();
+		const env: InnerEnvelope = {
+			kid: signingKid(id, 0),
+			signature: signMessage(
+				imposter.derived.ed25519.privateKey,
+				ctx,
+				new TextEncoder().encode("spoof"),
+			),
+			payload: new TextEncoder().encode("spoof"),
 		};
 
-		const result = await decryptMessage(
-			dir,
-			RECIPIENT_ID,
-			encrypted.encrypted_payload,
-			client as never,
-			SENDER_ID,
+		const result = await verifyEnvelopeSender(
+			env,
+			client as unknown as HttpClient,
+			id,
+			ctx,
 		);
+
 		expect(result.verified).toBe(false);
 		expect(result.verificationStatus).toBe("invalid");
 		expect(result.keyChanged).toBeUndefined();
-		expect(get).toHaveBeenCalledTimes(1); // fresh miss → fetched once, not refetched
+		expect(client.served.length).toBe(1);
 	});
 
-	it("keeps the send path off the cache, so a peer's rotation is sealed to at once", async () => {
-		// A seal has no failure signal that could correct it later, so it must never
-		// reuse a cached key. This is the asymmetry with the verify path above.
-		const stale = generateAgentKeys();
-		const cache = new TtlCache<AgentKeysResponse>();
-		cache.set(RECIPIENT_ID, keysResponse(RECIPIENT_ID, stale));
-		const get = vi
-			.fn()
-			.mockResolvedValue(keysResponse(RECIPIENT_ID, recipientKeys));
-		const client = { get, post: vi.fn(), keyCache: cache };
+	it("refetches once past a mid-TTL rotation and reports the key change", async () => {
+		const world = new World();
+		const id = randomUUID();
+		const gen0 = world.addAgent({ id, gen: 0 });
+		const client = world.client();
+		await fetchAgentKeys(client, id);
+		const gen1 = world.addAgent({ id, gen: 1 });
+		const ctx = messageCtx();
 
-		const first = await fetchRecipientKeys(client as never, RECIPIENT_ID);
-		const second = await fetchRecipientKeys(client as never, RECIPIENT_ID);
+		const result = await verifyEnvelopeSender(
+			envelopeFor(gen1, ctx),
+			client as unknown as HttpClient,
+			id,
+			ctx,
+		);
 
-		expect(first.encryption).toEqual(recipientKeys.encryption.publicKey);
-		expect(second.encryption).toEqual(recipientKeys.encryption.publicKey);
-		expect(get).toHaveBeenCalledTimes(2);
-		// It does not write the cache either — the verify-side entry is untouched.
-		expect(cache.get(RECIPIENT_ID)).toEqual(keysResponse(RECIPIENT_ID, stale));
+		expect(result.verified).toBe(true);
+		expect(result.verificationStatus).toBe("verified");
+		expect(result.keyChanged).toEqual({
+			agentId: id,
+			previousFingerprint: fingerprint(gen0.derived.ed25519.publicKey),
+			currentFingerprint: fingerprint(gen1.derived.ed25519.publicKey),
+		});
+		expect(client.served.length).toBe(2);
 	});
 });

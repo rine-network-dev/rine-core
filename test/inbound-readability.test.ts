@@ -29,14 +29,9 @@ import {
 	loadSenderKeyStates,
 	saveSenderKeyState,
 } from "../src/crypto/index.js";
-import type { AgentKeys } from "../src/crypto/keys.js";
-import {
-	generateAgentKeys,
-	saveAgentKeys,
-	toBase64Url,
-} from "../src/crypto/keys.js";
+import { toBase64Url } from "../src/crypto/keys.js";
 import type { VerificationStatus } from "../src/crypto/message.js";
-import { encryptMessage, getAgentPublicKeys } from "../src/crypto/message.js";
+import { encryptMessage } from "../src/crypto/message.js";
 import { MLS_ERR_GROUP_INACTIVE } from "../src/crypto/mls-errors.js";
 import { noMlsStateError } from "../src/crypto/mls.js";
 import { generateSenderKey } from "../src/crypto/sender-keys.js";
@@ -46,43 +41,49 @@ import {
 	openInbound,
 	probeReadability,
 } from "../src/inbound-readability.js";
+import { World, type WorldAgent } from "./crypto/world.js";
 
 const READER_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
 const PEER_ID = "b2c3d4e5-f6a7-8901-bcde-f12345678901";
 const THIRD_ID = "e5f6a7b8-c9d0-1234-efab-345678901234";
 const GROUP_ID = "c3d4e5f6-a7b8-9012-cdef-123456789012";
 
+/** The recipient's chain-verified encryption keys, as `fetchRecipientKeys` returns them. */
+function recipientKeysOf(agent: WorldAgent) {
+	return {
+		encryption: agent.derived.x25519.publicKey,
+		pqEncryption: agent.derived.mlKem768.publicKey,
+	};
+}
+
 /**
  * A client answering the three reads this ladder can make: the peer's published
- * keys (the verify), and — on the group path's one-shot recovery — the roster
- * and the inbox listing. `inbox` empty is the recovery finding nothing, which is
- * what turns a missing key into a verdict.
+ * keys (the verify, chain-verified through the world), and — on the group path's
+ * one-shot recovery — the roster and the inbox listing. `inbox` empty is the
+ * recovery finding nothing, which is what turns a missing key into a verdict.
  */
-function makeClient(peerKeys: AgentKeys, inbox: unknown[] = []) {
+function makeClient(world: World, inbox: unknown[] = []) {
+	const base = world.client();
 	return {
-		get: vi.fn().mockImplementation((path: string) => {
-			if (path === `/groups/${GROUP_ID}/members`) {
-				return Promise.resolve({ items: [{ agent_id: PEER_ID }] });
-			}
-			if (path === `/agents/${READER_ID}/messages`) {
-				return Promise.resolve({ items: inbox });
-			}
-			if (path.endsWith("/keys")) {
-				return Promise.resolve({
-					agent_id: PEER_ID,
-					...getAgentPublicKeys("", PEER_ID, peerKeys),
-				});
-			}
-			return Promise.reject(new Error(`Unexpected GET: ${path}`));
-		}),
+		get: vi.fn(
+			async (path: string, params?: Record<string, string | number | boolean>) => {
+				if (path === `/groups/${GROUP_ID}/members`) {
+					return { items: [{ agent_id: PEER_ID }] };
+				}
+				if (path === `/agents/${READER_ID}/messages`) {
+					return { items: inbox };
+				}
+				return base.get(path, params);
+			},
+		),
 		post: vi.fn(),
 	};
 }
 
 describe("openInbound / probeReadability", () => {
 	let dir: string;
-	let readerKeys: AgentKeys;
-	let peerKeys: AgentKeys;
+	let world: World;
+	let reader: WorldAgent;
 	let client: ReturnType<typeof makeClient>;
 
 	/** One opened envelope's arguments, with the field under test overridden. */
@@ -95,7 +96,7 @@ describe("openInbound / probeReadability", () => {
 			groupId: null,
 			messageType: "rine.v1.message",
 			encryptedPayload: "",
-			encryptionVersion: "hpke-hybrid-v1",
+			encryptionVersion: "hpke-hybrid-v2",
 			...over,
 		};
 	}
@@ -105,7 +106,8 @@ describe("openInbound / probeReadability", () => {
 		const sealed = await encryptMessage(
 			dir,
 			PEER_ID,
-			readerKeys.encryption.publicKey,
+			READER_ID,
+			recipientKeysOf(reader),
 			payload,
 		);
 		return sealed.encrypted_payload;
@@ -113,11 +115,11 @@ describe("openInbound / probeReadability", () => {
 
 	beforeEach(() => {
 		dir = fs.mkdtempSync(join(tmpdir(), "rine-readability-test-"));
-		readerKeys = generateAgentKeys();
-		saveAgentKeys(dir, READER_ID, readerKeys);
-		peerKeys = generateAgentKeys();
-		saveAgentKeys(dir, PEER_ID, peerKeys);
-		client = makeClient(peerKeys);
+		world = new World();
+		reader = world.addAgent({ id: READER_ID });
+		world.save(dir, reader);
+		world.save(dir, world.addAgent({ id: PEER_ID }));
+		client = makeClient(world);
 	});
 	afterEach(() => fs.rmSync(dir, { recursive: true }));
 
@@ -140,6 +142,15 @@ describe("openInbound / probeReadability", () => {
 		);
 
 		expect(verdict.kind).toBe("not-ciphertext");
+	});
+
+	it("test_openInbound_when_the_version_is_a_retired_hybrid_then_not_ciphertext", async () => {
+		for (const encryptionVersion of ["hpke-v1", "hpke-hybrid-v1"]) {
+			const verdict = await openInbound(
+				args({ encryptionVersion, encryptedPayload: await sealedDm({ a: 1 }) }),
+			);
+			expect(verdict.kind).toBe("not-ciphertext");
+		}
 	});
 
 	it("test_openInbound_when_the_payload_is_empty_then_not_ciphertext", async () => {
@@ -222,7 +233,7 @@ describe("openInbound / probeReadability", () => {
 		expect(verdict.verificationStatus).toBe("sender-mismatch");
 		// The verdict and the kid come back; the content does not.
 		expect(verdict.result?.plaintext).toBeUndefined();
-		expect(verdict.result?.senderKid).toBe(`rine:${PEER_ID}`);
+		expect(verdict.result?.senderKid).toBe(`rine:${PEER_ID}#0`);
 	});
 
 	it("test_openInbound_when_a_group_sender_key_never_arrives_then_sealed_names_the_key", async () => {
@@ -318,7 +329,8 @@ describe("openInbound's classification of a thrown group failure", () => {
 
 	beforeEach(() => {
 		dir = fs.mkdtempSync(join(tmpdir(), "rine-readability-classify-"));
-		saveAgentKeys(dir, READER_ID, generateAgentKeys());
+		const world = new World();
+		world.save(dir, world.addAgent({ id: READER_ID }));
 	});
 	afterEach(() => {
 		fs.rmSync(dir, { recursive: true });

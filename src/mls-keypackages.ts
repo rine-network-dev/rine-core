@@ -1,8 +1,4 @@
-import {
-  KEY_PACKAGE_LOW_WATER,
-  KEY_PACKAGE_MAX_BATCH,
-  KEY_PACKAGE_TARGET,
-} from "@rine-network/mls";
+import { KEY_PACKAGE_TARGET } from "@rine-network/mls";
 import { mlsToBase64, uploadKeyPackages } from "./crypto/mls-api.js";
 import { openMlsClient } from "./crypto/mls.js";
 import { RineApiError } from "./errors.js";
@@ -16,16 +12,6 @@ import { cutoverMlsKeyPackages } from "./mls-cutover.js";
  */
 /** Inventory an agent is topped back up to when replenishment fires. */
 export const MLS_KEY_PACKAGE_TARGET = KEY_PACKAGE_TARGET;
-/** Inventory below which replenishment fires. Sitting *at* the mark is a no-op. */
-export const MLS_KEY_PACKAGE_LOW_WATER = KEY_PACKAGE_LOW_WATER;
-/**
- * Largest batch one publish call may mint. The cap is client-side on purpose:
- * a full post-quantum top-up is hundreds of kilobytes of request body and
- * neither the server nor the proxy in front of it declares a body limit, so
- * this is the only lever. Over the cap is a typed refusal, never a silently
- * truncated batch.
- */
-export const MLS_KEY_PACKAGE_MAX_BATCH = KEY_PACKAGE_MAX_BATCH;
 
 /**
  * Mint and upload MLS key packages for an agent, enabling other agents to add
@@ -37,23 +23,23 @@ export const MLS_KEY_PACKAGE_MAX_BATCH = KEY_PACKAGE_MAX_BATCH;
  * server never received only wastes a file.
  */
 export async function publishMlsKeyPackages(
-  configDir: string,
-  agentId: string,
-  client: HttpClient,
-  count = MLS_KEY_PACKAGE_TARGET,
+	configDir: string,
+	agentId: string,
+	client: Pick<HttpClient, "post">,
+	count = MLS_KEY_PACKAGE_TARGET,
 ): Promise<{ stored: number }> {
-  const mls = openMlsClient(configDir, agentId);
-  const packages = mls.generateKeyPackages(count).map(mlsToBase64);
-  return uploadKeyPackages(client, agentId, packages);
+	const mls = openMlsClient(configDir, agentId);
+	const packages = mls.generateKeyPackages(count).map(mlsToBase64);
+	return uploadKeyPackages(client, agentId, packages);
 }
 
 export interface MlsKeyPackageStatus {
-  /** Unconsumed key packages held before this call. */
-  available: number;
-  /** Key packages minted and uploaded by this call; 0 means no-op. */
-  published: number;
-  /** Server inventory is at its cap — a no-op success, not a failure. */
-  capReached: boolean;
+	/** Unconsumed key packages held before this call. */
+	available: number;
+	/** Key packages minted and uploaded by this call; 0 means no-op. */
+	published: number;
+	/** Server inventory is at its cap — a no-op success, not a failure. */
+	capReached: boolean;
 }
 
 /**
@@ -81,35 +67,35 @@ export interface MlsKeyPackageStatus {
  * pool would stay unreadable to every peer.
  */
 export async function ensureMlsKeyPackages(
-  configDir: string,
-  agentId: string,
-  client: HttpClient,
+	configDir: string,
+	agentId: string,
+	client: HttpClient,
 ): Promise<MlsKeyPackageStatus> {
-  const cutover = await cutoverMlsKeyPackages(configDir, agentId, client);
-  if (cutover) {
-    return { available: 0, published: cutover.stored, capReached: false };
-  }
+	const cutover = await cutoverMlsKeyPackages(configDir, agentId, client);
+	if (cutover) {
+		return { available: 0, published: cutover.stored, capReached: false };
+	}
 
-  const mls = openMlsClient(configDir, agentId);
-  const available = mls.keyPackageCount();
-  const batch = mls.replenishKeyPackages();
-  if (batch.length === 0) return { available, published: 0, capReached: false };
+	const mls = openMlsClient(configDir, agentId);
+	const available = mls.keyPackageCount();
+	const batch = mls.replenishKeyPackages();
+	if (batch.length === 0) return { available, published: 0, capReached: false };
 
-  try {
-    const { stored } = await uploadKeyPackages(
-      client,
-      agentId,
-      batch.map(mlsToBase64),
-    );
-    return { available, published: stored, capReached: false };
-  } catch (err) {
-    // The server refuses an upload that would exceed its inventory cap. Being
-    // at the cap means the agent already has far more than enough packages, so
-    // this is a no-op success rather than an error.
-    if (isInventoryFull(err))
-      return { available, published: 0, capReached: true };
-    throw err;
-  }
+	try {
+		const { stored } = await uploadKeyPackages(
+			client,
+			agentId,
+			batch.map(mlsToBase64),
+		);
+		return { available, published: stored, capReached: false };
+	} catch (err) {
+		// The server refuses an upload that would exceed its inventory cap. Being
+		// at the cap means the agent already has far more than enough packages, so
+		// this is a no-op success rather than an error.
+		if (isInventoryFull(err))
+			return { available, published: 0, capReached: true };
+		throw err;
+	}
 }
 
 /**
@@ -125,22 +111,32 @@ export async function ensureMlsKeyPackages(
  * surface topping an agent up outside an MLS verb.
  */
 export async function replenishMlsKeyPackages(
-  configDir: string,
-  agentId: string,
-  client: HttpClient,
+	configDir: string,
+	agentId: string,
+	client: HttpClient,
 ): Promise<void> {
-  try {
-    await ensureMlsKeyPackages(configDir, agentId, client);
-  } catch {
-    // retried on the next MLS operation
-  }
+	try {
+		await ensureMlsKeyPackages(configDir, agentId, client);
+	} catch {
+		// retried on the next MLS operation
+	}
 }
+
+/** The server's error code for an upload refused at the inventory cap. */
+const INVENTORY_FULL_CODE = "key_package_inventory_full";
 
 /**
  * The server refusing an upload that would push this agent past its per-agent
  * inventory cap. A no-op success wherever it is caught: an agent at the cap has
  * far more key packages than any peer can claim.
+ *
+ * The error code decides; the detail's prose is the fallback for a server that
+ * answers the refusal without one. The Python twin is
+ * `rine._mls.is_inventory_full`.
  */
 export function isInventoryFull(err: unknown): boolean {
-  return err instanceof RineApiError && /inventory full/i.test(err.detail);
+	return (
+		err instanceof RineApiError &&
+		(err.code === INVENTORY_FULL_CODE || /inventory full/i.test(err.detail))
+	);
 }

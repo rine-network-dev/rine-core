@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cacheToken } from "../src/config.js";
 import { RineApiError } from "../src/errors.js";
 import { HttpClient, fetchOAuthToken, getOrRefreshToken } from "../src/http.js";
+import { principalString } from "../src/principal.js";
+import { TEST_SIGNER } from "./signer-fixture.js";
 
 interface FakeResponseSpec {
 	status: number;
@@ -32,6 +34,15 @@ function stubFetchSequence(specs: FakeResponseSpec[]) {
 	return fn;
 }
 
+/** The `client_assertion` claim payload of the `n`th fetch call's form body. */
+function assertionPayload(fetchFn: ReturnType<typeof vi.fn>, n: number): unknown {
+	const init = fetchFn.mock.calls[n]?.[1] as RequestInit;
+	const body = new URLSearchParams(init.body as string);
+	const assertion = body.get("client_assertion") as string;
+	const [, payload] = assertion.split(".");
+	return JSON.parse(Buffer.from(payload as string, "base64url").toString("utf-8"));
+}
+
 const TOKEN_OK: FakeResponseSpec = {
 	status: 200,
 	body: { access_token: "fresh", expires_in: 3600 },
@@ -49,7 +60,7 @@ describe("fetchOAuthToken 429 retry", () => {
 			{ status: 429, retryAfter: "5" },
 			TOKEN_OK,
 		]);
-		const p = fetchOAuthToken("https://api", "id", "secret");
+		const p = fetchOAuthToken("https://api", TEST_SIGNER);
 		await vi.advanceTimersByTimeAsync(0); // first fetch resolves → enters sleep(5s)
 		expect(fetchFn).toHaveBeenCalledTimes(1);
 		await vi.advanceTimersByTimeAsync(4999);
@@ -63,7 +74,7 @@ describe("fetchOAuthToken 429 retry", () => {
 		vi.useFakeTimers();
 		const fetchFn = stubFetchSequence([{ status: 429 }, TOKEN_OK]);
 		// rng()=0.5, attempt 1 → ceiling 1000ms → 500ms backoff.
-		const p = fetchOAuthToken("https://api", "id", "secret", {
+		const p = fetchOAuthToken("https://api", TEST_SIGNER, {
 			rng: () => 0.5,
 		});
 		await vi.advanceTimersByTimeAsync(499);
@@ -80,7 +91,7 @@ describe("fetchOAuthToken 429 retry", () => {
 			{ status: 429, retryAfter: "1", body: { detail: "rate limited" } },
 			{ status: 429, retryAfter: "1", body: { detail: "rate limited" } },
 		]);
-		const p = fetchOAuthToken("https://api", "id", "secret");
+		const p = fetchOAuthToken("https://api", TEST_SIGNER);
 		const assertion = expect(p).rejects.toThrow(RineApiError);
 		await vi.runAllTimersAsync();
 		await assertion;
@@ -93,7 +104,7 @@ describe("fetchOAuthToken 429 retry", () => {
 			{ status: 429, retryAfter: "3600", body: { detail: "rate limited" } },
 			TOKEN_OK,
 		]);
-		const p = fetchOAuthToken("https://api", "id", "secret");
+		const p = fetchOAuthToken("https://api", TEST_SIGNER);
 		const assertion = expect(p).rejects.toThrow(RineApiError);
 		await vi.runAllTimersAsync();
 		await assertion;
@@ -110,7 +121,7 @@ describe("fetchOAuthToken 429 retry", () => {
 			{ status: 429, retryAfter: "20", body: { detail: "rate limited" } },
 			TOKEN_OK,
 		]);
-		const p = fetchOAuthToken("https://api", "id", "secret");
+		const p = fetchOAuthToken("https://api", TEST_SIGNER);
 		const assertion = expect(p).rejects.toThrow(RineApiError);
 		await vi.runAllTimersAsync();
 		await assertion;
@@ -125,10 +136,26 @@ describe("fetchOAuthToken 429 retry", () => {
 		const fetchFn = stubFetchSequence([
 			{ status: 400, body: { detail: "invalid_client" } },
 		]);
-		await expect(fetchOAuthToken("https://api", "bad", "bad")).rejects.toThrow(
+		await expect(fetchOAuthToken("https://api", TEST_SIGNER)).rejects.toThrow(
 			RineApiError,
 		);
 		expect(fetchFn).toHaveBeenCalledTimes(1);
+	});
+
+	it("test_fetchOAuthToken_when_retried_after_429_then_each_attempt_signs_a_fresh_jti", async () => {
+		// rng()=0 → zero backoff, so the retry needs no fake timers.
+		const fetchFn = stubFetchSequence([{ status: 429 }, TOKEN_OK]);
+		const result = await fetchOAuthToken("https://api", TEST_SIGNER, {
+			rng: () => 0,
+		});
+		expect(result.access_token).toBe("fresh");
+		expect(fetchFn).toHaveBeenCalledTimes(2);
+
+		const first = assertionPayload(fetchFn, 0) as { jti: string };
+		const second = assertionPayload(fetchFn, 1) as { jti: string };
+		expect(first.jti).not.toBe(second.jti);
+		expect(first.jti).toHaveLength(22);
+		expect(second.jti).toHaveLength(22);
 	});
 });
 
@@ -186,30 +213,20 @@ describe("getOrRefreshToken jittered margin (herd desync)", () => {
 
 	it("a larger refresh margin refreshes a near-expiry token that a smaller margin still trusts", async () => {
 		// Token has ~90s of life left. Margin 60 ⇒ still cached; margin 120 ⇒ refresh.
-		cacheToken(dir, "default", { access_token: "cached", expires_in: 90 });
+		cacheToken(dir, principalString(TEST_SIGNER.principal), {
+			access_token: "cached",
+			expires_in: 90,
+		});
 		stubFetchSequence([TOKEN_OK]);
-		const entry = { client_id: "id", client_secret: "secret" };
 
-		const small = await getOrRefreshToken(
-			dir,
-			"https://api",
-			entry,
-			"default",
-			{
-				refreshMargin: 60,
-			},
-		);
+		const small = await getOrRefreshToken(dir, "https://api", TEST_SIGNER, {
+			refreshMargin: 60,
+		});
 		expect(small).toBe("cached");
 
-		const large = await getOrRefreshToken(
-			dir,
-			"https://api",
-			entry,
-			"default",
-			{
-				refreshMargin: 120,
-			},
-		);
+		const large = await getOrRefreshToken(dir, "https://api", TEST_SIGNER, {
+			refreshMargin: 120,
+		});
 		expect(large).toBe("fresh");
 	});
 });

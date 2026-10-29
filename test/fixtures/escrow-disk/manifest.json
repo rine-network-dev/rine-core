@@ -1,0 +1,36 @@
+{
+  "markers": [
+    { "name": "10-0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a.gap", "epoch": 10, "fork": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a", "reason": "unreadable" },
+    { "name": "11-0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b.gap", "epoch": 11, "fork": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b", "reason": "agent_revoked" },
+    { "name": "4.gap", "epoch": 4, "reason": "refused" },
+    { "name": "5-07070707070707070707070707070707.gap", "epoch": 5, "fork": "07070707070707070707070707070707", "reason": "branch_revoked" },
+    { "name": "6.gap", "epoch": 6, "reason": "context_too_large" },
+    { "name": "7.gap", "epoch": 7, "reason": "too_many_leaves" },
+    { "name": "8.gap", "epoch": 8, "reason": "malformed" },
+    { "name": "9.gap", "epoch": 9, "reason": "queue_overflow" }
+  ],
+  "otherGroup": {
+    "id": "0a0a0a0a-0000-4000-8000-000000000000",
+    "markers": [{ "name": "3.gap", "epoch": 3, "reason": "refused" }]
+  },
+  "stray": [
+    "04.gap", "1234567890123456.gap", "12.gap", "13.gap", "14.gap.tmp",
+    "15-ABCDEFABCDEFABCDEFABCDEFABCDEFAB.gap", "16-0707.gap",
+    "4-07070707070707070707070707070707.bin", "notes.txt", "٤.gap"
+  ],
+  "sidecars": [
+    { "snapshot": "41.snapshot", "sidecar": "41.queued", "epoch": 41, "queued": 3, "dropped": 8, "firstLost": 31, "lastLost": 41 },
+    { "snapshot": "42.snapshot", "sidecar": "42.queued", "epoch": 42, "corrupt": true, "firstLost": 42, "lastLost": 42 }
+  ],
+  "forkSidecars": [
+    {
+      "snapshot": "43.snapshot", "sidecar": "43.queued", "epoch": 43, "queued": 3, "dropped": 0,
+      "fps": {
+        "41": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+        "42": "2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b",
+        "43": "3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c"
+      },
+      "firstLost": 41, "lastLost": 43
+    }
+  ]
+}

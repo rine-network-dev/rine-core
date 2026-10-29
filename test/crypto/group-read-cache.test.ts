@@ -28,31 +28,33 @@ import {
 	lookupGroupRead,
 	recordGroupRead,
 } from "../../src/crypto/group-read-cache.js";
-import {
-	type AgentKeys,
-	generateAgentKeys,
-	saveAgentKeys,
-	signingPublicKeyToJWK,
-	toBase64Url,
-} from "../../src/crypto/keys.js";
-import {
-	decryptGroupMessage,
-	encryptGroupMessage,
-	encryptMlsGroupMessage,
-} from "../../src/crypto/message.js";
+import { encryptGroupMessage } from "../../src/crypto/sender-key-seal.js";
+import { decryptGroupMessage } from "../../src/message-group.js";
+import { encryptMlsGroupMessage } from "../../src/message-mls.js";
 import { mlsGroupIdBytes, openMlsClient } from "../../src/crypto/mls.js";
 import {
 	markSenderKeysRetired,
 	saveSenderKeyState,
 } from "../../src/crypto/sender-keys-helpers.js";
 import { generateSenderKey } from "../../src/crypto/sender-keys.js";
-import { resetMlsCatchUpGate } from "../../src/mls-catchup.js";
+import { resetProcessGates } from "../../src/process-gate.js";
+import { World } from "./world.js";
 
 const SENDER_ID = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
 const READER_ID = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb";
 const IMPOSTOR_ID = "cccccccc-3333-4333-8333-cccccccccccc";
 const GROUP_ID = "dddddddd-4444-4444-8444-dddddddddddd";
 const TEXT = "the last thing anyone said";
+
+let world: World;
+
+/** A real org world with every party this file names seated in `dir`. */
+function setupWorld(dir: string): void {
+	world = new World();
+	for (const id of [SENDER_ID, READER_ID, IMPOSTOR_ID]) {
+		world.save(dir, world.addAgent({ id }));
+	}
+}
 
 /**
  * The reads a group decrypt makes: the signing-key lookup `verifyEnvelopeSender`
@@ -64,32 +66,19 @@ const TEXT = "the last thing anyone said";
  * the server resolves the actor by "the org's single active agent" and answers
  * 422 for any org with two or more.
  */
-function keyServer(published: Record<string, AgentKeys>) {
+function keyServer() {
+	const base = world.client();
 	const calls: { path: string; headers?: Record<string, string> }[] = [];
 	const get = vi.fn(
 		async (
 			path: string,
-			_params?: Record<string, string>,
+			params?: Record<string, string | number | boolean>,
 			headers?: Record<string, string>,
 		) => {
 			calls.push({ path, headers });
-			const match = /^\/agents\/([^/]+)\/keys$/.exec(path);
-			if (match) {
-				const keys = published[match[1] as string];
-				if (!keys) throw new Error(`unexpected GET ${path}`);
-				return {
-					agent_id: match[1],
-					signing_public_key: signingPublicKeyToJWK(keys.signing.publicKey),
-					encryption_public_key: {
-						kty: "OKP",
-						crv: "X25519",
-						x: toBase64Url(keys.encryption.publicKey),
-					},
-				};
-			}
 			if (path.endsWith("/mls/handshakes")) return { handshakes: [] };
 			if (path.endsWith("/mls/welcomes")) return { welcomes: [] };
-			throw new Error(`unexpected GET ${path}`);
+			return base.get(path, params);
 		},
 	);
 	return { get, post: vi.fn(), calls };
@@ -97,15 +86,11 @@ function keyServer(published: Record<string, AgentKeys>) {
 
 describe("reading a sender-key group message twice", () => {
 	let dir: string;
-	let sender: AgentKeys;
 	let ciphertext: string;
 
 	beforeEach(async () => {
 		dir = fs.mkdtempSync(join(tmpdir(), "rine-read-cache-"));
-		sender = generateAgentKeys();
-		saveAgentKeys(dir, SENDER_ID, sender);
-		saveAgentKeys(dir, READER_ID, generateAgentKeys());
-		saveAgentKeys(dir, IMPOSTOR_ID, generateAgentKeys());
+		setupWorld(dir);
 		const state = generateSenderKey(GROUP_ID, SENDER_ID);
 		// The sender's own copy, which `encryptGroupMessage` advances in place. A
 		// stand-in sender needs it as much as a real one does: the tail refuses a
@@ -126,7 +111,7 @@ describe("reading a sender-key group message twice", () => {
 	afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
 	function read(fromAgentId = SENDER_ID) {
-		const client = keyServer({ [SENDER_ID]: sender });
+		const client = keyServer();
 		return decryptGroupMessage(
 			dir,
 			READER_ID,
@@ -202,16 +187,12 @@ describe("reading a sender-key group message twice", () => {
 
 describe("reading an MLS group message twice", () => {
 	let dir: string;
-	let founder: AgentKeys;
 	let ciphertext: string;
 	let client: ReturnType<typeof keyServer>;
 
 	beforeEach(async () => {
 		dir = fs.mkdtempSync(join(tmpdir(), "rine-read-cache-mls-"));
-		founder = generateAgentKeys();
-		saveAgentKeys(dir, SENDER_ID, founder);
-		saveAgentKeys(dir, READER_ID, generateAgentKeys());
-		saveAgentKeys(dir, IMPOSTOR_ID, generateAgentKeys());
+		setupWorld(dir);
 
 		// A real two-member native group on the default suite: the reader is
 		// welcomed into the founder's tree, so the decrypt below spends a real
@@ -233,15 +214,15 @@ describe("reading an MLS group message twice", () => {
 		ciphertext = result.encrypted_payload;
 		// The eager catch-up's gate is per process, and these cases read the same
 		// (dir, agent, group) more than once.
-		resetMlsCatchUpGate();
+		resetProcessGates();
 	});
 	afterEach(() => {
 		fs.rmSync(dir, { recursive: true, force: true });
-		resetMlsCatchUpGate();
+		resetProcessGates();
 	});
 
 	function read(fromAgentId = SENDER_ID) {
-		client = keyServer({ [SENDER_ID]: founder });
+		client = keyServer();
 		return decryptGroupMessage(
 			dir,
 			READER_ID,
@@ -365,5 +346,23 @@ describe("the read cache's bounds", () => {
 		expect(
 			lookupGroupRead(dir, READER_ID, GROUP_ID, new Uint8Array([1, 2, 3])),
 		).toBeNull();
+	});
+
+	it("test_recording_when_a_symlink_sits_at_the_cache_file_then_replaces_it_and_leaves_the_target_alone", async () => {
+		const cache = join(dir, "keys", READER_ID, "group_reads");
+		fs.mkdirSync(cache, { recursive: true, mode: 0o700 });
+		const victim = join(dir, "victim.txt");
+		fs.writeFileSync(victim, "untouched");
+		fs.chmodSync(victim, 0o644);
+		const path = join(cache, `${GROUP_ID}.json`);
+		fs.symlinkSync(victim, path);
+
+		recordGroupRead(dir, READER_ID, GROUP_ID, nth(1), new Uint8Array([7]));
+
+		expect(fs.readFileSync(victim, "utf-8")).toBe("untouched");
+		expect(fs.statSync(victim).mode & 0o777).toBe(0o644);
+		expect(fs.lstatSync(path).isSymbolicLink()).toBe(false);
+		expect(fs.statSync(path).mode & 0o777).toBe(0o600);
+		expect(lookupGroupRead(dir, READER_ID, GROUP_ID, nth(1))).not.toBeNull();
 	});
 });

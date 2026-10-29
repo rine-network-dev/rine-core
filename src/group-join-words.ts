@@ -83,7 +83,7 @@ export const JOIN_TAKES_A_HANDLE_OR_AN_ID =
  * What `join` accepts, rendered verbatim by every surface that offers it.
  *
  * 🔴 **One sentence, not one per connector.** `join`'s reference rules differ
- * from every other group verb's — three rungs for a handle, exactly one for a
+ * from every other group verb's — four rungs for a handle, exactly one for a
  * bare name — so each surface had to say something the shared group-reference
  * text does not. Five hand-written copies of that is what
  * {@link VOTE_ELECTORATE_RULE} and `MAX_GROUP_MEMBERS` both exist to prevent,
@@ -99,7 +99,7 @@ export const JOIN_TAKES_A_HANDLE_OR_AN_ID =
  * for byte.
  */
 export const JOIN_REFERENCE_RULE =
-	"Join takes a group's handle or its id, and resolves either exactly: a handle answers whether your org already holds a seat, this agent holds a pending invitation, or the group is public in the directory. A bare name is read only against this agent's pending invitations, and is refused when none of them is for a group of that name — nothing wider is searched for a bare name, because a join cannot be taken back and is never aimed at a guess. Example: #logistics@acme.rine.network.";
+	"Join takes a group's handle or its id, and resolves either exactly: a handle answers whether you already hold a seat, this agent holds a pending invitation, the group is open or voted and your org owns it and holds a seat in it, or the group is public in the directory. A bare name is read only against this agent's pending invitations, and is refused when none of them is for a group of that name — nothing wider is searched for a bare name, because a join cannot be taken back and is never aimed at a guess. Example: #logistics@acme.rine.network.";
 
 /**
  * The bare-name arm, after this agent's invitations came back with no match.
@@ -137,22 +137,22 @@ export const TWO_INVITATIONS_OF_THAT_NAME =
 	"More than one of this agent's pending invitations is for a group of that name, and a join cannot be taken back, so none of them is guessed at. Name the one you mean by its whole handle:";
 
 /**
- * The handle arm, after all three rungs were searched to the end.
+ * The handle arm, after all four rungs were searched to the end.
  *
- * Says which three places were looked in, so a caller can tell "I typed it
- * wrong" from "this group is in none of the three places a handle can be
+ * Says which four places were looked in, so a caller can tell "I typed it
+ * wrong" from "this group is in none of the four places a handle can be
  * resolved from" — the second is not a spelling mistake and no amount of
  * re-reading the directory will fix it.
  *
  * 🔴 It names the invitations rung as *"one this agent's pending invitations
  * name"* rather than "one this agent was invited to", and the two are not the
  * same claim: an OPEN group's invite mints no voucher and no request row
- * (`src/rine/api/groups.py`), so an agent genuinely invited to an open,
+ * (`src/rine/api/group_routes_invite.py`), so an agent genuinely invited to an open,
  * private-visibility group has nothing on that list. The wider sentence would
  * be false to the one caller most likely to read it.
  */
 export const NO_SUCH_GROUP_TO_JOIN =
-	"No group of that handle is one this org is seated in, one this agent's pending invitations name, or a public group in the directory. A group in none of those three is not reachable by handle at all, and its id is the only reference that reaches it.";
+	"No group of that handle is one you hold a seat in, one this agent's pending invitations name, an open or voted group your org owns and holds a seat in, or a public group in the directory. A group in none of those four is not reachable by handle at all, and its id is the only reference that reaches it.";
 
 /**
  * The handle arm when the directory search hit its page budget.
@@ -170,7 +170,7 @@ export const NO_SUCH_GROUP_TO_JOIN =
  * one literal pinnable against its Python twin.
  */
 export const DIRECTORY_HELD_MORE_THAN_THIS_JOIN_READ =
-	"No group of that handle is one this org is seated in or one this agent's pending invitations name, and the public directory holds {unread} more groups matching that name than this join read — so this is not a report that the group is absent from it. The id the directory prints beside a handle reaches the group in one step.";
+	"No group of that handle is one you hold a seat in, one this agent's pending invitations name, or an open or voted group your org owns and holds a seat in, and the public directory holds {unread} more groups matching that name than this join read — so this is not a report that the group is absent from it. The id the directory prints beside a handle reaches the group in one step.";
 
 /**
  * Whether `candidate` is the very handle `reference` names.

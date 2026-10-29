@@ -1,12 +1,12 @@
 // rine Funnel per-request relay adapter. Given
 // the plaintext HTTP request the local TLS listener produced from one mux conn,
 // it (a) HMAC-verifies the RAW body, (b) on success runs the EXISTING client send
-// path — fetchRecipientKeys → encryptMessage (hpke-v1) → self-send POST /messages
+// path — sealForAgent (hpke-hybrid-v2) → self-send POST /messages
 // with type "rine.v1.webhook" — and (c) on failure drops the conn.
 //
 // FROZEN-CONTRACT (a violation is a build defect):
-//  - The relay uses the existing send path; encryption_version stays "hpke-v1"
-//    (or "hpke-hybrid-v1" when the agent publishes a PQ key). NO new
+//  - The relay uses the existing send path; encryption_version is "hpke-hybrid-v2"
+//    (the only 1:1 version). NO new
 //    encryption_version, NO server-sealed branch, NO server crypto. type is
 //    EXACTLY "rine.v1.webhook" and the message is self-addressed (from==to==agent,
 //    the type-literal self-send exception) so it verifies as the agent.
@@ -25,7 +25,7 @@
 //    (see idempotency-store.ts). HMAC verify, not the store, is the authenticator.
 
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { encryptMessage, fetchRecipientKeys } from "../crypto/message.js";
+import { sealForAgent } from "../crypto/message.js";
 import type { HttpClient } from "../http.js";
 import type { IdempotencyStore } from "./idempotency-store.js";
 
@@ -143,16 +143,14 @@ export async function handleWebhookRequest(
 	}
 
 	try {
-		const recipientKeys = await fetchRecipientKeys(client, agentId);
 		// The webhook body is the encrypted payload; the relay decodes it as UTF-8
 		// JSON when valid, else passes the raw text through (still E2EE-sealed).
 		const payload = decodePayload(req.rawBody);
-		const encrypted = await encryptMessage(
+		const encrypted = await sealForAgent(
+			client,
 			configDir,
-			agentId,
-			recipientKeys.encryption,
+			{ senderAgentId: agentId, recipientAgentId: agentId },
 			payload,
-			recipientKeys.pqEncryption,
 		);
 		// NO conversation_id: MessageCreate has no such field (only
 		// parent_conversation_id: UUID), so the backend would silently drop it and

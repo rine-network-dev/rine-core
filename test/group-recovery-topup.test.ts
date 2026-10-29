@@ -42,11 +42,12 @@ vi.mock("../src/mls-ops-resync.js", async (importOriginal) => {
 	};
 });
 
-import { generateAgentKeys, saveAgentKeys } from "../src/crypto/keys.js";
+import { saveAgentKeys } from "../src/crypto/keys.js";
+import { generateAgentKeys } from "./helpers/keys.js";
 import { uploadKeyPackages } from "../src/crypto/mls-api.js";
 import { formatError } from "../src/errors.js";
 import { recoverGroup } from "../src/group-recovery.js";
-import { resetKeyPackageRescueGate } from "../src/mls-keypackage-topup.js";
+import { resetProcessGates } from "../src/process-gate.js";
 import {
 	MlsResyncUnavailableError,
 	isMlsResyncUnavailable,
@@ -83,7 +84,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	// Per process by design, so a test inheriting the previous test's stamp would
 	// measure the gate rather than the rescue.
-	resetKeyPackageRescueGate();
+	resetProcessGates();
 	vi.mocked(uploadKeyPackages).mockImplementation(async (_c, _a, p) => ({
 		stored: p.length,
 	}));

@@ -20,18 +20,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ingestSenderKeyDistribution } from "../../src/crypto/ingest.js";
-import {
-	type AgentKeys,
-	generateAgentKeys,
-	loadAgentKeys,
-	saveAgentKeys,
-	signingPublicKeyToJWK,
-	toBase64Url,
-} from "../../src/crypto/keys.js";
-import {
-	decryptGroupMessage,
-	encryptGroupMessage,
-} from "../../src/crypto/message.js";
+import { toBase64Url } from "../../src/crypto/keys.js";
+import { encryptGroupMessage } from "../../src/crypto/sender-key-seal.js";
+import { decryptGroupMessage } from "../../src/message-group.js";
 import {
 	loadSenderKeyStates,
 	saveSenderKeyState,
@@ -41,6 +32,7 @@ import {
 	generateSenderKey,
 } from "../../src/crypto/sender-keys.js";
 import { deleteSenderKey } from "../../src/sender-key-ops.js";
+import { World } from "./world.js";
 
 const READER_ID = "11111111-1111-4111-8111-111111111111";
 const PEER_A_ID = "22222222-2222-4222-8222-222222222222";
@@ -49,8 +41,11 @@ const GROUP_ID = "44444444-4444-4444-8444-444444444444";
 // One sender key id claimed by two senders — what the per-sender ingest check admits.
 const SHARED_KEY_ID = "55555555-5555-4555-8555-555555555555";
 
+let world: World;
+
 /**
- * Answers `GET /agents/{id}/keys`, and runs `onFetch` while the caller awaits.
+ * Answers `GET /agents/{id}/keys` from the world, and runs `onFetch` while the
+ * caller awaits.
  *
  * 🔴 Concurrent callers are answered in REVERSE arrival order, and that is
  * what gives the first test below its discriminating power. Answering them FIFO
@@ -66,46 +61,38 @@ const SHARED_KEY_ID = "55555555-5555-4555-8555-555555555555";
  * ratchet work is microtasks too, so the two interleave and arrival order
  * survives, which is the ordering that hides the bug.
  */
-function keyServer(
-	published: Record<string, AgentKeys>,
-	onFetch?: () => void,
-) {
+function keyServer(onFetch?: () => void) {
+	const base = world.client();
 	let arrived = 0;
-	const get = vi.fn(async (path: string) => {
-		const match = /^\/agents\/([^/]+)\/keys$/.exec(path);
-		const keys = match ? published[match[1] as string] : undefined;
-		if (!match || !keys) throw new Error(`unexpected GET ${path}`);
-		// The window this whole file is about: real work lands between a decrypt's
-		// load and its save because the decrypt goes to the network in between.
-		onFetch?.();
-		for (let rounds = Math.max(1, 32 - 4 * arrived++); rounds > 0; rounds--) {
-			await new Promise((r) => setImmediate(r));
-		}
-		return {
-			agent_id: match[1],
-			signing_public_key: signingPublicKeyToJWK(keys.signing.publicKey),
-			encryption_public_key: {
-				kty: "OKP",
-				crv: "X25519",
-				x: toBase64Url(keys.encryption.publicKey),
-			},
-		};
-	});
+	const get = vi.fn(
+		async (
+			path: string,
+			params?: Record<string, string | number | boolean>,
+		) => {
+			if (!/^\/agents\/[^/]+\/keys$/.test(path)) {
+				throw new Error(`unexpected GET ${path}`);
+			}
+			// The window this whole file is about: real work lands between a decrypt's
+			// load and its save because the decrypt goes to the network in between.
+			onFetch?.();
+			for (let rounds = Math.max(1, 32 - 4 * arrived++); rounds > 0; rounds--) {
+				await new Promise((r) => setImmediate(r));
+			}
+			return base.get(path, params);
+		},
+	);
 	return { get, post: vi.fn() } as never;
 }
 
 describe("sender-key state file under concurrent writers", () => {
 	let dir: string;
-	let peers: Record<string, AgentKeys>;
 
 	beforeEach(() => {
 		dir = fs.mkdtempSync(join(tmpdir(), "rine-sk-race-"));
-		peers = {
-			[PEER_A_ID]: generateAgentKeys(),
-			[PEER_B_ID]: generateAgentKeys(),
-		};
-		for (const [id, keys] of Object.entries(peers)) saveAgentKeys(dir, id, keys);
-		saveAgentKeys(dir, READER_ID, generateAgentKeys());
+		world = new World();
+		for (const id of [READER_ID, PEER_A_ID, PEER_B_ID]) {
+			world.save(dir, world.addAgent({ id }));
+		}
 	});
 	afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
@@ -199,7 +186,7 @@ describe("sender-key state file under concurrent writers", () => {
 			READER_ID,
 			GROUP_ID,
 			payload,
-			keyServer(peers),
+			keyServer(),
 			PEER_A_ID,
 		);
 		expect(JSON.parse(opened.plaintext as string)).toEqual({
@@ -229,7 +216,7 @@ describe("sender-key state file under concurrent writers", () => {
 			READER_ID,
 			GROUP_ID,
 			payload,
-			keyServer(peers),
+			keyServer(),
 			PEER_A_ID,
 		);
 
@@ -246,7 +233,7 @@ describe("sender-key state file under concurrent writers", () => {
 		const a = await backlog(PEER_A_ID, 3);
 		const b = await backlog(PEER_B_ID, 3);
 		saveSenderKeyState(dir, READER_ID, GROUP_ID, [a.readerState, b.readerState]);
-		const client = keyServer(peers);
+		const client = keyServer();
 
 		// The shape a render used to have. Both keys are loaded by every row before
 		// any row saves — that is forced, not lucky: the load is synchronous and the
@@ -284,7 +271,7 @@ describe("sender-key state file under concurrent writers", () => {
 		saveSenderKeyState(dir, READER_ID, GROUP_ID, [a.readerState]);
 
 		let ingested = false;
-		const client = keyServer(peers, () => {
+		const client = keyServer(() => {
 			if (ingested) return;
 			ingested = true;
 			const took = ingestSenderKeyDistribution(
@@ -299,7 +286,7 @@ describe("sender-key state file under concurrent writers", () => {
 						message_index: b.readerState.messageIndex,
 						sender_agent_id: PEER_B_ID,
 					}),
-					senderKid: `rine:${PEER_B_ID}`,
+					senderKid: `rine:${PEER_B_ID}#0`,
 					verified: true,
 					verificationStatus: "verified",
 				},
@@ -350,7 +337,7 @@ describe("sender-key state file under concurrent writers", () => {
 		// holding it, so its save is the one writer that can put retired key
 		// material back on disk — and the retirement marker does not stop it,
 		// because the marker only refuses INGESTS.
-		const client = keyServer(peers, () => {
+		const client = keyServer(() => {
 			deleteSenderKey(dir, READER_ID, GROUP_ID);
 		});
 
@@ -384,7 +371,6 @@ describe("sender-key state file under concurrent writers", () => {
 		// agent rotated away from, whose `distributedTo` names a roster that has
 		// moved on. Peer rows must still be added — that is the merge's whole
 		// purpose, and the peer-ingest test above holds it to that.
-		const readerKeys = loadAgentKeys(dir, READER_ID);
 		const own = generateSenderKey(GROUP_ID, READER_ID);
 		saveSenderKeyState(dir, READER_ID, GROUP_ID, [own]);
 		const { result } = await encryptGroupMessage(dir, READER_ID, GROUP_ID, own, {
@@ -398,7 +384,7 @@ describe("sender-key state file under concurrent writers", () => {
 		const first = generateSenderKey(GROUP_ID, READER_ID);
 		const second = generateSenderKey(GROUP_ID, READER_ID);
 		let rotated = false;
-		const client = keyServer({ [READER_ID]: readerKeys }, () => {
+		const client = keyServer(() => {
 			if (rotated) return;
 			rotated = true;
 			saveSenderKeyState(dir, READER_ID, GROUP_ID, [own, first]);

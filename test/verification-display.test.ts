@@ -2,11 +2,8 @@ import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-	generateAgentKeys,
-	saveAgentKeys,
-	signingPublicKeyToJWK,
-} from "../src/crypto/keys.js";
+import { saveAgentKeys, signingPublicKeyToJWK } from "../src/crypto/keys.js";
+import { generateAgentKeys } from "./helpers/keys.js";
 import { verificationWordsForKey } from "../src/crypto/verification-words.js";
 import {
 	compareVerificationWordsForAgent,

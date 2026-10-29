@@ -18,6 +18,7 @@ import {
 	MLS_FOUNDING_FAILED_NOTE,
 	createdGroupMls,
 } from "../src/group-create-format.js";
+import { emptyReport } from "../src/mls-escrow-report.js";
 import { unfoundedGroupNote } from "../src/mls-recovery-format.js";
 
 /** A created group nothing has founded: closed, meant for MLS, no latch. */
@@ -33,7 +34,13 @@ function created(
 	};
 }
 
-const ADMISSION = { epoch: 1, commits: 1, added: 0, outcomes: [] };
+const ADMISSION = {
+	epoch: 1,
+	commits: 1,
+	added: 0,
+	outcomes: [],
+	escrow: emptyReport(),
+};
 
 describe("createdGroupMls — the four arms, in order", () => {
 	it("a founding that landed says MLS, even when the row it left says otherwise", () => {

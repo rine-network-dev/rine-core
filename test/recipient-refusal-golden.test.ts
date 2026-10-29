@@ -9,14 +9,14 @@ import {
 	THREAD_REF_SURFACES,
 	type ThreadRefSurface,
 	bareNameJoinRefusal,
-	composeGroupRefusal,
-	notAConversationUuidRefusal,
 	recipientGroupForBareName,
-	refuseIfABareAgentName,
 	resolveGroup,
 	unknownGroupRefusal,
 	unresolvedHandleJoinRefusal,
 } from "../src/index.js";
+import { refuseIfABareAgentName } from "../src/group-ref.js";
+import { composeGroupRefusal } from "../src/recipient-refusal.js";
+import { notAConversationUuidRefusal } from "../src/thread-ref.js";
 import { invalidAgentIdentifierRefusal, resolveToUuid } from "../src/resolve-agent.js";
 
 /**

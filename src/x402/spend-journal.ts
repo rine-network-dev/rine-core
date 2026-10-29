@@ -1,10 +1,8 @@
-// Daily spend journal (schema v2) + the reserve-under-lock commit. The journal
-// is a worst-case loss bound, NOT a ledger: debits are permanent — there is no
-// refund path. `reserveSpend` is the LAST local act before a payload is
-// transmitted; after transmit nothing is written.
+// Daily spend journal (schema v2) + the reserve-under-lock commit. The journal is a
+// worst-case loss bound, NOT a ledger: debits are permanent, with no refund path.
 
 import * as fs from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { writeAtomic } from "../config.js";
 import { validatePathId } from "../crypto/keys.js";
 import { requirementCanonicalAmount } from "./assets.js";
@@ -33,18 +31,84 @@ function utcDay(nowSeconds: number): string {
 	return new Date(nowSeconds * 1000).toISOString().slice(0, 10);
 }
 
-/** Read today's journal; a prior-day (or missing/corrupt) journal reads as empty. */
+/**
+ * The spend journal exists but cannot be read as one, so today's spend is
+ * unknown. Reading it as empty would reset the daily cap, so every payment is
+ * refused until the file is repaired. `detail` replaces the default cause.
+ */
+export class CorruptSpendJournalError extends Error {
+	constructor(
+		readonly path: string,
+		detail = "is not a valid spend journal, so today's spend is unknown; payments are refused until it is repaired",
+	) {
+		super(`${path} ${detail}`);
+		this.name = "CorruptSpendJournalError";
+	}
+}
+
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const CANONICAL_AMOUNT_RE = /^\d+$/;
+const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+function isSpendJournal(value: unknown): value is SpendJournal {
+	if (typeof value !== "object" || value === null) return false;
+	const j = value as Record<string, unknown>;
+	return (
+		typeof j.day === "string" &&
+		DAY_RE.test(j.day) &&
+		typeof j.spentCanonical === "string" &&
+		CANONICAL_AMOUNT_RE.test(j.spentCanonical) &&
+		(j.paidIds === undefined ||
+			(Array.isArray(j.paidIds) &&
+				j.paidIds.every((id) => typeof id === "string")))
+	);
+}
+
+/** The day bucket a read lands in, and what it already holds. */
+interface JournalBucket {
+	day: string;
+	spent: bigint;
+	paidIds: string[];
+}
+
+/**
+ * Read today's bucket: empty for a missing or prior-day journal. A journal dated
+ * tomorrow is today's bucket (the clock moved back across UTC midnight). One dated
+ * further ahead, not UTF-8 or unparseable, throws, so the daily cap never fails open.
+ */
 function readJournal(
-	path: string,
-	day: string,
-): { spent: bigint; paidIds: string[] } {
+	configDir: string,
+	agentId: string,
+	nowSeconds: number,
+): JournalBucket {
+	const path = journalPath(configDir, agentId);
+	const day = utcDay(nowSeconds);
+	let bytes: Buffer;
 	try {
-		const j = JSON.parse(fs.readFileSync(path, "utf-8")) as SpendJournal;
-		if (j.day === day) {
-			return { spent: BigInt(j.spentCanonical), paidIds: j.paidIds ?? [] };
-		}
-	} catch {}
-	return { spent: 0n, paidIds: [] };
+		bytes = fs.readFileSync(path);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		return { day, spent: 0n, paidIds: [] };
+	}
+	let journal: unknown;
+	try {
+		journal = JSON.parse(STRICT_UTF8.decode(bytes));
+	} catch {
+		throw new CorruptSpendJournalError(path);
+	}
+	if (!isSpendJournal(journal)) throw new CorruptSpendJournalError(path);
+	if (journal.day > utcDay(nowSeconds + 86_400)) {
+		throw new CorruptSpendJournalError(
+			path,
+			`is dated ${journal.day}, later than today's date ${day}, so check the system clock; payments are refused until the clock is right or the file is repaired`,
+		);
+	}
+	if (journal.day < day) return { day, spent: 0n, paidIds: [] };
+	return {
+		day: journal.day,
+		spent: BigInt(journal.spentCanonical),
+		paidIds: journal.paidIds ?? [],
+	};
 }
 
 function writeJournal(
@@ -52,26 +116,23 @@ function writeJournal(
 	agentId: string,
 	journal: SpendJournal,
 ): void {
-	fs.mkdirSync(join(configDir, "keys", agentId), {
-		recursive: true,
-		mode: 0o700,
-	});
-	writeAtomic(journalPath(configDir, agentId), JSON.stringify(journal));
+	const path = journalPath(configDir, agentId);
+	fs.mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+	writeAtomic(path, JSON.stringify(journal));
 }
 
-/** Today's spend in canonical micro-units (0 if the journal is a prior day). */
+/** Today's spend in canonical micro-units; throws {@link CorruptSpendJournalError} on an unreadable journal. */
 export function readDailySpent(
 	configDir: string,
 	agentId: string,
 	nowSeconds: number = Date.now() / 1000,
 ): bigint {
-	return readJournal(journalPath(configDir, agentId), utcDay(nowSeconds)).spent;
+	return readJournal(configDir, agentId, nowSeconds).spent;
 }
 
 /**
- * Add a spend to today's bucket (day-rollover resets), atomic write, preserving
- * `paidIds`. Retained for status displays and tests only — NO payment flow calls it;
- * every pay site reserves through {@link reserveSpend} under the lock instead.
+ * Add a spend to today's bucket, preserving `paidIds`. For status displays and tests
+ * only: every pay site reserves through {@link reserveSpend} under the lock instead.
  */
 export function recordSpend(
 	configDir: string,
@@ -79,8 +140,7 @@ export function recordSpend(
 	canonicalAmount: bigint,
 	nowSeconds: number = Date.now() / 1000,
 ): void {
-	const day = utcDay(nowSeconds);
-	const { spent, paidIds } = readJournal(journalPath(configDir, agentId), day);
+	const { day, spent, paidIds } = readJournal(configDir, agentId, nowSeconds);
 	writeJournal(configDir, agentId, {
 		day,
 		spentCanonical: (spent + canonicalAmount).toString(),
@@ -100,14 +160,11 @@ export interface ReserveSpendOptions {
 
 /**
  * Reserve a spend under the cross-process lock and return the reserved canonical
- * value. This is the LAST local act before transmit: acquire the lock,
- * compute the UTC-day bucket INSIDE the lock (a day computed before acquiring
- * could roll over while a contended acquire waits, clobbering the new day's total),
- * re-read the journal fresh (day rollover applies), refuse a same-message re-pay
- * (`ALREADY_PAID` unless `force`), re-run the FULL policy against the fresh spent
- * total (deny-by-default on a null policy, drift-proof), commit `spent + value` and
- * the message id, then release. Throws a typed {@link X402Error} on any refusal;
- * the debit is permanent once written.
+ * value: the LAST local act before transmit. Inside the lock it reads today's bucket
+ * fresh (a day computed before a contended acquire could roll over), refuses a
+ * same-message re-pay (`ALREADY_PAID` unless `force`), re-runs the full policy
+ * against that total (deny-by-default on a null policy), then commits `spent + value`
+ * and the message id. Throws a typed {@link X402Error} on any refusal.
  */
 export async function reserveSpend(
 	configDir: string,
@@ -116,10 +173,9 @@ export async function reserveSpend(
 	req: PaymentRequirements,
 	opts: ReserveSpendOptions = {},
 ): Promise<bigint> {
-	const jpath = journalPath(configDir, agentId);
 	return withSpendLock(spendLockPath(configDir, agentId), async () => {
-		const day = utcDay(opts.nowSeconds ?? Date.now() / 1000);
-		const { spent, paidIds } = readJournal(jpath, day);
+		const now = opts.nowSeconds ?? Date.now() / 1000;
+		const { day, spent, paidIds } = readJournal(configDir, agentId, now);
 		if (opts.messageId && !opts.force && paidIds.includes(opts.messageId)) {
 			throw new X402Error(
 				X402_ERROR.ALREADY_PAID,

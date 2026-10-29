@@ -4,17 +4,17 @@
 //   (a) HMAC-verifies the RAW body (X-Hub-Signature-256 "sha256=<hex>" OR the
 //       generic X-Hook-Signature) using crypto.timingSafeEqual over equal-length
 //       buffers (length-mismatch fails SAFELY, no timing leak);
-//   (b) on success: fetchRecipientKeys → encryptMessage (hpke-v1) → self-send
+//   (b) on success: sealForAgent (hpke-hybrid-v2) → self-send
 //       POST /messages with type "rine.v1.webhook" + metadata["rine.hook_name"]
 //       (NO conversation_id — MessageCreate has no such field);
 //   (c) on failure: drops the conn (verify_failed) — rine never saw cleartext.
 //
 // FROZEN-CONTRACT (a violation is a build defect):
-//  - The relay uses the EXISTING client send path: encryptMessage + fetchRecipientKeys
-//    + POST /messages. encryption_version stays "hpke-v1" (or hpke-hybrid-v1) —
-//    NO new encryption_version, NO server-sealed-v1, NO server crypto. type is
-//    EXACTLY "rine.v1.webhook". The relay self-addresses (from==to==agentId), so
-//    the message verifies as the agent (self-send exception, type-literal).
+//  - The relay uses the EXISTING client send path: sealForAgent + POST /messages.
+//    encryption_version stays "hpke-hybrid-v2" — NO new encryption_version,
+//    NO server-sealed-v1, NO server crypto. type is EXACTLY "rine.v1.webhook".
+//    The relay self-addresses (from==to==agentId), so the message verifies as
+//    the agent (self-send exception, type-literal).
 //  - No-body-log: the relay NEVER logs the raw body, the decrypted payload, the
 //    HMAC secret, or the signature value — only verify outcome + counters/IDs.
 //
@@ -58,13 +58,10 @@ function makeDeps(over: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
-	vi.spyOn(message, "fetchRecipientKeys").mockResolvedValue({
-		encryption: new Uint8Array(32),
-	} as never);
-	vi.spyOn(message, "encryptMessage").mockResolvedValue({
+	vi.spyOn(message, "sealForAgent").mockResolvedValue({
 		encrypted_payload: "BASE64URL_OPAQUE_CIPHERTEXT",
-		encryption_version: "hpke-v1",
-		sender_signing_kid: `rine:${AGENT_ID}`,
+		encryption_version: "hpke-hybrid-v2",
+		sender_signing_kid: `rine:${AGENT_ID}#0`,
 	} as never);
 });
 
@@ -75,19 +72,19 @@ afterEach(() => {
 // ── HMAC verify → encrypt → self-send ───────────────────────────
 
 describe("relay adapter — verify success path", () => {
-	it("verifies X-Hub-Signature-256 over the raw body, then self-sends hpke-v1", async () => {
+	it("verifies X-Hub-Signature-256 over the raw body, then self-sends hpke-hybrid-v2", async () => {
 		const deps = makeDeps();
 		await handleWebhookRequest(deps, {
 			headers: { "x-hub-signature-256": sign(SECRET, SENTINEL_BODY) },
 			rawBody: Buffer.from(SENTINEL_BODY),
 		});
 
-		expect(message.encryptMessage).toHaveBeenCalledTimes(1);
+		expect(message.sealForAgent).toHaveBeenCalledTimes(1);
 		expect(deps.client.post).toHaveBeenCalledTimes(1);
 		const [path, body] = deps.client.post.mock.calls[0] ?? [];
 		expect(path).toBe("/messages");
 		expect((body as Record<string, unknown>).encryption_version).toBe(
-			"hpke-v1",
+			"hpke-hybrid-v2",
 		);
 		// No new encryption_version / no server-sealed branch ever.
 		expect((body as Record<string, unknown>).encryption_version).not.toMatch(
@@ -124,13 +121,12 @@ describe("relay adapter — verify success path", () => {
 		});
 		const body = deps.client.post.mock.calls[0]?.[1] as Record<string, unknown>;
 		expect(body.to_agent_id ?? body.to).toBe(AGENT_ID);
-		// encryptMessage is called with senderAgentId == the same agent (self-send).
-		expect(message.encryptMessage).toHaveBeenCalledWith(
+		// The seal names the same agent as sender and recipient (self-send).
+		expect(message.sealForAgent).toHaveBeenCalledWith(
+			deps.client,
 			deps.configDir,
-			AGENT_ID,
+			{ senderAgentId: AGENT_ID, recipientAgentId: AGENT_ID },
 			expect.anything(),
-			expect.anything(),
-			undefined,
 		);
 	});
 });
@@ -172,7 +168,7 @@ describe("relay adapter — verify failure path", () => {
 			rawBody: Buffer.from(SENTINEL_BODY),
 		});
 		expect(deps.client.post).not.toHaveBeenCalled();
-		expect(message.encryptMessage).not.toHaveBeenCalled();
+		expect(message.sealForAgent).not.toHaveBeenCalled();
 		expect(result.verified).toBe(false);
 	});
 
@@ -197,8 +193,8 @@ describe("relay adapter — verify failure path", () => {
 		expect(result.verified).toBe(false);
 	});
 
-	it("a recipient-key fetch failure drops the conn but does not throw out of the tunnel", async () => {
-		vi.spyOn(message, "fetchRecipientKeys").mockRejectedValue(
+	it("a seal failure drops the conn but does not throw out of the tunnel", async () => {
+		vi.spyOn(message, "sealForAgent").mockRejectedValue(
 			new Error("keys 404"),
 		);
 		const deps = makeDeps();
@@ -226,7 +222,7 @@ describe("relay adapter — empty-secret fail-closed", () => {
 		expect(result.verified).toBe(false);
 		expect(result.relayed).toBe(false);
 		expect(deps.client.post).not.toHaveBeenCalled();
-		expect(message.encryptMessage).not.toHaveBeenCalled();
+		expect(message.sealForAgent).not.toHaveBeenCalled();
 	});
 
 	it("rejects a bare X-Hook-Signature forged with the empty key", async () => {
@@ -328,8 +324,8 @@ describe("relay adapter — no-body-log", () => {
 		expect(haystack).not.toContain(badSig);
 	});
 
-	it("error-branch (key fetch fails after verify) never logs the body or secret", async () => {
-		vi.spyOn(message, "fetchRecipientKeys").mockRejectedValue(
+	it("error-branch (seal fails after verify) never logs the body or secret", async () => {
+		vi.spyOn(message, "sealForAgent").mockRejectedValue(
 			new Error("keys 500"),
 		);
 		const cap = captureAllLogs();

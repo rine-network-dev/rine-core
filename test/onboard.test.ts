@@ -1,5 +1,16 @@
-import { describe, expect, it, vi, afterEach } from "vitest";
-import { validateSlug, performRegistration, performAgentCreation } from "../src/onboard.js";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { validateSlug, performRegistration } from "../src/onboard.js";
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -7,20 +18,7 @@ import { validateSlug, performRegistration, performAgentCreation } from "../src/
 
 vi.mock("../src/config.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../src/config.js")>();
-	return {
-		...actual,
-		loadCredentials: vi.fn().mockReturnValue({}),
-		saveCredentials: vi.fn(),
-		cacheToken: vi.fn(),
-	};
-});
-
-vi.mock("../src/http.js", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("../src/http.js")>();
-	return {
-		...actual,
-		fetchOAuthToken: vi.fn().mockResolvedValue({ access_token: "tok", expires_in: 3600 }),
-	};
+	return { ...actual, cacheToken: vi.fn() };
 });
 
 vi.mock("../src/timelock.js", async (importOriginal) => {
@@ -31,38 +29,13 @@ vi.mock("../src/timelock.js", async (importOriginal) => {
 	};
 });
 
-vi.mock("../src/crypto/index.js", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("../src/crypto/index.js")>();
-	// Mirrors the real generateAgentKeys(), which always populates pqEncryption
-	// (ML-KEM-768 public key is 1184 bytes). The hybrid PQ upload path in
-	// onboard.ts keys off the presence of this field.
-	const fakeKeys = {
-		signing: { privateKey: new Uint8Array(32), publicKey: new Uint8Array(32) },
-		encryption: { privateKey: new Uint8Array(32), publicKey: new Uint8Array(32) },
-		pqEncryption: { privateKey: new Uint8Array(2400), publicKey: new Uint8Array(1184) },
-	};
-	return {
-		...actual,
-		generateAgentKeys: vi.fn(() => fakeKeys),
-		saveAgentKeys: vi.fn(),
-		signingPublicKeyToJWK: vi.fn(() => ({ kty: "OKP", crv: "Ed25519", x: "signing-pub" })),
-		encryptionPublicKeyToJWK: vi.fn(() => ({ kty: "OKP", crv: "X25519", x: "enc-pub" })),
-		pqPublicKeyToJWK: vi.fn(() => ({ kty: "MLKEM", alg: "ML-KEM-768", x: "pq-pub" })),
-	};
-});
-
-vi.mock("../src/mls-ops.js", () => ({
-	publishMlsKeyPackages: vi.fn().mockResolvedValue({ stored: 10 }),
-}));
-
 // ---------------------------------------------------------------------------
 // Helper imports (after mocks are registered)
 // ---------------------------------------------------------------------------
-import { publishMlsKeyPackages } from "../src/mls-ops.js";
-import { loadCredentials, saveCredentials, cacheToken } from "../src/config.js";
-import { fetchOAuthToken } from "../src/http.js";
+import { PROFILES_FILE, cacheToken } from "../src/config.js";
+import { PHRASE_FILE, ROOT_KEY_FILE } from "../src/owner.js";
+import { loadProfiles } from "../src/profiles.js";
 import { solveTimeLockWithProgress } from "../src/timelock.js";
-import { generateAgentKeys, saveAgentKeys, signingPublicKeyToJWK, encryptionPublicKeyToJWK, pqPublicKeyToJWK } from "../src/crypto/index.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -76,71 +49,112 @@ const CHALLENGE = {
 	algorithm: "rsa-timelock-v1",
 	expires_in: 60,
 };
-
-const SOLVE_RESPONSE = {
-	org_id: "00000000-0000-0000-0000-000000000001",
-	client_id: "00000000-0000-0000-0000-000000000002",
-	client_secret: "supersecret",
-};
-
-function makeFetchSequence(responses: Array<{ status: number; body: unknown }>): void {
-	let call = 0;
-	vi.stubGlobal("fetch", vi.fn().mockImplementation(() => {
-		const r = responses[call++];
-		if (!r) throw new Error("Unexpected fetch call");
-		const ok = r.status >= 200 && r.status < 300;
-		return Promise.resolve({
-			ok,
-			status: r.status,
-			statusText: ok ? "OK" : "Error",
-			json: () => Promise.resolve(r.body),
-		});
-	}));
-}
-
-function makeHappyFetch(): void {
-	makeFetchSequence([
-		{ status: 200, body: CHALLENGE },
-		{ status: 200, body: SOLVE_RESPONSE },
-	]);
-}
-
 const REG_PARAMS = { email: "test@example.com", slug: "my-org", name: "My Org" };
 const API_URL = "https://api.test";
-const CONFIG_DIR = "/tmp/fake-config";
 const PROFILE = "default";
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
+
+/** Stub global `fetch` with a router; an unrouted URL is a test bug. */
+function stubFetch(
+	handler: (url: string, init?: RequestInit) => { status: number; body: unknown },
+): void {
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async (url: string, init?: RequestInit) => {
+			const r = handler(url, init);
+			const ok = r.status >= 200 && r.status < 300;
+			return {
+				ok,
+				status: r.status,
+				statusText: ok ? "OK" : "Error",
+				json: () => Promise.resolve(r.body),
+			};
+		}),
+	);
+}
+
+/** What the server does on a solve it accepts: register the org id the client sent. */
+const ACCEPT = "accept";
+type SolveOutcome = typeof ACCEPT | { status: number; body: unknown };
+
+/** Register → challenge, solve → `solve`, token → 200. */
+function stubFlow(
+	solve: SolveOutcome,
+	token: { status: number; body: unknown } = {
+		status: 200,
+		body: { access_token: "tok", expires_in: 3600 },
+	},
+): void {
+	let registeredOrg: unknown;
+	stubFetch((url, init) => {
+		if (url.endsWith("/auth/register")) {
+			registeredOrg = (JSON.parse(init?.body as string) as { org_id: string }).org_id;
+			return { status: 200, body: CHALLENGE };
+		}
+		if (url.endsWith("/auth/register/solve"))
+			return solve === ACCEPT ? { status: 200, body: { org_id: registeredOrg } } : solve;
+		if (url.endsWith("/oauth/token")) return token;
+		throw new Error(`Unexpected fetch ${url}`);
+	});
+}
+
+function bodyOf(callIndex: number): Record<string, unknown> {
+	const init = vi.mocked(fetch).mock.calls[callIndex]?.[1] as RequestInit;
+	return JSON.parse(init.body as string) as Record<string, unknown>;
+}
+
+let tmp: string;
+let configDir: string;
+let ownerDir: string;
+
+const dirs = () => ({ configDir, ownerDir });
+const register = (onProgress?: (pct: number) => void) =>
+	performRegistration(API_URL, dirs(), PROFILE, REG_PARAMS, onProgress);
+
+beforeEach(() => {
+	tmp = mkdtempSync(join(tmpdir(), "rine-onboard-"));
+	configDir = join(tmp, "config");
+	ownerDir = join(tmp, "owner");
+	mkdirSync(configDir, { recursive: true });
+	mkdirSync(ownerDir, { recursive: true });
+	vi.mocked(solveTimeLockWithProgress).mockResolvedValue("solved-nonce");
+	vi.mocked(cacheToken).mockReset();
+});
+
+afterEach(() => {
+	rmSync(tmp, { recursive: true, force: true });
+	vi.unstubAllGlobals();
+	vi.restoreAllMocks();
+});
 
 // ---------------------------------------------------------------------------
 // validateSlug
 // ---------------------------------------------------------------------------
 
 describe("validateSlug", () => {
-	describe("valid slugs", () => {
-		it.each([
-			["ab", "two char minimum"],
-			["my-org", "hyphen in middle"],
-			["acme", "plain lowercase"],
-			["a".repeat(32), "32 chars (max)"],
-			["org123", "ends with digit"],
-			["123org", "starts with digit"],
-		])("accepts %s (%s)", (slug) => {
-			expect(validateSlug(slug)).toBe(true);
-		});
+	it.each([
+		["ab", "two char minimum"],
+		["my-org", "hyphen in middle"],
+		["acme", "plain lowercase"],
+		["a".repeat(32), "32 chars (max)"],
+		["org123", "ends with digit"],
+		["123org", "starts with digit"],
+	])("accepts %s (%s)", (slug) => {
+		expect(validateSlug(slug)).toBe(true);
 	});
 
-	describe("invalid slugs", () => {
-		it.each([
-			["a", "single char"],
-			["-acme", "leading hyphen"],
-			["acme-", "trailing hyphen"],
-			["Acme", "uppercase letter"],
-			["acme!", "special char"],
-			["a".repeat(33), "33 chars (over max)"],
-			["", "empty string"],
-			["acme org", "space in slug"],
-		])("rejects %s (%s)", (slug) => {
-			expect(validateSlug(slug)).toBe(false);
-		});
+	it.each([
+		["a", "single char"],
+		["-acme", "leading hyphen"],
+		["acme-", "trailing hyphen"],
+		["Acme", "uppercase letter"],
+		["acme!", "special char"],
+		["a".repeat(33), "33 chars (over max)"],
+		["", "empty string"],
+		["acme org", "space in slug"],
+	])("rejects %s (%s)", (slug) => {
+		expect(validateSlug(slug)).toBe(false);
 	});
 });
 
@@ -149,47 +163,78 @@ describe("validateSlug", () => {
 // ---------------------------------------------------------------------------
 
 describe("performRegistration", () => {
-	afterEach(() => {
-		vi.restoreAllMocks();
-		vi.mocked(loadCredentials).mockReturnValue({});
-		vi.mocked(saveCredentials).mockReset();
-		vi.mocked(cacheToken).mockReset();
-		vi.mocked(fetchOAuthToken).mockResolvedValue({ access_token: "tok", expires_in: 3600 });
-		vi.mocked(solveTimeLockWithProgress).mockResolvedValue("solved-nonce");
-	});
+	it("happy path: registers, solves, writes the owner files and caches an org token", async () => {
+		stubFlow(ACCEPT);
+		const result = await register();
 
-	it("happy path: makes two fetch calls and saves credentials", async () => {
-		makeHappyFetch();
-		const result = await performRegistration(API_URL, CONFIG_DIR, PROFILE, REG_PARAMS);
+		expect(result.org_id).toBe(bodyOf(0).org_id);
+		expect(typeof result.org_words).toBe("string");
+		expect(result.phrase_path).toBe(join(ownerDir, PHRASE_FILE));
 
-		expect(result).toEqual({
-			org_id: SOLVE_RESPONSE.org_id,
-			client_id: SOLVE_RESPONSE.client_id,
+		expect(fetch).toHaveBeenCalledTimes(3);
+		for (const [i, path] of [
+			"/auth/register",
+			"/auth/register/solve",
+			"/oauth/token",
+		].entries()) {
+			expect(fetch).toHaveBeenNthCalledWith(
+				i + 1,
+				`${API_URL}${path}`,
+				expect.objectContaining({ method: "POST" }),
+			);
+		}
+
+		const reg = bodyOf(0);
+		expect(reg).toMatchObject({
+			email: REG_PARAMS.email,
+			org_slug: REG_PARAMS.slug,
 		});
-		expect(fetch).toHaveBeenCalledTimes(2);
-		expect(fetch).toHaveBeenNthCalledWith(
-			1,
-			`${API_URL}/auth/register`,
-			expect.objectContaining({ method: "POST" }),
+		expect(reg.org_id).toMatch(UUID_RE);
+		expect(reg.org_signing_public_key).toMatch(BASE64URL_RE);
+		expect(reg.org_pq_signing_public_key).toMatch(BASE64URL_RE);
+
+		const solve = bodyOf(1);
+		expect(solve).toMatchObject({
+			challenge_id: CHALLENGE.challenge_id,
+			nonce: "solved-nonce",
+			org_name: REG_PARAMS.name,
+			org_slug: REG_PARAMS.slug,
+			consent: true,
+		});
+		expect(solve.reader_public_key).toMatch(BASE64URL_RE);
+		expect((solve.proof as string).split(".")).toHaveLength(3);
+		const main = solve.main_branch as Record<string, unknown>;
+		for (const field of [
+			"signing_public_key",
+			"pq_signing_public_key",
+			"escrow_public_key",
+			"escrow_pq_public_key",
+			"reader_public_key",
+			"certificate",
+		]) {
+			expect(main[field]).toBeTruthy();
+		}
+
+		for (const file of [ROOT_KEY_FILE, PHRASE_FILE]) {
+			const path = join(ownerDir, file);
+			expect(existsSync(path)).toBe(true);
+			expect(statSync(path).mode & 0o777).toBe(0o600);
+		}
+
+		const entry = loadProfiles(ownerDir)[PROFILE];
+		expect(entry?.org_id).toMatch(UUID_RE);
+		expect(entry?.principal).toBe(`org:${entry?.org_id}`);
+		expect(cacheToken).toHaveBeenCalledWith(
+			ownerDir,
+			`org:${entry?.org_id}`,
+			expect.objectContaining({ access_token: "tok" }),
 		);
-		expect(fetch).toHaveBeenNthCalledWith(
-			2,
-			`${API_URL}/auth/register/solve`,
-			expect.objectContaining({ method: "POST" }),
-		);
-		expect(saveCredentials).toHaveBeenCalledWith(
-			CONFIG_DIR,
-			expect.objectContaining({
-				[PROFILE]: expect.objectContaining({ client_id: SOLVE_RESPONSE.client_id }),
-			}),
-		);
-		expect(cacheToken).toHaveBeenCalledWith(CONFIG_DIR, PROFILE, expect.objectContaining({ access_token: "tok" }));
 	});
 
 	it("passes onProgress to solveTimeLockWithProgress", async () => {
-		makeHappyFetch();
+		stubFlow(ACCEPT);
 		const onProgress = vi.fn();
-		await performRegistration(API_URL, CONFIG_DIR, PROFILE, REG_PARAMS, onProgress);
+		await register(onProgress);
 		expect(solveTimeLockWithProgress).toHaveBeenCalledWith(
 			CHALLENGE.prefix,
 			CHALLENGE.modulus,
@@ -198,413 +243,137 @@ describe("performRegistration", () => {
 		);
 	});
 
-	it("409 on register → throws 'Email or slug already registered'", async () => {
-		makeFetchSequence([{ status: 409, body: {} }]);
-		await expect(performRegistration(API_URL, CONFIG_DIR, PROFILE, REG_PARAMS))
-			.rejects.toThrow("Email or slug already registered");
+	it("429 on register → throws", async () => {
+		stubFetch(() => ({ status: 429, body: {} }));
+		await expect(register()).rejects.toThrow("Rate limited");
 	});
 
-	it("429 on register → throws rate limit message", async () => {
-		makeFetchSequence([{ status: 429, body: {} }]);
-		await expect(performRegistration(API_URL, CONFIG_DIR, PROFILE, REG_PARAMS))
-			.rejects.toThrow("Rate limited");
+	it.each([
+		["Email already in use", { error: "ConflictError", detail: "Email already in use" }],
+		["Slug already taken", { error: "conflict", detail: "Slug already taken" }],
+		[
+			"This org id is already registered",
+			{
+				error: "ConflictError",
+				detail:
+					"This org id is already registered. Generate a new org root and register again.",
+			},
+		],
+		["email, slug or org id already registered", {}],
+	])("409 on register → names the collision: %s", async (message, body) => {
+		stubFetch(() => ({ status: 409, body }));
+		await expect(register()).rejects.toThrow(`Conflict: ${message}`);
 	});
 
 	it("unsupported algorithm → throws", async () => {
-		makeFetchSequence([
-			{ status: 200, body: { ...CHALLENGE, algorithm: "sha256-v1" } },
-		]);
-		await expect(performRegistration(API_URL, CONFIG_DIR, PROFILE, REG_PARAMS))
-			.rejects.toThrow("Unsupported algorithm");
+		stubFetch(() => ({ status: 200, body: { ...CHALLENGE, algorithm: "sha256-v1" } }));
+		await expect(register()).rejects.toThrow("Unsupported algorithm");
 	});
 
-	it("410 on solve → throws 'Challenge expired'", async () => {
-		makeFetchSequence([
-			{ status: 200, body: CHALLENGE },
-			{ status: 410, body: {} },
-		]);
-		await expect(performRegistration(API_URL, CONFIG_DIR, PROFILE, REG_PARAMS))
-			.rejects.toThrow("Challenge expired");
-	});
-
-	it("409 on solve → throws 'Conflict'", async () => {
-		makeFetchSequence([
-			{ status: 200, body: CHALLENGE },
-			{ status: 409, body: {} },
-		]);
-		await expect(performRegistration(API_URL, CONFIG_DIR, PROFILE, REG_PARAMS))
-			.rejects.toThrow("Conflict");
+	it.each([
+		[410, "Challenge expired"],
+		[409, "Conflict"],
+	])("%i on solve → throws", async (status, message) => {
+		stubFlow({ status, body: {} });
+		await expect(register()).rejects.toThrow(message);
 	});
 
 	it("token cache failure is non-fatal", async () => {
-		makeHappyFetch();
-		vi.mocked(cacheToken).mockImplementation(() => { throw new Error("disk full"); });
-
-		// Should not throw
-		const result = await performRegistration(API_URL, CONFIG_DIR, PROFILE, REG_PARAMS);
-		expect(result.org_id).toBe(SOLVE_RESPONSE.org_id);
+		stubFlow(ACCEPT);
+		vi.mocked(cacheToken).mockImplementation(() => {
+			throw new Error("disk full");
+		});
+		expect((await register()).org_id).toMatch(UUID_RE);
 	});
 
-	it("token cache failure via fetchOAuthToken is non-fatal", async () => {
-		makeHappyFetch();
-		vi.mocked(fetchOAuthToken).mockRejectedValue(new Error("network error"));
-
-		const result = await performRegistration(API_URL, CONFIG_DIR, PROFILE, REG_PARAMS);
-		expect(result.client_id).toBe(SOLVE_RESPONSE.client_id);
+	it("token fetch failure is non-fatal", async () => {
+		stubFlow(ACCEPT, { status: 500, body: { detail: "boom" } });
+		expect((await register()).org_id).toBe(bodyOf(0).org_id);
 		expect(cacheToken).not.toHaveBeenCalled();
 	});
-});
 
-// ---------------------------------------------------------------------------
-// performAgentCreation
-// ---------------------------------------------------------------------------
-
-const AGENT_ID = "00000000-0000-0000-0000-000000000010";
-
-const BASE_AGENT = {
-	id: AGENT_ID,
-	name: "Test Agent",
-	handle: "test-agent",
-	human_oversight: false,
-	incoming_policy: "open",
-	outgoing_policy: "open",
-	created_at: "2026-01-01T00:00:00Z",
-};
-
-function makeClient(overrides: Partial<{ post: ReturnType<typeof vi.fn> }> = {}) {
-	return {
-		get: vi.fn(),
-		post: overrides.post ?? vi.fn().mockResolvedValue(BASE_AGENT),
-		delete: vi.fn(),
-		put: vi.fn(),
-		patch: vi.fn(),
-	};
-}
-
-describe("performAgentCreation", () => {
-	afterEach(() => {
-		vi.mocked(loadCredentials).mockReturnValue({});
-		vi.mocked(saveCredentials).mockReset();
-		vi.mocked(saveAgentKeys).mockReset();
-		vi.mocked(generateAgentKeys).mockClear();
-		vi.mocked(pqPublicKeyToJWK).mockClear();
-		vi.mocked(publishMlsKeyPackages).mockClear();
-		vi.mocked(publishMlsKeyPackages).mockResolvedValue({ stored: 10 });
+	it("test_performRegistration_when_the_server_registers_another_org_then_it_throws_and_keeps_the_root", async () => {
+		stubFlow({ status: 200, body: { org_id: "00000000-0000-0000-0000-000000000001" } });
+		await expect(register()).rejects.toThrow(/not the org this root derives/);
+		expect(existsSync(join(ownerDir, ROOT_KEY_FILE))).toBe(true);
 	});
 
-	it("happy path: calls client.post, saves keys, returns agent data", async () => {
-		const client = makeClient();
-		const result = await performAgentCreation(client, CONFIG_DIR, PROFILE, { name: "Test Agent" });
+	it("test_performRegistration_when_profiles_json_is_corrupt_then_it_names_the_file_and_writes_no_root", async () => {
+		const profilesPath = join(ownerDir, PROFILES_FILE);
+		writeFileSync(profilesPath, "{ truncated");
+		stubFlow(ACCEPT);
 
-		expect(client.post).toHaveBeenCalledWith(
-			"/agents",
-			expect.objectContaining({
-				name: "Test Agent",
-				signing_public_key: { kty: "OKP", crv: "Ed25519", x: "signing-pub" },
-				encryption_public_key: { kty: "OKP", crv: "X25519", x: "enc-pub" },
-			}),
-		);
-		expect(generateAgentKeys).toHaveBeenCalled();
-		expect(signingPublicKeyToJWK).toHaveBeenCalled();
-		expect(encryptionPublicKeyToJWK).toHaveBeenCalled();
-		expect(saveAgentKeys).toHaveBeenCalledWith(CONFIG_DIR, AGENT_ID, expect.anything());
-		expect(result).toMatchObject({ id: AGENT_ID, name: "Test Agent" });
+		await expect(register()).rejects.toThrow(profilesPath);
+
+		expect(existsSync(join(ownerDir, ROOT_KEY_FILE))).toBe(false);
+		expect(existsSync(join(ownerDir, PHRASE_FILE))).toBe(false);
+		expect(readFileSync(profilesPath, "utf-8")).toBe("{ truncated");
+		expect(fetch).not.toHaveBeenCalled();
 	});
 
-	it("publishes an initial batch of MLS KeyPackages (MLS-ready from birth)", async () => {
-		const client = makeClient();
-		await performAgentCreation(client, CONFIG_DIR, PROFILE, { name: "Test Agent" });
-		expect(publishMlsKeyPackages).toHaveBeenCalledWith(CONFIG_DIR, AGENT_ID, client);
+	it("test_performRegistration_when_solve_is_refused_with_5xx_then_the_root_is_kept", async () => {
+		stubFlow({ status: 502, body: { detail: "bad gateway" } });
+		await expect(register()).rejects.toThrow("Solve failed");
+		expect(existsSync(join(ownerDir, ROOT_KEY_FILE))).toBe(true);
+		expect(existsSync(join(ownerDir, PHRASE_FILE))).toBe(true);
 	});
 
-	it("agent creation succeeds even if MLS KeyPackage publish fails (non-fatal)", async () => {
-		vi.mocked(publishMlsKeyPackages).mockRejectedValueOnce(new Error("mls down"));
-		const client = makeClient();
-		const result = await performAgentCreation(client, CONFIG_DIR, PROFILE, { name: "Test Agent" });
-		expect(result).toMatchObject({ id: AGENT_ID });
-		expect(saveAgentKeys).toHaveBeenCalled();
+	it("test_performRegistration_when_solve_is_refused_with_4xx_then_the_owner_files_are_removed", async () => {
+		stubFlow({ status: 400, body: { detail: "bad proof" } });
+		await expect(register()).rejects.toThrow("Solve failed");
+		expect(existsSync(join(ownerDir, ROOT_KEY_FILE))).toBe(false);
+		expect(existsSync(join(ownerDir, PHRASE_FILE))).toBe(false);
+		expect(loadProfiles(ownerDir)).toEqual({});
 	});
 
-	it("with poll_url and existing profile: saves poll_url to credentials", async () => {
-		vi.mocked(loadCredentials).mockReturnValue({
-			[PROFILE]: { client_id: "cid", client_secret: "csec" },
+	it("test_performRegistration_when_solve_hits_a_network_error_then_the_root_is_kept", async () => {
+		let rootExistedAtSolve = false;
+		stubFetch((url) => {
+			if (url.endsWith("/auth/register")) return { status: 200, body: CHALLENGE };
+			rootExistedAtSolve = existsSync(join(ownerDir, ROOT_KEY_FILE));
+			throw new Error("network down");
 		});
-		const agentWithPoll = { ...BASE_AGENT, poll_url: "https://poll.example.com/queue" };
-		const client = makeClient({ post: vi.fn().mockResolvedValue(agentWithPoll) });
-
-		await performAgentCreation(client, CONFIG_DIR, PROFILE, { name: "Test Agent" });
-
-		expect(saveCredentials).toHaveBeenCalledWith(
-			CONFIG_DIR,
-			expect.objectContaining({
-				[PROFILE]: expect.objectContaining({ poll_url: "https://poll.example.com/queue" }),
-			}),
-		);
+		await expect(register()).rejects.toThrow("network down");
+		expect(rootExistedAtSolve).toBe(true);
+		expect(existsSync(join(ownerDir, ROOT_KEY_FILE))).toBe(true);
+		expect(existsSync(join(ownerDir, PHRASE_FILE))).toBe(true);
 	});
 
-	it("without poll_url: does not save credentials", async () => {
-		vi.mocked(loadCredentials).mockReturnValue({
-			[PROFILE]: { client_id: "cid", client_secret: "csec" },
+	it("test_performRegistration_when_the_owner_dir_is_inside_a_git_worktree_then_it_refuses_before_any_request", async () => {
+		const repo = join(tmp, "repo");
+		mkdirSync(join(repo, ".git"), { recursive: true });
+		stubFetch(() => {
+			throw new Error("fetch must not be called");
 		});
-		const client = makeClient(); // returns BASE_AGENT (no poll_url)
-		await performAgentCreation(client, CONFIG_DIR, PROFILE, { name: "Test Agent" });
-		expect(saveCredentials).not.toHaveBeenCalled();
+		await expect(
+			performRegistration(
+				API_URL,
+				{ configDir, ownerDir: join(repo, "owner") },
+				PROFILE,
+				REG_PARAMS,
+			),
+		).rejects.toThrow(/git worktree/);
+		expect(fetch).not.toHaveBeenCalled();
 	});
 
-	it("with poll_url but no existing profile entry: does not save credentials", async () => {
-		vi.mocked(loadCredentials).mockReturnValue({}); // no profile entry
-		const agentWithPoll = { ...BASE_AGENT, poll_url: "https://poll.example.com/queue" };
-		const client = makeClient({ post: vi.fn().mockResolvedValue(agentWithPoll) });
-
-		await performAgentCreation(client, CONFIG_DIR, PROFILE, { name: "Test Agent" });
-
-		expect(saveCredentials).not.toHaveBeenCalled();
-	});
-
-	it("passes humanOversight param through to POST body", async () => {
-		const client = makeClient();
-		await performAgentCreation(client, CONFIG_DIR, PROFILE, {
-			name: "Test Agent",
-			humanOversight: true,
-		});
-		expect(client.post).toHaveBeenCalledWith(
-			"/agents",
-			expect.objectContaining({ human_oversight: true }),
-		);
-	});
-
-	it("passes unlisted: true through to POST body", async () => {
-		const client = makeClient();
-		await performAgentCreation(client, CONFIG_DIR, PROFILE, {
-			name: "Test Agent",
-			unlisted: true,
-		});
-		expect(client.post).toHaveBeenCalledWith(
-			"/agents",
-			expect.objectContaining({ unlisted: true }),
-		);
-	});
-
-	it("passes unlisted: false explicitly (not dropped)", async () => {
-		const client = makeClient();
-		await performAgentCreation(client, CONFIG_DIR, PROFILE, {
-			name: "Test Agent",
-			unlisted: false,
-		});
-		const body = vi.mocked(client.post).mock.calls[0]?.[1] as Record<string, unknown>;
-		expect(body).toHaveProperty("unlisted", false);
-	});
-
-	it("omits humanOversight when not provided", async () => {
-		const client = makeClient();
-		await performAgentCreation(client, CONFIG_DIR, PROFILE, { name: "Test Agent" });
-		const body = vi.mocked(client.post).mock.calls[0]?.[1] as Record<string, unknown>;
-		expect(body).not.toHaveProperty("human_oversight");
-	});
-
-	// -----------------------------------------------------------------------
-	// PQ hybrid upload
-	//
-	// generateAgentKeys() always populates a pqEncryption keypair, so the POST
-	// body MUST carry pq_encryption_public_key as a ML-KEM JWK. If the
-	// `if (agentKeys.pqEncryption) { body.pq_encryption_public_key = ... }`
-	// block in onboard.ts were reverted, the property would vanish from the
-	// body and these assertions would fail.
-	// -----------------------------------------------------------------------
-
-	it("uploads pq_encryption_public_key as ML-KEM JWK when keys include pqEncryption", async () => {
-		const client = makeClient();
-		await performAgentCreation(client, CONFIG_DIR, PROFILE, { name: "Test Agent" });
-
-		expect(pqPublicKeyToJWK).toHaveBeenCalledWith(
-			vi.mocked(generateAgentKeys).mock.results[0]?.value.pqEncryption.publicKey,
-		);
-		expect(client.post).toHaveBeenCalledWith(
-			"/agents",
-			expect.objectContaining({
-				pq_encryption_public_key: { kty: "MLKEM", alg: "ML-KEM-768", x: "pq-pub" },
-			}),
-		);
-	});
-
-	it("omits pq_encryption_public_key when keys lack pqEncryption", async () => {
-		// Classical-only keypair (no PQ): the body must not carry the PQ JWK,
-		// but the classical fields MUST still be present and correct. Asserting
-		// the classical fields survived proves the function ran to completion on
-		// the no-PQ path (rather than the absence being a vacuous pass), and that
-		// dropping the PQ key did not corrupt the classical upload.
-		vi.mocked(generateAgentKeys).mockReturnValueOnce({
-			signing: { privateKey: new Uint8Array(32), publicKey: new Uint8Array(32) },
-			encryption: { privateKey: new Uint8Array(32), publicKey: new Uint8Array(32) },
-		});
-		const client = makeClient();
-		await performAgentCreation(client, CONFIG_DIR, PROFILE, { name: "Test Agent" });
-
-		const body = vi.mocked(client.post).mock.calls[0]?.[1] as Record<string, unknown>;
-		expect(body).not.toHaveProperty("pq_encryption_public_key");
-		expect(pqPublicKeyToJWK).not.toHaveBeenCalled();
-		// Classical fields still uploaded on the no-PQ path.
-		expect(body).toMatchObject({
-			name: "Test Agent",
-			signing_public_key: { kty: "OKP", crv: "Ed25519", x: "signing-pub" },
-			encryption_public_key: { kty: "OKP", crv: "X25519", x: "enc-pub" },
-		});
-	});
-
-	// -----------------------------------------------------------------------
-	// SPIFFE identity verification wiring: performAgentCreation
-	// runs verifyIdentitySpiffe after POST /agents when --verify-identity is set
-	// or SPIFFE_ENDPOINT_SOCKET is present.
-	// -----------------------------------------------------------------------
-
-	const SOCKET_ENV = "SPIFFE_ENDPOINT_SOCKET";
-	const SPIFFE_AUDIENCE = "spiffe://challenge.rine.network/tok-1";
-	const SPIFFE_RESULT = {
-		agent_id: AGENT_ID,
-		spiffe_id: "spiffe://prod.acme.example/web",
-		trust_domain: "prod.acme.example",
-		trust_tier: 2,
-		verified_at: "2026-06-30T00:00:00Z",
-	};
-
-	/** Client whose POST routes /agents, the SVID challenge, and verify-svid. */
-	function makeSpiffeClient() {
-		return {
-			get: vi.fn(),
-			delete: vi.fn(),
-			put: vi.fn(),
-			patch: vi.fn(),
-			post: vi.fn(async (path: string) => {
-				// Fresh copy per call: performAgentCreation mutates agent.identity,
-				// and BASE_AGENT is shared across the whole describe block.
-				if (path === "/agents") return { ...BASE_AGENT };
-				if (path.endsWith("/verify-svid/challenge"))
-					return { audience: SPIFFE_AUDIENCE, expires_in: 300 };
-				if (path.endsWith("/verify-svid")) return SPIFFE_RESULT;
-				return BASE_AGENT;
-			}),
-		};
-	}
-
-	it("verifyIdentity flag + --svid: creates agent then verifies, attaching identity", async () => {
-		const client = makeSpiffeClient();
-		const result = await performAgentCreation(client, CONFIG_DIR, PROFILE, {
-			name: "Test Agent",
-			verifyIdentity: true,
-			svid: "the.jwt.svid",
-		});
-
-		const paths = vi.mocked(client.post).mock.calls.map((c) => c[0]);
-		expect(paths).toEqual([
-			"/agents",
-			`/agents/${AGENT_ID}/verify-svid/challenge`,
-			`/agents/${AGENT_ID}/verify-svid`,
-		]);
-		expect(result.identity).toEqual(SPIFFE_RESULT);
-	});
-
-	it("does NOT verify identity when neither flag nor SPIFFE endpoint present", async () => {
-		delete process.env[SOCKET_ENV];
-		const client = makeSpiffeClient();
-		const result = await performAgentCreation(client, CONFIG_DIR, PROFILE, {
-			name: "Test Agent",
-		});
-		const paths = vi.mocked(client.post).mock.calls.map((c) => c[0]);
-		expect(paths).toEqual(["/agents"]);
-		expect(result.identity).toBeUndefined();
-	});
-
-	it("auto-runs verification when SPIFFE_ENDPOINT_SOCKET is present (with --svid)", async () => {
-		process.env[SOCKET_ENV] = "unix:///tmp/spire.sock";
-		try {
-			const client = makeSpiffeClient();
-			const result = await performAgentCreation(client, CONFIG_DIR, PROFILE, {
-				name: "Test Agent",
-				svid: "the.jwt.svid",
+	it("test_performRegistration_result_never_contains_the_phrase", async () => {
+		const captured: string[] = [];
+		for (const method of ["log", "info", "warn", "error"] as const) {
+			vi.spyOn(console, method).mockImplementation((...args: unknown[]) => {
+				captured.push(args.map(String).join(" "));
 			});
-			expect(result.identity).toEqual(SPIFFE_RESULT);
-		} finally {
-			delete process.env[SOCKET_ENV];
 		}
-	});
+		stubFlow(ACCEPT);
+		const result = await register();
 
-	it("surfaces a verification failure (no SVID + endpoint) as identityError — agent created, error not swallowed, NOT thrown", async () => {
-		process.env[SOCKET_ENV] = "unix:///tmp/spire.sock";
-		try {
-			const client = makeSpiffeClient();
-			// Must NOT throw — a verify failure after the agent exists would otherwise
-			// suppress the creation-success output. The error is captured instead.
-			const result = await performAgentCreation(client, CONFIG_DIR, PROFILE, {
-				name: "Test Agent",
-				log: () => {},
-			});
-			// Agent was created + keys saved; the verify failure is surfaced, not thrown.
-			expect(saveAgentKeys).toHaveBeenCalled();
-			expect(result).toMatchObject({ id: AGENT_ID });
-			expect(result.identity).toBeUndefined();
-			expect(result.identityError).toContain("auto-fetch");
-		} finally {
-			delete process.env[SOCKET_ENV];
+		const words = readFileSync(join(ownerDir, PHRASE_FILE), "utf-8")
+			.trim()
+			.split(/\s+/);
+		expect(words).toHaveLength(24);
+		const haystacks = [JSON.stringify(result), captured.join("\n")];
+		for (let i = 0; i + 3 <= words.length; i++) {
+			const run = words.slice(i, i + 3).join(" ");
+			for (const haystack of haystacks) expect(haystack).not.toContain(run);
 		}
-	});
-
-	it("a supplied --svid triggers verification even WITHOUT --verify-identity (no silent discard)", async () => {
-		delete process.env[SOCKET_ENV];
-		const client = makeSpiffeClient();
-		const result = await performAgentCreation(client, CONFIG_DIR, PROFILE, {
-			name: "Test Agent",
-			svid: "the.jwt.svid",
-		});
-		const paths = vi.mocked(client.post).mock.calls.map((c) => c[0]);
-		expect(paths).toEqual([
-			"/agents",
-			`/agents/${AGENT_ID}/verify-svid/challenge`,
-			`/agents/${AGENT_ID}/verify-svid`,
-		]);
-		expect(result.identity).toEqual(SPIFFE_RESULT);
-	});
-
-	it("captures a verify HTTP failure in identityError without throwing (creation preserved)", async () => {
-		const client = makeSpiffeClient();
-		vi.mocked(client.post).mockImplementation(async (path: string) => {
-			if (path === "/agents") return { ...BASE_AGENT };
-			if (path.endsWith("/verify-svid/challenge"))
-				return { audience: SPIFFE_AUDIENCE, expires_in: 300 };
-			if (path.endsWith("/verify-svid")) throw new Error("422 invalid SVID");
-			return BASE_AGENT;
-		});
-		const result = await performAgentCreation(client, CONFIG_DIR, PROFILE, {
-			name: "Test Agent",
-			svid: "bad.jwt",
-		});
-		expect(result).toMatchObject({ id: AGENT_ID });
-		expect(result.identity).toBeUndefined();
-		expect(result.identityError).toContain("422");
-	});
-
-	it("re-emits pq_encryption_public_key once the PQ key returns (negative→positive contrast)", async () => {
-		// Contrast guard for the `if (agentKeys.pqEncryption)` branch: the very
-		// same flow that omitted the PQ JWK above must re-emit it as soon as the
-		// keypair carries pqEncryption again. If the upload block were deleted,
-		// this positive-path assertion fails while the omission test above keeps
-		// passing — so the pair together pins BOTH directions of the guard.
-		vi.mocked(generateAgentKeys).mockReturnValueOnce({
-			signing: { privateKey: new Uint8Array(32), publicKey: new Uint8Array(32) },
-			encryption: { privateKey: new Uint8Array(32), publicKey: new Uint8Array(32) },
-		});
-		const classicalClient = makeClient();
-		await performAgentCreation(classicalClient, CONFIG_DIR, PROFILE, { name: "Test Agent" });
-		const classicalBody = vi.mocked(classicalClient.post).mock.calls[0]?.[1] as Record<string, unknown>;
-		expect(classicalBody).not.toHaveProperty("pq_encryption_public_key");
-
-		// Default mock keypair (with pqEncryption) on the next call → PQ JWK reappears.
-		const hybridClient = makeClient();
-		await performAgentCreation(hybridClient, CONFIG_DIR, PROFILE, { name: "Test Agent" });
-		const hybridBody = vi.mocked(hybridClient.post).mock.calls[0]?.[1] as Record<string, unknown>;
-		expect(hybridBody).toHaveProperty("pq_encryption_public_key", {
-			kty: "MLKEM",
-			alg: "ML-KEM-768",
-			x: "pq-pub",
-		});
 	});
 });

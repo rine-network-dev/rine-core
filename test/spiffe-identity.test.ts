@@ -3,7 +3,7 @@ import {
 	SpiffeVerificationError,
 	hasSpiffeEndpoint,
 	verifyIdentitySpiffe,
-} from "../src/onboard.js";
+} from "../src/spiffe.js";
 
 // ---------------------------------------------------------------------------
 // Helpers — a minimal ApiPoster spy and the two server responses the contract

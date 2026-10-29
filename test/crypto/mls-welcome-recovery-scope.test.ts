@@ -17,24 +17,17 @@ import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-	type AgentKeys,
-	generateAgentKeys,
-	saveAgentKeys,
-	signingPublicKeyToJWK,
-	toBase64Url,
-} from "../../src/crypto/keys.js";
+import type { AgentKeysResponse } from "../../src/api-types.js";
 import { mlsToBase64 } from "../../src/crypto/mls-api.js";
-import {
-	decryptGroupMessage,
-	encryptMlsGroupMessage,
-} from "../../src/crypto/message.js";
+import { decryptGroupMessage } from "../../src/message-group.js";
+import { encryptMlsGroupMessage } from "../../src/message-mls.js";
 import {
 	loadMlsGroup,
 	mlsGroupIdBytes,
 	openMlsClient,
 } from "../../src/crypto/mls.js";
-import { resetMlsCatchUpGate } from "../../src/mls-catchup.js";
+import { resetProcessGates } from "../../src/process-gate.js";
+import { World } from "./world.js";
 
 const FOUNDER = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
 const READER = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb";
@@ -47,78 +40,71 @@ const OTHER_GROUP = "22222222-6666-4666-8666-222222222222";
 const TEXT = "a message in a group the refusal is not about";
 
 let dir: string;
-let founderKeys: AgentKeys;
+let world: World;
 let welcomes: { id: string; group_id: string; blob: string }[];
 
 /** Agent ids `GET /groups/{id}/members` reports, per group. */
 const members = new Map<string, string[]>();
 
-/** The MLS signing keys `GET /agents/keys` publishes for `ids`. */
-function publishedMlsKeys(ids: string[]) {
-	const keys: Record<string, unknown> = {};
+/** The batch `GET /agents/keys` serves, built from the world's own responses. */
+function publishedKeys(ids: string[]) {
+	const keys: Record<string, AgentKeysResponse> = {};
 	for (const id of ids) {
-		const jwk = signingPublicKeyToJWK(openMlsClient(dir, id).publicKey());
-		keys[id] = { signing_public_key: jwk, encryption_public_key: jwk };
+		const generations = world.agents.get(id);
+		const newest = generations?.[generations.length - 1];
+		if (newest) keys[id] = newest.response;
 	}
-	return keys;
+	return { keys };
 }
 
 function server() {
+	const base = world.client();
 	return {
-		get: vi.fn(async (path: string, params?: Record<string, string>) => {
-			if (path === `/agents/${READER}/mls/welcomes`) {
-				// The real route marks every welcome it returns consumed in the same
-				// transaction, so the fetch is one-shot and the queue drains here too.
-				const batch = welcomes;
-				welcomes = [];
-				return { welcomes: batch };
-			}
-			if (path === "/agents/keys") {
-				return { keys: publishedMlsKeys(String(params?.ids).split(",")) };
-			}
-			if (path === `/agents/${FOUNDER}/keys`) {
-				return {
-					agent_id: FOUNDER,
-					signing_public_key: signingPublicKeyToJWK(
-						founderKeys.signing.publicKey,
-					),
-					encryption_public_key: {
-						kty: "OKP",
-						crv: "X25519",
-						x: toBase64Url(founderKeys.encryption.publicKey),
-					},
-				};
-			}
-			if (path.endsWith("/mls/handshakes")) return { handshakes: [] };
-			const groupId = path.split("/")[2] ?? "";
-			if (path.endsWith("/members")) {
-				return {
-					items: (members.get(groupId) ?? []).map((agent_id) => ({
-						agent_id,
-					})),
-				};
-			}
-			if (path.endsWith("/requests")) return { items: [] };
-			throw new Error(`unexpected GET ${path}`);
-		}),
+		get: vi.fn(
+			async (
+				path: string,
+				params?: Record<string, string | number | boolean>,
+			) => {
+				if (path === `/agents/${READER}/mls/welcomes`) {
+					// The real route marks every welcome it returns consumed in the same
+					// transaction, so the fetch is one-shot and the queue drains here too.
+					const batch = welcomes;
+					welcomes = [];
+					return { welcomes: batch };
+				}
+				if (path === "/agents/keys") {
+					return publishedKeys(String(params?.["ids"]).split(","));
+				}
+				if (path.endsWith("/mls/handshakes")) return { handshakes: [] };
+				const groupId = path.split("/")[2] ?? "";
+				if (path.endsWith("/members")) {
+					return {
+						items: (members.get(groupId) ?? []).map((agent_id) => ({
+							agent_id,
+						})),
+					};
+				}
+				if (path.endsWith("/requests")) return { items: [] };
+				return base.get(path, params);
+			},
+		),
 		post: vi.fn(async () => ({ stored: 1 })),
 	};
 }
 
 beforeEach(() => {
 	dir = fs.mkdtempSync(join(tmpdir(), "rine-welcome-scope-"));
+	world = new World();
 	welcomes = [];
 	members.clear();
-	founderKeys = generateAgentKeys();
-	saveAgentKeys(dir, FOUNDER, founderKeys);
-	for (const id of [READER, IMPOSTOR, OTHER_FOUNDER]) {
-		saveAgentKeys(dir, id, generateAgentKeys());
+	for (const id of [FOUNDER, READER, IMPOSTOR, OTHER_FOUNDER]) {
+		world.save(dir, world.addAgent({ id }));
 	}
-	resetMlsCatchUpGate();
+	resetProcessGates();
 });
 afterEach(() => {
 	fs.rmSync(dir, { recursive: true, force: true });
-	resetMlsCatchUpGate();
+	resetProcessGates();
 });
 
 /** Found `groupId` on `founderId`, seat the reader, and file the Welcome. */

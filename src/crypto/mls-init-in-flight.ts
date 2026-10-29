@@ -8,20 +8,19 @@
  * of when to retry.
  *
  * It lives here, once, because the CLI, the MCP server and the TS SDK all reach
- * this state on the same send path and all three previously restated it — as a
- * bare `Error` carrying a message string, which left a caller no way to
- * recognise it except by matching that text.
+ * this state on the same send path, and a caller recognises it by its code, never
+ * by matching its text.
  */
 
 /**
  * How long the server lets an unfinished MLS init hold a group frozen before it
  * self-clears.
  *
- * The server enforces it as a literal at `src/rine/api/mls_confirmation.py:56`,
- * and `src/rine/api/mls_constants.py:32` documents the same window as the one
- * `MLS_ACK_DEADLINE_SECONDS` reuses. This is the TypeScript side's single
- * source of truth for it: the operator-facing minutes below are derived, never
- * spelled out a second time.
+ * The server's value is `MLS_PENDING_WINDOW_SECONDS` in
+ * `src/rine/api/mls_constants.py`, the window `src/rine/api/mls_confirmation.py`
+ * enforces and `MLS_ACK_DEADLINE_SECONDS` reuses. This is the TypeScript side's
+ * single source of truth for it: the operator-facing minutes below are derived,
+ * never spelled out a second time.
  */
 export const MLS_PENDING_SELF_CLEAR_SECONDS = 900;
 
@@ -41,28 +40,28 @@ export const MLS_INIT_IN_FLIGHT_CODE = "RINE_GROUP_MLS_INIT_IN_FLIGHT";
  * failure of the native core, and it must survive as one.
  */
 export class MlsInitInFlightError extends Error {
-  readonly code = MLS_INIT_IN_FLIGHT_CODE;
+	readonly code = MLS_INIT_IN_FLIGHT_CODE;
 
-  constructor(public readonly groupHandle: string) {
-    super(inFlightMessage(groupHandle));
-    this.name = "MlsInitInFlightError";
-  }
+	constructor(public readonly groupHandle: string) {
+		super(inFlightMessage(groupHandle));
+		this.name = "MlsInitInFlightError";
+	}
 }
 
 function inFlightMessage(groupHandle: string): string {
-  const minutes = Math.round(MLS_PENDING_SELF_CLEAR_SECONDS / 60);
-  return [
-    `Group ${groupHandle} is initialising MLS. The server accepts only MLS`,
-    "messages here, and the group has no MLS state to encrypt with yet.",
-    `Retry once the init completes; a stuck init self-clears server-side after`,
-    `${minutes} minutes.`,
-  ].join(" ");
+	const minutes = Math.round(MLS_PENDING_SELF_CLEAR_SECONDS / 60);
+	return [
+		`Group ${groupHandle} is initialising MLS. The server accepts only MLS`,
+		"messages here, and the group has no MLS state to encrypt with yet.",
+		`Retry once the init completes; a stuck init self-clears server-side after`,
+		`${minutes} minutes.`,
+	].join(" ");
 }
 
 /** True for a refusal minted by the in-flight init guard, matched on its code. */
 export function isMlsInitInFlightError(err: unknown): boolean {
-  return (
-    (err as { code?: unknown } | null | undefined)?.code ===
-    MLS_INIT_IN_FLIGHT_CODE
-  );
+	return (
+		(err as { code?: unknown } | null | undefined)?.code ===
+		MLS_INIT_IN_FLIGHT_CODE
+	);
 }

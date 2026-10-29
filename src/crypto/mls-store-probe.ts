@@ -43,9 +43,14 @@ function isAbsent(err: unknown): boolean {
 	return code !== undefined && ABSENT_CODES.includes(code);
 }
 
+/** @internal Where the native core keeps the groups of one store root, one directory each. */
+export function groupsDirIn(storeRoot: string): string {
+	return join(storeRoot, "groups");
+}
+
 /** @internal Where the native core keeps this agent's groups, one directory each. */
 export function groupsDir(configDir: string, agentId: string): string {
-	return join(mlsStoreRoot(configDir, agentId), "groups");
+	return groupsDirIn(mlsStoreRoot(configDir, agentId));
 }
 
 /** @internal The state file inside one already-built group directory. */
@@ -65,8 +70,13 @@ export function groupStatePath(
 	agentId: string,
 	groupId: string,
 ): string {
+	return groupStatePathIn(mlsStoreRoot(configDir, agentId), groupId);
+}
+
+/** @internal {@link groupStatePath} for a store root that is not an agent's own. */
+export function groupStatePathIn(storeRoot: string, groupId: string): string {
 	const hex = Buffer.from(mlsGroupIdBytes(groupId)).toString("hex");
-	return groupStateFile(join(groupsDir(configDir, agentId), hex));
+	return groupStateFile(join(groupsDirIn(storeRoot), hex));
 }
 
 /**
@@ -99,6 +109,29 @@ export function stateStamp(
 		return `${stat.mtimeNs}:${stat.size}:${stat.ino}`;
 	} catch (err) {
 		if (isAbsent(err)) return null;
+		throw err;
+	}
+}
+
+/**
+ * Whether this host has an MLS store for the agent: the store root exists.
+ *
+ * The weaker question than {@link holdsAnyMlsState}: not "does this agent hold
+ * state for something" but "is there a store here at all". A store root that is
+ * a directory is the answer `true`; a path that is a regular file is not a store
+ * and answers `false`. Read the way {@link stateStamp} reads — one `stat`, no
+ * native addon open, no signing key, nothing deserialized — and an absent path
+ * is the answer `false` while any other failure is rethrown, so a store that
+ * cannot be read never answers "holds none".
+ *
+ * Deliberately NOT memoized, for the same reason as {@link holdsAnyMlsState}: it
+ * is asked on a refusal path, not once per row.
+ */
+export function holdsMlsStore(configDir: string, agentId: string): boolean {
+	try {
+		return fs.statSync(mlsStoreRoot(configDir, agentId)).isDirectory();
+	} catch (err) {
+		if (isAbsent(err)) return false;
 		throw err;
 	}
 }

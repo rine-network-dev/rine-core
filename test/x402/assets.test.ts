@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
 	requirementCanonicalAmount,
 	resolveDecimals,
+	resolveTokenExtra,
 } from "../../src/x402/assets.js";
 import { X402_ERROR } from "../../src/x402/errors.js";
 import type { PaymentRequirements } from "../../src/x402/types.js";
@@ -38,6 +39,33 @@ function expectCode(fn: () => unknown, code: string): void {
 		expect((err as { code?: string }).code).toBe(code);
 	}
 }
+
+describe("resolveTokenExtra", () => {
+	it("test_base_mainnet_usdc_domain_is_the_onchain_name_and_version", () => {
+		// Read from the contract on 2026-10-29: name() = "USD Coin", version() = "2".
+		// A payment signed over any other domain does not recover on chain.
+		expect(
+			resolveTokenExtra(
+				"eip155:8453",
+				"0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+			),
+		).toEqual({ name: "USD Coin", version: "2" });
+	});
+
+	it("test_base_sepolia_usdc_domain_is_the_live_proven_one", () => {
+		expect(resolveTokenExtra("eip155:84532", USDC_SEPOLIA)).toEqual({
+			name: "USDC",
+			version: "2",
+		});
+	});
+
+	it("test_unknown_asset_is_rejected_not_defaulted", () => {
+		expectCode(
+			() => resolveTokenExtra("eip155:84532", UNKNOWN_ASSET),
+			X402_ERROR.UNKNOWN_ASSET_DECIMALS,
+		);
+	});
+});
 
 describe("resolveDecimals (fail closed)", () => {
 	it("test_registry_asset_resolves_its_decimals", () => {

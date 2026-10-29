@@ -245,7 +245,7 @@ describe("matchGroupByName tier 4", () => {
 });
 
 describe("matchGroupByName refusals", () => {
-	it("lists the org's groups when nothing matches", () => {
+	it("lists the caller's groups when nothing matches", () => {
 		try {
 			matchGroupByName([PLANNING, LABELS], "invoices");
 			expect.unreachable("a reference matching nothing must refuse");
@@ -311,7 +311,7 @@ describe("isBareReference", () => {
 
 	it("leaves a blank recipient to the agent resolver", () => {
 		// "Expected a UUID or handle" answers an empty recipient far better than
-		// a hunt through the org's groups ending in "no group is called ''".
+		// a hunt through the caller's groups ending in "no group is called ''".
 		expect(isBareReference("   ")).toBe(false);
 	});
 });

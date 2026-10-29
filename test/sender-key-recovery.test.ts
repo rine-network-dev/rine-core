@@ -13,17 +13,8 @@ import {
 	SenderKeyUnavailableError,
 	unknownSenderKeyId,
 } from "../src/sender-key-words.js";
-import type { AgentKeys } from "../src/crypto/keys.js";
-import {
-	generateAgentKeys,
-	saveAgentKeys,
-	toBase64Url,
-} from "../src/crypto/keys.js";
-import {
-	encryptGroupMessage,
-	encryptMessage,
-	getAgentPublicKeys,
-} from "../src/crypto/message.js";
+import { encryptMessage } from "../src/crypto/message.js";
+import { encryptGroupMessage } from "../src/crypto/sender-key-seal.js";
 import { generateSenderKey } from "../src/crypto/sender-keys.js";
 import {
 	loadSenderKeyStates,
@@ -31,6 +22,7 @@ import {
 	saveSenderKeyState,
 	senderKeysRetired,
 } from "../src/crypto/sender-keys-helpers.js";
+import { World, type WorldAgent } from "./crypto/world.js";
 
 /**
  * The recovery path is the whole reason the leave-time wipe used to be
@@ -49,6 +41,10 @@ function makeTmpDir(): string {
 	return fs.mkdtempSync(join(tmpdir(), "rine-skrecovery-test-"));
 }
 
+let world: World;
+let reader: WorldAgent;
+let peer: WorldAgent;
+
 /**
  * A client that answers exactly the four reads the recovery path makes: the
  * group's roster, the inbox listing, the one DM in it, and the peer's published
@@ -64,76 +60,86 @@ function makeTmpDir(): string {
  * the second row is never opened in that test, so its identity is nothing.
  */
 function makeClient(
-	peerKeys: AgentKeys,
 	dm: Record<string, unknown>,
 	memberIds: string[] = [PEER_ID],
 	total?: number,
 	rows = 1,
 ) {
+	const base = world.client();
 	return {
-		get: vi.fn().mockImplementation((path: string) => {
-			if (path === `/groups/${GROUP_ID}/members`) {
-				return Promise.resolve({
-					items: memberIds.map((id) => ({ agent_id: id })),
-				});
-			}
-			if (path === `/agents/${READER_ID}/messages`) {
-				return Promise.resolve({
-					items: Array.from({ length: rows }, () => ({ id: DM_ID })),
-					...(total === undefined ? {} : { total }),
-				});
-			}
-			if (path === `/messages/${DM_ID}`) return Promise.resolve(dm);
-			if (path.includes("/keys")) {
-				return Promise.resolve({
-					agent_id: PEER_ID,
-					...getAgentPublicKeys("", PEER_ID, peerKeys),
-				});
-			}
-			return Promise.reject(new Error(`Unexpected GET: ${path}`));
-		}),
+		get: vi.fn().mockImplementation(
+			(
+				path: string,
+				params?: Record<string, string | number | boolean>,
+			) => {
+				if (path === `/groups/${GROUP_ID}/members`) {
+					return Promise.resolve({
+						items: memberIds.map((id) => ({ agent_id: id })),
+					});
+				}
+				if (path === `/agents/${READER_ID}/messages`) {
+					return Promise.resolve({
+						items: Array.from({ length: rows }, () => ({ id: DM_ID })),
+						...(total === undefined ? {} : { total }),
+					});
+				}
+				if (path === `/messages/${DM_ID}`) return Promise.resolve(dm);
+				if (path.includes("/keys")) return base.get(path, params);
+				return Promise.reject(new Error(`Unexpected GET: ${path}`));
+			},
+		),
 		post: vi.fn(),
 	};
 }
+
+/** A real sealed distribution DM from `peer` to `reader`. */
+async function sealedDistribution(state: ReturnType<typeof generateSenderKey>) {
+	const sealed = await encryptMessage(
+		dir,
+		PEER_ID,
+		READER_ID,
+		{
+			encryption: reader.derived.x25519.publicKey,
+			pqEncryption: reader.derived.mlKem768.publicKey,
+		},
+		{
+			group_id: GROUP_ID,
+			sender_key_id: state.senderKeyId,
+			chain_key: Buffer.from(state.chainKey).toString("base64url"),
+			message_index: state.messageIndex,
+			sender_agent_id: PEER_ID,
+		},
+	);
+	return {
+		id: DM_ID,
+		type: "rine.v1.sender_key_distribution",
+		from_agent_id: PEER_ID,
+		encrypted_payload: sealed.encrypted_payload,
+	};
+}
+
+let dir: string;
 
 // Named for both because it holds both: the count-only wrapper and the pass it
 // is one line over. A label naming only the wrapper mislabels most of its own
 // contents in the reporter, which is where a failure is read.
 describe("scanPendingSKDistributions / fetchAndIngestPendingSKDistributions", () => {
-	let dir: string;
-	let peerKeys: AgentKeys;
 	let dm: Record<string, unknown>;
 	let client: ReturnType<typeof makeClient>;
 	let peerSenderKeyId: string;
 
 	beforeEach(async () => {
 		dir = makeTmpDir();
-		const readerKeys = generateAgentKeys();
-		saveAgentKeys(dir, READER_ID, readerKeys);
-		peerKeys = generateAgentKeys();
-		saveAgentKeys(dir, PEER_ID, peerKeys);
+		world = new World();
+		reader = world.addAgent({ id: READER_ID });
+		peer = world.addAgent({ id: PEER_ID });
+		world.save(dir, reader);
+		world.save(dir, peer);
 
 		const peerState = generateSenderKey(GROUP_ID, PEER_ID);
 		peerSenderKeyId = peerState.senderKeyId;
-		const sealed = await encryptMessage(
-			dir,
-			PEER_ID,
-			readerKeys.encryption.publicKey,
-			{
-				group_id: GROUP_ID,
-				sender_key_id: peerState.senderKeyId,
-				chain_key: toBase64Url(peerState.chainKey),
-				message_index: peerState.messageIndex,
-				sender_agent_id: PEER_ID,
-			},
-		);
-		dm = {
-			id: DM_ID,
-			type: "rine.v1.sender_key_distribution",
-			from_agent_id: PEER_ID,
-			encrypted_payload: sealed.encrypted_payload,
-		};
-		client = makeClient(peerKeys, dm);
+		dm = await sealedDistribution(peerState);
+		client = makeClient(dm);
 	});
 	afterEach(() => fs.rmSync(dir, { recursive: true }));
 
@@ -183,7 +189,7 @@ describe("scanPendingSKDistributions / fetchAndIngestPendingSKDistributions", ()
 		// never `decryptGroupMessageWithRecovery`, so a lift that lived only up
 		// there left a re-admitted member refusing its new peers' keys for ever.
 		markSenderKeysRetired(dir, READER_ID, GROUP_ID);
-		client = makeClient(peerKeys, dm, [PEER_ID, READER_ID]);
+		client = makeClient(dm, [PEER_ID, READER_ID]);
 
 		const ingested = await fetchAndIngestPendingSKDistributions(
 			client as never,
@@ -213,7 +219,11 @@ describe("scanPendingSKDistributions / fetchAndIngestPendingSKDistributions", ()
 		expect(senderKeysRetired(dir, READER_ID, GROUP_ID)).toBe(true);
 		// The roster read is the only one the refusal pays for.
 		expect(client.get).toHaveBeenCalledTimes(1);
-		expect(client.get).toHaveBeenCalledWith(`/groups/${GROUP_ID}/members`);
+		expect(client.get).toHaveBeenCalledWith(
+			`/groups/${GROUP_ID}/members`,
+			undefined,
+			undefined,
+		);
 	});
 
 	/**
@@ -226,7 +236,7 @@ describe("scanPendingSKDistributions / fetchAndIngestPendingSKDistributions", ()
 	 */
 	describe("what the one page did not reach", () => {
 		it("test_scan_when_the_server_counts_more_than_the_page_then_the_rest_is_reported", async () => {
-			client = makeClient(peerKeys, dm, [PEER_ID], 137);
+			client = makeClient(dm, [PEER_ID], 137);
 
 			const scan = await scanPendingSKDistributions(
 				client as never,
@@ -238,7 +248,7 @@ describe("scanPendingSKDistributions / fetchAndIngestPendingSKDistributions", ()
 		});
 
 		it("test_scan_when_the_page_holds_the_whole_listing_then_nothing_is_reported", async () => {
-			client = makeClient(peerKeys, dm, [PEER_ID], 1);
+			client = makeClient(dm, [PEER_ID], 1);
 
 			const scan = await scanPendingSKDistributions(
 				client as never,
@@ -263,7 +273,7 @@ describe("scanPendingSKDistributions / fetchAndIngestPendingSKDistributions", ()
 
 		it("test_scan_when_the_group_is_retired_then_no_page_is_read_and_none_is_missed", async () => {
 			markSenderKeysRetired(dir, READER_ID, GROUP_ID);
-			client = makeClient(peerKeys, dm, [PEER_ID], 137);
+			client = makeClient(dm, [PEER_ID], 137);
 
 			const scan = await scanPendingSKDistributions(
 				client as never,
@@ -282,7 +292,7 @@ describe("scanPendingSKDistributions / fetchAndIngestPendingSKDistributions", ()
 			// which is the same state as the rows past the end of the page. A
 			// version that computed the shortfall before the loop reported those
 			// rows as scanned, on exactly the path that stops early.
-			client = makeClient(peerKeys, dm, [PEER_ID], 137, 2);
+			client = makeClient(dm, [PEER_ID], 137, 2);
 
 			const scan = await scanPendingSKDistributions(
 				client as never,
@@ -299,7 +309,7 @@ describe("scanPendingSKDistributions / fetchAndIngestPendingSKDistributions", ()
 			// 🔴 `fetchAndIngestPendingSKDistributions` returns `number` and every
 			// read path in the product calls it. It is this function with the second
 			// number dropped, never a second implementation.
-			client = makeClient(peerKeys, dm, [PEER_ID], 137);
+			client = makeClient(dm, [PEER_ID], 137);
 
 			const ingested = await fetchAndIngestPendingSKDistributions(
 				client as never,
@@ -313,18 +323,16 @@ describe("scanPendingSKDistributions / fetchAndIngestPendingSKDistributions", ()
 });
 
 describe("decryptGroupMessageWithRecovery", () => {
-	let dir: string;
 	let ciphertext: string;
-	let readerKeys: AgentKeys;
-	let peerKeys: AgentKeys;
 	let client: { get: ReturnType<typeof vi.fn>; post: ReturnType<typeof vi.fn> };
 
 	beforeEach(async () => {
 		dir = makeTmpDir();
-		readerKeys = generateAgentKeys();
-		saveAgentKeys(dir, READER_ID, readerKeys);
-		peerKeys = generateAgentKeys();
-		saveAgentKeys(dir, PEER_ID, peerKeys);
+		world = new World();
+		reader = world.addAgent({ id: READER_ID });
+		peer = world.addAgent({ id: PEER_ID });
+		world.save(dir, reader);
+		world.save(dir, peer);
 
 		// The peer's own copy, which `encryptGroupMessage` advances in place. A
 		// stand-in sender needs it as much as a real one does: the tail refuses a
@@ -374,7 +382,11 @@ describe("decryptGroupMessageWithRecovery", () => {
 		// The membership read is the only one: the inbox scan is what the
 		// retirement declines to pay for.
 		expect(client.get).toHaveBeenCalledTimes(1);
-		expect(client.get).toHaveBeenCalledWith(`/groups/${GROUP_ID}/members`);
+		expect(client.get).toHaveBeenCalledWith(
+			`/groups/${GROUP_ID}/members`,
+			undefined,
+			undefined,
+		);
 		expect(senderKeysRetired(dir, READER_ID, GROUP_ID)).toBe(true);
 	});
 
@@ -442,28 +454,8 @@ describe("decryptGroupMessageWithRecovery", () => {
 		// where the recovery had done the most work. The verdict is the same as an
 		// empty scan's, and is now said in the same words.
 		const otherState = generateSenderKey(GROUP_ID, PEER_ID);
-		const sealed = await encryptMessage(
-			dir,
-			PEER_ID,
-			readerKeys.encryption.publicKey,
-			{
-				group_id: GROUP_ID,
-				sender_key_id: otherState.senderKeyId,
-				chain_key: toBase64Url(otherState.chainKey),
-				message_index: otherState.messageIndex,
-				sender_agent_id: PEER_ID,
-			},
-		);
-		const scanning = makeClient(
-			peerKeys,
-			{
-				id: DM_ID,
-				type: "rine.v1.sender_key_distribution",
-				from_agent_id: PEER_ID,
-				encrypted_payload: sealed.encrypted_payload,
-			},
-			[PEER_ID, READER_ID],
-		);
+		const sealed = await sealedDistribution(otherState);
+		const scanning = makeClient(sealed, [PEER_ID, READER_ID]);
 
 		const err = (await decryptGroupMessageWithRecovery(
 			scanning as never,
