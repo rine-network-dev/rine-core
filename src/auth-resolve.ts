@@ -30,7 +30,7 @@ export interface AgentOnlyDirs {
 export type AuthDirs = CustodyDirs | AgentOnlyDirs;
 
 export const AGENT_ONLY_OWNER_DIR =
-	"An agent-only runtime takes no owner dir: it never reads one.";
+	"An agent-only runtime takes no owner directory: it never reads one.";
 
 /** Dirs asked for an agent-only runtime and for an owner dir at once. */
 export class AgentOnlyOwnerDirError extends Error {

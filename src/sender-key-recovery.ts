@@ -19,6 +19,8 @@ import {
 import { fetchGroupMembers } from "./group-members.js";
 import type { HttpClient } from "./http.js";
 import { decryptGroupMessage } from "./message-group.js";
+import { withPeekHeader } from "./message-words.js";
+import { ackAfterRead, isSettledRow } from "./read-ack.js";
 import {
 	SenderKeyUnavailableError,
 	unknownSenderKeyId,
@@ -210,17 +212,19 @@ export async function scanPendingSKDistributions(
 	// arm below `break`s: the rows it never reached were listed and not opened,
 	// which is the same state as the rows past the end of the page.
 	let opened = 0;
+	// Marked in ONE request after the scan: one POST per row would be up to a
+	// hundred extra requests, where the fetch used to mark for free.
+	const settledIds: string[] = [];
 	for (const msg of inbox.items) {
 		opened++;
 		try {
-			// Say which agent is reading. The server marks the delivery row of the
-			// acting agent alone, and this scan reads on behalf of `agentId` — a
-			// bare GET would either mark nothing (multi-agent org) or, worse,
-			// leave the recovery invisible to the queue that tracks it.
+			// Say which agent is reading, and read as a peek: the server would mark
+			// the row at fetch, before this scan knows whether it opens. The mark
+			// is made below, once the row is settled (`read-ack.ts`).
 			const full = (await client.get(
 				`/messages/${msg.id}`,
 				{},
-				{ [ACTING_AGENT_HEADER]: agentId },
+				withPeekHeader({ [ACTING_AGENT_HEADER]: agentId }, true),
 			)) as MessageRead;
 			// With no server-authenticated sender the envelope's claim cannot be bound
 			// to anything, so skip rather than ingest key material on the strength of
@@ -235,8 +239,12 @@ export async function scanPendingSKDistributions(
 				undefined,
 				full.created_at,
 			);
-			// A refused envelope carries no text, so it holds no key material to read.
-			if (result.plaintext === undefined) continue;
+			// A refused envelope carries no text, so it holds no key material to
+			// read; an authenticity refusal is still settled, and marked.
+			const readable = result.plaintext !== undefined;
+			const row = { ...full, verification_status: result.verificationStatus };
+			if (isSettledRow(row, readable)) settledIds.push(full.id);
+			if (!readable) continue;
 			if (ingestSenderKeyDistribution(configDir, agentId, full.type, result)) {
 				ingested++;
 				if (targetSenderKeyId) {
@@ -249,6 +257,14 @@ export async function scanPendingSKDistributions(
 		} catch {
 			// Skip undecryptable or already-ingested distributions
 		}
+	}
+	const failure = await ackAfterRead(client, agentId, settledIds, {
+		settled: true,
+	});
+	if (failure) {
+		console.warn(
+			`rine: could not mark ${settledIds.length} scanned message(s) delivered: ${failure.message}`,
+		);
 	}
 	return { ingested, unscanned: beyondPage + (inbox.items.length - opened) };
 }

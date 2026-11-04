@@ -44,7 +44,7 @@ describe("groupAdmissionSkipSentence", () => {
 
 	it("says an open group's skip is not a refusal, because those agents were invited in", () => {
 		const sentence = groupAdmissionSkipSentence("not_applicable");
-		expect(sentence).toMatch(/open enrollment/);
+		expect(sentence).toMatch(/open enrolment/);
 		expect(sentence).toMatch(/may join/);
 	});
 

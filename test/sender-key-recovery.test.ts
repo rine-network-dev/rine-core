@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ACTING_AGENT_HEADER } from "../src/actor.js";
+import { PEEK_HEADER } from "../src/message-words.js";
 import {
 	decryptGroupMessageWithRecovery,
 	fetchAndIngestPendingSKDistributions,
@@ -89,6 +90,7 @@ function makeClient(
 			},
 		),
 		post: vi.fn(),
+		markDelivered: vi.fn().mockResolvedValue({ marked: 1 }),
 	};
 }
 
@@ -166,7 +168,77 @@ describe("scanPendingSKDistributions / fetchAndIngestPendingSKDistributions", ()
 			(call) => call[0] === `/messages/${DM_ID}`,
 		);
 		expect(read).toBeDefined();
-		expect(read?.[2]).toEqual({ [ACTING_AGENT_HEADER]: READER_ID });
+		expect(read?.[2]).toMatchObject({ [ACTING_AGENT_HEADER]: READER_ID });
+	});
+
+	it("test_scan_when_it_reads_the_dm_then_it_peeks_and_marks_only_after_the_row_opens", async () => {
+		await fetchAndIngestPendingSKDistributions(client as never, dir, READER_ID);
+
+		const read = client.get.mock.calls.find(
+			(call) => call[0] === `/messages/${DM_ID}`,
+		);
+		expect(read?.[2]).toEqual({
+			[ACTING_AGENT_HEADER]: READER_ID,
+			[PEEK_HEADER]: "1",
+		});
+		expect(client.markDelivered).toHaveBeenCalledTimes(1);
+		expect(client.markDelivered).toHaveBeenCalledWith(
+			READER_ID,
+			[DM_ID],
+			{ [ACTING_AGENT_HEADER]: READER_ID },
+		);
+	});
+
+	it("test_scan_when_several_rows_settle_then_one_request_marks_them_all", async () => {
+		client = makeClient(dm, [PEER_ID], undefined, 3);
+
+		await fetchAndIngestPendingSKDistributions(client as never, dir, READER_ID);
+
+		expect(client.markDelivered).toHaveBeenCalledTimes(1);
+		expect(client.markDelivered).toHaveBeenCalledWith(
+			READER_ID,
+			[DM_ID, DM_ID, DM_ID],
+			{ [ACTING_AGENT_HEADER]: READER_ID },
+		);
+	});
+
+	it("test_scan_when_no_row_settles_then_it_stays_new_without_a_mark_or_a_warning", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		client = makeClient({ ...dm, encrypted_payload: "not-an-envelope" });
+
+		const ingested = await fetchAndIngestPendingSKDistributions(
+			client as never,
+			dir,
+			READER_ID,
+		);
+
+		expect(ingested).toBe(0);
+		expect(client.markDelivered).not.toHaveBeenCalled();
+		expect(warn).not.toHaveBeenCalled();
+		warn.mockRestore();
+	});
+
+	it("test_scan_when_the_sender_is_refused_for_authenticity_then_it_is_marked", async () => {
+		client = makeClient({ ...dm, from_agent_id: READER_ID });
+
+		await fetchAndIngestPendingSKDistributions(client as never, dir, READER_ID);
+
+		expect(client.markDelivered).toHaveBeenCalledTimes(1);
+	});
+
+	it("test_scan_when_the_mark_fails_then_the_scan_goes_on_and_warns", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		client.markDelivered.mockRejectedValue(new Error("503"));
+
+		const ingested = await fetchAndIngestPendingSKDistributions(
+			client as never,
+			dir,
+			READER_ID,
+		);
+
+		expect(ingested).toBe(1);
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining("503"));
+		warn.mockRestore();
 	});
 
 	it("test_recovery_when_the_group_was_retired_then_the_pending_key_is_refused", async () => {

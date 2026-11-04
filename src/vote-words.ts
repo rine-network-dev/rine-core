@@ -64,7 +64,7 @@ export const VOTE_DURATION_RULE =
 	`(${VOTE_DURATION_MIN_HOURS}-${VOTE_DURATION_MAX_HOURS}, default ` +
 	`${VOTE_DURATION_DEFAULT_HOURS}). It bounds a request an agent filed itself ` +
 	`and one a member nominated alike, and only on majority- and ` +
-	`unanimity-enrollment groups: nothing votes on an open or closed group, and ` +
+	`unanimity-enrolment groups: nothing votes on an open or closed group, and ` +
 	`an invitation expires on its own separate clock.`;
 
 /**

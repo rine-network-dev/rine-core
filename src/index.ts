@@ -3,6 +3,8 @@
 // public, so the package entry point imports it for that effect.
 import "./mls-self-update.js";
 
+export { ackFailureNotice, createAckBatcher, markDeliveredAs } from "./ack-batcher.js";
+export type { AckBatcher, AckBatcherOptions } from "./ack-batcher.js";
 export {
 	AGENT_ID_MISMATCH_CODE,
 	AgentIdMismatchError,
@@ -277,6 +279,13 @@ export {
 	sdkSyncRemedy,
 } from "./mls-read-refusal.js";
 export { PEEK_HEADER, withPeekHeader } from "./message-words.js";
+export {
+	ackAfterRead,
+	isDirectEnvelope,
+	isGroupEnvelope,
+	isSettledRow,
+} from "./read-ack.js";
+export type { AckDecision, AckRow } from "./read-ack.js";
 export {
 	groupAuthenticityStatus,
 	isPermanent,
@@ -758,7 +767,7 @@ export type {
 	VerifyIdentityResult,
 	VerifyIdentitySpiffeOptions,
 } from "./spiffe.js";
-export { jitteredDelayMs, sleep } from "./timing.js";
+export { DeadlineError, jitteredDelayMs, sleep, sleepWithSignal, raceDeadline } from "./timing.js";
 export {
 	ENCRYPTION_VERSIONS,
 	isDecryptableVersion,

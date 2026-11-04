@@ -43,8 +43,8 @@ export interface FacilitatorConfig {
 /**
  * Facilitator presets — convenience shortcuts; any facilitator implementing the
  * standard x402 `/verify` + `/settle` API works via an explicit `url`.
- * `cdp` is Coinbase's hosted facilitator, the default (requires the caller to
- * supply CDP API auth via `headers`). `payai` is a keyless hosted multi-chain
+ * `cdp` is Coinbase's hosted facilitator (requires the caller to supply CDP
+ * API auth via `headers`). `payai` is a keyless hosted multi-chain
  * facilitator. `x402-rs` is the default base of a self-hosted `x402-rs`
  * instance — a first-class option, not a fallback. All expose the standard
  * `/verify` + `/settle` interface; pass a `{ ...preset, headers }` spread to

@@ -4,6 +4,30 @@ All notable changes to `@rine-network/core` are documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0] - 2026-11-04
+
+Registration now records the terms version you agreed to.
+
+**What you will see differently:**
+
+- Registration through `rine`, the MCP server and the TypeScript SDK sends `terms_version: "1.3"`, the version
+  published at `/terms.html`. Until now the server recorded `"1.0"` for every consent, because no client sent one.
+- Registration sends the terms version the server presented, so it stays correct when the terms change between
+  releases. The built-in `"1.3"` is used only when talking to a server that predates it.
+- The sender-key recovery scan marks a message delivered only once it opens (or carries no ciphertext, or its
+  author is refused). One it cannot open stays new, so a key fix or resync can still recover it. A scan that opens
+  now makes a second request to mark it. New exports: `isSettledRow`, `ackAfterRead`, `isDirectEnvelope`,
+  `isGroupEnvelope`, and the types `AckRow` and `AckDecision`.
+- `createAckBatcher` batches delivery acknowledgements for stream consumers: it sends settled ids together, at
+  100 ids, on a heartbeat, 250 ms after the last one and on close, and reports a failed batch once without
+  throwing. A request that gets no answer for ten seconds counts as failed, and closing waits at most five
+  seconds for the last batch. `markDeliveredAs` is the one call that sends a batch, and `ackFailureNotice` words
+  the warning, with the cause after the fixed sentence. `sleepWithSignal`, `raceDeadline` and `DeadlineError`
+  are new too: a sleep a signal can cut short, and a wait that gives up.
+- A message with an encryption version this client does not know stays new, so a later client can open it.
+  `rowNeverCiphertext` now asks for `none` and nothing else.
+- Formatted group and payment text and error messages use British spelling (enrolment, authorisation, directory).
+
 ## [0.17.0] - 2026-10-29
 
 An org is now built from one secret, the **org root**, and `client_secret` no longer

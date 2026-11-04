@@ -69,7 +69,7 @@ export function reconcilePayment(
 	const named = parseAtomicAmount(accepted);
 	const signed = parseAtomicUnits(
 		String(payment.payload?.authorization?.value ?? ""),
-		"Signed authorization value",
+		"Signed authorisation value",
 	);
 	for (const quote of quoteAccepts) {
 		if (accepted.scheme !== quote.scheme) continue;
@@ -81,7 +81,7 @@ export function reconcilePayment(
 		if (signed < quoted) {
 			throw new X402Error(
 				X402_ERROR.REQUIREMENT_MISMATCH,
-				"Signed authorization value underfunds the quoted requirement — refusing to settle (local underpayment guard)",
+				"Signed authorisation value underfunds the quoted requirement — refusing to settle (local underpayment guard)",
 				{ signed: signed.toString(), required: quoted.toString() },
 			);
 		}

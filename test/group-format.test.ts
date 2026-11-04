@@ -286,7 +286,7 @@ describe("groupEncryption — the groups that were always sender-key", () => {
 			post_quantum: false,
 			pending: false,
 			mls_never_founded: false,
-			summary: expect.stringContaining("open-enrollment groups by design"),
+			summary: expect.stringContaining("open-enrolment groups by design"),
 		});
 		expect(open.summary).not.toContain(MLS_NEVER_FOUNDED_NOTE);
 	});
@@ -338,7 +338,7 @@ describe("groupEncryption — the groups that were always sender-key", () => {
 			group({ mls_enabled: false, mls_group_id: null }),
 		).summary;
 
-		expect(said).toContain("open-enrollment groups by design");
+		expect(said).toContain("open-enrolment groups by design");
 		expect(said).toContain("a closed group created without MLS too");
 		expect(said).toContain("rine's delivery filter");
 	});

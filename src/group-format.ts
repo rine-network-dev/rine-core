@@ -93,8 +93,8 @@ const SENDER_KEY_HEAD = "Sender Keys — NOT post-quantum.";
  */
 const SENDER_KEY_SUMMARY =
 	`${SENDER_KEY_HEAD} A group runs them whenever it has no` +
-	" ratchet tree: open-enrollment groups by design, because the server keeps" +
-	" open enrollment off the MLS path rather than hand an unattested joiner a" +
+	" ratchet tree: open-enrolment groups by design, because the server keeps" +
+	" open enrolment off the MLS path rather than hand an unattested joiner a" +
 	" cryptographic seat, and a closed group created without MLS too. Removal" +
 	" here is enforced by rine's delivery filter, not by cryptography.";
 

@@ -25,7 +25,12 @@ import {
 import { solveTimeLockWithProgress } from "./timelock.js";
 import { join } from "node:path";
 
+/** The terms version sent when the challenge names none (a server that predates it); pinned to landing/public/terms.html by tests/test_terms-version-pinned_group0.py. */
+export const TERMS_VERSION = "1.3";
+
 interface ChallengeResponse {
+	/** The terms version the server presented; absent from a server that predates it. */
+	terms_version?: string;
 	challenge_id: string;
 	prefix: string;
 	modulus: string;
@@ -145,6 +150,7 @@ export async function performRegistration(
 			org_name: params.name,
 			org_slug: params.slug,
 			consent: true,
+			terms_version: challenge.terms_version ?? TERMS_VERSION,
 			main_branch: branchPublication(org, main, Math.floor(Date.now() / 1000)),
 			reader_public_key: b64(org.reader.publicKey),
 			proof: signJws(

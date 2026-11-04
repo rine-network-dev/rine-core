@@ -26,7 +26,7 @@ export const PHRASE_INSTRUCTION =
  */
 export function ownerDirNotice(ownerDir: string): string {
 	return (
-		`Owner dir: ${ownerDir} holds root.key and the recovery phrase. A root kept on a host ` +
+		`Owner directory: ${ownerDir} holds root.key and the recovery phrase. A root kept on a host ` +
 		"that runs agents is exposed if that host is compromised, so keep that dir on your own machine."
 	);
 }
@@ -119,7 +119,7 @@ function rootTakenError(ownerDir: string): Error {
 	if (fs.statSync(file, { throwIfNoEntry: false }) === undefined) {
 		return new Error(`${file} is not an org root (a dangling link?): remove it, then retry`);
 	}
-	return new Error(`An org root already exists in ${ownerDir}: one org per owner dir`);
+	return new Error(`An org root already exists in ${ownerDir}: one org per owner directory`);
 }
 
 /**

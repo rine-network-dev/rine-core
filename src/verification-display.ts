@@ -69,7 +69,7 @@ export function verificationWordsLines(
 				`${label} (this client): ${comparison.computed}`,
 				`${label} (server):       ${comparison.asserted}`,
 				"These differ. The words are derived from an agent's signing key, so the",
-				"server holds a different signing key than this config dir does. A config",
+				"server holds a different signing key than this config directory does. A config",
 				"dir copied from another machine, or a signing key republished elsewhere,",
 				"both look like this. Messages still send and arrive.",
 				"Publish this agent's public key again, or point RINE_CONFIG_DIR at the",
@@ -79,7 +79,7 @@ export function verificationWordsLines(
 			if (comparison.asserted === null) return [];
 			return [
 				`${label} (server): ${comparison.asserted}`,
-				"Not recomputed here: this config dir holds no usable signing key for this",
+				"Not recomputed here: this config directory holds no usable signing key for this",
 				"agent, so these words are the server's statement rather than this client's.",
 			];
 		case "not-asserted":

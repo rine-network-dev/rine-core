@@ -48,7 +48,7 @@ export function loadCustody(dirs: CustodyDirs, branch: string): Custody {
 	)?.org_id;
 	if (held === undefined || orgId === undefined) {
 		throw new Error(
-			`No key material for branch '${branch}': need root.key in the owner dir or branch key files in the config dir`,
+			`No key material for branch '${branch}': need root.key in the owner directory or branch key files in the config directory`,
 		);
 	}
 	return { orgId, branch: held };

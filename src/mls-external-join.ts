@@ -70,7 +70,7 @@ export async function externalJoinMlsGroup(
 		if (!info.group_info) {
 			throw new Error(
 				`Cannot self-join MLS group ${groupId}: no published GroupInfo. ` +
-					"An existing member must publish one (open enrollment requires a current-epoch GroupInfo).",
+					"An existing member must publish one (open enrolment requires a current-epoch GroupInfo).",
 			);
 		}
 

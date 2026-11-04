@@ -87,7 +87,7 @@ const GROUP_ADMISSION_SENTENCES: Record<GroupAdmissionSkipReason, string> = {
 	isolation_conflict:
 		"refused by the isolation rule — an isolated group takes only agents that are in no other group, and an agent that is in an isolated group joins nothing else",
 	not_applicable:
-		"this group takes open enrollment, so it mints no invitation because none is needed — the agent may join whenever it likes",
+		"this group takes open enrolment, so it mints no invitation because none is needed — the agent may join whenever it likes",
 };
 
 /**

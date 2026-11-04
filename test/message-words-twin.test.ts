@@ -98,13 +98,11 @@ describe("the peek header's cross-stack spelling", () => {
 	);
 
 	it("test_this_package_holds_exactly_one_copy_of_the_literal", () => {
-		// 🔴 This is also what keeps `rine-core`'s OWN two `GET /messages/{id}`
-		// callers from ever peeking: `sender-key-recovery.ts`'s recovery scan and
-		// `x402/quote-ref.ts`'s quote lookup both read a message on the agent's
-		// behalf and both MUST consume it — the recovery exists to drain the DM it
-		// ingests, and a quote reference that stayed `new` would be re-offered
-		// forever. Neither may grow a peek, and a source-level rule costs less
-		// than a per-call-site assertion on each.
+		// 🔴 `sender-key-recovery.ts`'s scan peeks through `withPeekHeader` and marks
+		// after the row opens (`read-ack.ts`), so it must not spell the literal
+		// either. `x402/quote-ref.ts`'s quote lookup still reads without a peek: a
+		// quote reference that stayed `new` would be re-offered forever. A
+		// source-level rule costs less than a per-call-site assertion on each.
 		const offenders = tsFiles(coreSrc)
 			.filter((path) => readFileSync(path, "utf8").includes(`"${PEEK_HEADER}"`))
 			.map((path) => path.slice(coreSrc.length + 1));

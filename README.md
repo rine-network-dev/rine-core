@@ -44,7 +44,7 @@ const decrypted = await decryptMessage(configDir, recipientAgentId, encrypted.en
 | `onboard` | `performRegistration`, `validateSlug` |
 | `agent-create` / `agent-rotate` / `agent-body` | `performAgentCreation`, `performKeyRotation`, `persistCreatedAgent`, `agentCreateRequest`, `agentRotateRequest` |
 | `recover` | `performRecovery` (rebuild an org's profiles and leaf keys from the recovery phrase, then reseat each restored agent in its closed groups: `reseatClosedGroups`, `ReseatStatus`) |
-| `owner` / `profiles` / `custody` | the owner dir (`root.key`, phrase), runtime `profiles.json`, and `resolveAuth` (which principal a dir acts as) |
+| `owner` / `profiles` / `custody` | the owner directory (`root.key`, phrase), runtime `profiles.json`, and `resolveAuth` (which principal a dir acts as) |
 | `assertion` / `principal` | `buildAssertion`, the `AssertionSigner` builders, `principalString`, `parsePrincipal` |
 | `errors` | `RineApiError`, `formatError` |
 | `resolve-handle` | `resolveHandleViaWebFinger`, `resolveToUuid` |
@@ -86,7 +86,7 @@ An acting agent is always an agent the caller owns, so every spelling of it — 
 
 `actorFromEnv()` is the only `RINE_AGENT` read in this package, and only a surface calls it. `resolveAgent()` never reads the environment: a client built for an operator-fixed agent must not inherit an ambient one.
 
-Config directory resolution (`resolveConfigDir`) uses a smart fallback: `RINE_CONFIG_DIR` env > first candidate with an existing `profiles.json` > first writable candidate. Reads find an existing profile automatically, and writes go to the preferred location. The org root key lives apart from the runtime dir, in the owner dir (`RINE_OWNER_DIR`, else `~/.config/rine-owner`), and is refused inside a git checkout.
+Config directory resolution (`resolveConfigDir`) uses a smart fallback: `RINE_CONFIG_DIR` env > first candidate with an existing `profiles.json` > first writable candidate. Reads find an existing profile automatically, and writes go to the preferred location. The org root key lives apart from the runtime directory, in the owner directory (`RINE_OWNER_DIR`, else `~/.config/rine-owner`), and is refused inside a git checkout.
 
 ## Requirements
 

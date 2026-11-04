@@ -10,7 +10,11 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { validateSlug, performRegistration } from "../src/onboard.js";
+import {
+	TERMS_VERSION,
+	validateSlug,
+	performRegistration,
+} from "../src/onboard.js";
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -85,12 +89,13 @@ function stubFlow(
 		status: 200,
 		body: { access_token: "tok", expires_in: 3600 },
 	},
+	challenge: Record<string, unknown> = CHALLENGE,
 ): void {
 	let registeredOrg: unknown;
 	stubFetch((url, init) => {
 		if (url.endsWith("/auth/register")) {
 			registeredOrg = (JSON.parse(init?.body as string) as { org_id: string }).org_id;
-			return { status: 200, body: CHALLENGE };
+			return { status: 200, body: challenge };
 		}
 		if (url.endsWith("/auth/register/solve"))
 			return solve === ACCEPT ? { status: 200, body: { org_id: registeredOrg } } : solve;
@@ -200,6 +205,7 @@ describe("performRegistration", () => {
 			org_name: REG_PARAMS.name,
 			org_slug: REG_PARAMS.slug,
 			consent: true,
+			terms_version: "1.3",
 		});
 		expect(solve.reader_public_key).toMatch(BASE64URL_RE);
 		expect((solve.proof as string).split(".")).toHaveLength(3);
@@ -229,6 +235,18 @@ describe("performRegistration", () => {
 			`org:${entry?.org_id}`,
 			expect.objectContaining({ access_token: "tok" }),
 		);
+	});
+
+	it("test_performRegistration_when_the_challenge_carries_a_terms_version_then_the_solve_sends_it", async () => {
+		stubFlow(ACCEPT, undefined, { ...CHALLENGE, terms_version: "9.9" });
+		await register();
+		expect(bodyOf(1).terms_version).toBe("9.9");
+	});
+
+	it("test_performRegistration_when_the_challenge_has_no_terms_version_then_the_solve_sends_the_constant", async () => {
+		stubFlow(ACCEPT);
+		await register();
+		expect(bodyOf(1).terms_version).toBe(TERMS_VERSION);
 	});
 
 	it("passes onProgress to solveTimeLockWithProgress", async () => {
