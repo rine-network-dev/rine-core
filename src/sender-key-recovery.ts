@@ -21,6 +21,12 @@ import type { HttpClient } from "./http.js";
 import { decryptGroupMessage } from "./message-group.js";
 import { withPeekHeader } from "./message-words.js";
 import { ackAfterRead, isSettledRow } from "./read-ack.js";
+import type { SenderKeyScan } from "./sender-key-scan.js";
+import {
+	isCached,
+	recordMissing,
+	settleRowFailures,
+} from "./sender-key-negative-cache.js";
 import {
 	SenderKeyUnavailableError,
 	unknownSenderKeyId,
@@ -72,66 +78,36 @@ export async function retirementBlocksRead(
 }
 
 /**
- * One pass over the distribution inbox: what it installed, and what it never
- * looked at.
- *
- * The second number is the whole reason this shape exists. The scan reads ONE
- * page of `limit: 100` and follows no cursor, so on an agent whose distribution
- * inbox is longer than that page the pass is a partial one — and the count of
- * what it installed cannot say so. Carrying the two together is what lets the
- * sync answer state the shortfall instead of reporting a partial pass as a
- * whole one.
- */
-export interface SenderKeyScan {
-	/**
-	 * Sender keys newly installed by this pass. What every read path reads, and
-	 * the number {@link fetchAndIngestPendingSKDistributions} hands back.
-	 */
-	ingested: number;
-	/**
-	 * How many distribution DMs this pass did not open: the rows the server
-	 * counts BEYOND the page it read, plus any of that page a targeted scan
-	 * stopped short of. `0` when the pass opened everything, and `0` again when
-	 * the server sent no total to compare against.
-	 *
-	 * 🔴 The two halves are one number because they are one fact. A scan given a
-	 * `targetSenderKeyId` breaks the moment it installs that key, so the rest of
-	 * its own page is as unopened as the rows past the end of it — counting only
-	 * the second half would report a partial pass as a whole one on exactly the
-	 * path that stops early.
-	 *
-	 * 🔴 It is a count of what this pass did not LOOK at, and says nothing about
-	 * what those DMs hold: the inbox listing is every distribution this agent has
-	 * ever been sent, so most of the ones behind that page are keys it installed
-	 * long ago. A renderer may state the number and may not conclude a missing
-	 * key from it.
-	 */
-	unscanned: number;
-}
-
-/**
  * Fetch pending sender key distributions from the inbox and ingest them.
  * Used by `read` and `stream` to auto-recover when a sender key is missing.
  *
  * Optionally short-circuits once `targetSenderKeyId` is ingested.
  * Returns the number of newly ingested keys.
  *
- * 🔴 That number is what was INSTALLED, and it is not an inventory of the
- * inbox: this returns `0` with distribution DMs still listed — one already
- * installed, one with no server-authenticated sender, one whose envelope
- * refused, one past the un-paginated `limit: 100` the scan reads. A caller that
- * renders the zero may say nothing was installed and may not say nothing was
- * waiting;
- * `describeMlsRecovery`'s empty-scan arm (`mls-recovery-format.ts`) was
- * reworded twice for saying the second.
+ * With the group, the key id and its `senderAgentId` all named, a COMPLETE scan
+ * that installed nothing is remembered for 15 minutes ({@link isCached}), and
+ * the next ask for the same key throws {@link SenderKeyUnavailableError}
+ * without listing the inbox again. A distribution from that sender clears it.
+ * Complete means nothing was left unopened and no row threw that may still
+ * heal ({@link ROW_FAILURE_LIMIT} bounds how long one row may keep saying so).
  *
- * 🔴 Its return type is `number` and stays `number`. Every read path in the
- * product calls this — the CLI's `read`/`stream`, the TypeScript SDK's decrypt,
- * `rine_read`, {@link decryptGroupMessageWithRecovery}'s own retry — so
- * widening it is a breaking change on the hottest path there is. The one caller
- * that needs more than the count, the sync verb, calls
- * {@link scanPendingSKDistributions} instead; this is that function with the
- * second number dropped, never a second implementation of it.
+ * 🔴 Complete also means the whole listing fits the one page read, and the
+ * listing is every distribution ever sent to this agent, read ones included,
+ * newest first. An agent past 100 of them never caches: nothing on the page
+ * says the rows behind it hold no key still waiting, so it rescans per read
+ * rather than state a miss it did not prove.
+ *
+ * 🔴 That number is what was INSTALLED, and it is not an inventory of the
+ * inbox: this returns `0` with distribution DMs still listed (one already
+ * installed, one with no server-authenticated sender, one whose envelope
+ * refused, one past the un-paginated `limit: 100` the scan reads). A caller
+ * that renders the zero may say nothing was installed and may not say nothing
+ * was waiting.
+ *
+ * 🔴 Its return type is `number` and stays `number`: every read path calls this,
+ * so widening it is a breaking change on the hottest path there is. The one
+ * caller that needs more, the sync verb, calls {@link scanPendingSKDistributions}
+ * instead, which is never cached, so an explicit sync always scans.
  */
 export async function fetchAndIngestPendingSKDistributions(
 	client: HttpClient,
@@ -139,43 +115,45 @@ export async function fetchAndIngestPendingSKDistributions(
 	agentId: string,
 	targetSenderKeyId?: string,
 	groupId?: string,
+	senderAgentId?: string,
 ): Promise<number> {
-	return (
-		await scanPendingSKDistributions(
-			client,
-			configDir,
-			agentId,
-			targetSenderKeyId,
-			groupId,
-		)
-	).ingested;
+	const missing =
+		targetSenderKeyId && groupId && senderAgentId
+			? { agentId, groupId, senderAgentId, keyId: targetSenderKeyId }
+			: null;
+	if (missing) {
+		const { groupId: g, senderAgentId: s, keyId: k } = missing;
+		if (isCached(agentId, g, s, k)) throw new SenderKeyUnavailableError(k, g);
+	}
+	const scan = await scanPendingSKDistributions(
+		client,
+		configDir,
+		agentId,
+		targetSenderKeyId,
+		groupId,
+	);
+	const complete = scan.unscanned === 0 && scan.failed === 0;
+	if (missing && scan.ingested === 0 && complete) recordMissing(missing);
+	return scan.ingested;
 }
 
 /**
  * The same pass, reporting what it did not reach as well as what it installed.
  *
- * The whole of the scan lives here and
- * {@link fetchAndIngestPendingSKDistributions} is one line over it, so the two
- * cannot come to disagree about what a pass does. Only the sync verb
- * (`recoverGroup`) reads the second number; every read path takes the count
- * alone.
+ * The whole of the scan lives here, so the cached wrapper above and the sync
+ * verb (`recoverGroup`, which reads the second number and always scans) cannot
+ * disagree about what a pass does.
  *
- * 🔴 This function is why a leave-time wipe alone would be point-in-time: a leave
- * removes the state file and takes nothing out of the inbox, so the DMs that
- * carried every peer key are still listed here. It does NOT route around the
- * retirement marker — the group a distribution belongs to is only known after
- * the DM is decrypted, so the refusal lives in
- * {@link ingestSenderKeyDistribution}, which every branch below goes through,
- * and a retired group's keys are counted as not ingested.
+ * 🔴 A leave-time wipe alone would be point-in-time: the DMs that carried every
+ * peer key are still listed here. This does NOT route around the retirement
+ * marker. The group a distribution belongs to is only known after the DM is
+ * decrypted, so the refusal lives in {@link ingestSenderKeyDistribution}, and
+ * a retired group's keys are counted as not ingested.
  *
  * `groupId` names the group whose read missed, and every caller that has one
  * must pass it: it is the only thing that can spend a retirement on the read
- * path. This scan — not {@link decryptGroupMessageWithRecovery} — is what the
- * CLI's `read`/`stream` and the TypeScript SDK's decrypt call directly, so a
- * lift that lived one level up left a re-admitted member on those surfaces
- * refusing every distribution its new peers sent it, for ever, and unable to
- * open a word of the group. Omitting it keeps the group's material refused,
- * which fails closed.
+ * path, and the CLI's `read`/`stream` and the TypeScript SDK call this
+ * directly. Omitting it keeps the group's material refused, which fails closed.
  */
 export async function scanPendingSKDistributions(
 	client: HttpClient,
@@ -191,7 +169,7 @@ export async function scanPendingSKDistributions(
 		groupId &&
 		(await retirementBlocksRead(client, configDir, agentId, groupId))
 	)
-		return { ingested: 0, unscanned: 0 };
+		return { ingested: 0, unscanned: 0, failed: 0 };
 	const inbox = (await client.get(`/agents/${agentId}/messages`, {
 		type: SENDER_KEY_DISTRIBUTION_TYPE,
 		limit: 100,
@@ -208,6 +186,8 @@ export async function scanPendingSKDistributions(
 			: 0;
 
 	let ingested = 0;
+	const openedIds: string[] = [];
+	const failedIds: string[] = [];
 	// Counted rather than derived from the page length, because the targeted
 	// arm below `break`s: the rows it never reached were listed and not opened,
 	// which is the same state as the rows past the end of the page.
@@ -217,6 +197,7 @@ export async function scanPendingSKDistributions(
 	const settledIds: string[] = [];
 	for (const msg of inbox.items) {
 		opened++;
+		openedIds.push(msg.id);
 		try {
 			// Say which agent is reading, and read as a peek: the server would mark
 			// the row at fetch, before this scan knows whether it opens. The mark
@@ -255,7 +236,8 @@ export async function scanPendingSKDistributions(
 				}
 			}
 		} catch {
-			// Skip undecryptable or already-ingested distributions
+			// An undecryptable row is skipped; it is counted so the miss is not cached
+			failedIds.push(msg.id);
 		}
 	}
 	const failure = await ackAfterRead(client, agentId, settledIds, {
@@ -266,7 +248,8 @@ export async function scanPendingSKDistributions(
 			`rine: could not mark ${settledIds.length} scanned message(s) delivered: ${failure.message}`,
 		);
 	}
-	return { ingested, unscanned: beyondPage + (inbox.items.length - opened) };
+	const failed = settleRowFailures(agentId, openedIds, failedIds);
+	return { ingested, unscanned: beyondPage + (inbox.items.length - opened), failed };
 }
 
 /**
@@ -277,14 +260,11 @@ export async function scanPendingSKDistributions(
  * specific failure we fetch + ingest pending distributions (targeting the
  * missing id) and retry once. Any other error propagates untouched so the
  * caller can degrade the row; a scan that ingests nothing is the end of the
- * road, and comes back as a {@link SenderKeyUnavailableError} whose sentence
- * says what happened and what to do instead — the library's control string is
- * never what an agent reads.
+ * road, and comes back as a {@link SenderKeyUnavailableError}.
  *
  * 🔴 A retry that ingested keys and still missed THIS one is the same verdict,
- * and comes back the same way, never as the raw control string: both ends of
- * the recovery speak the one sentence, and a caller reads the cause with
- * {@link asSenderKeyUnavailable} and nothing hand-rolled.
+ * never the raw control string; a caller reads the cause with
+ * {@link asSenderKeyUnavailable}.
  *
  * This is the single home for the sender-key recovery dance: `rine_read`
  * (rine-mcp), `classifyThreadRow` (core), and the CLI's `message read` and
@@ -317,19 +297,17 @@ export async function decryptGroupMessageWithRecovery(
 	} catch (err) {
 		const missingKeyId = unknownSenderKeyId(err);
 		if (missingKeyId === null) throw err;
-		// The retirement gate rides inside the scan, so this path and the surfaces
-		// that call the scan directly spend a retirement on exactly the same terms
-		// A retired group ingests nothing and the read is refused.
+		// The retirement gate rides inside the scan: a retired group ingests
+		// nothing and the read is refused.
 		const ingested = await fetchAndIngestPendingSKDistributions(
 			client,
 			configDir,
 			agentId,
 			missingKeyId,
 			groupId,
+			fromAgentId,
 		);
-		// The recovery has run and found nothing, so this is a verdict and not a
-		// retry hint: hand back the sentence that says so, keeping the library's
-		// own throw as its `cause`.
+		// The recovery found nothing: a verdict, not a retry hint.
 		if (ingested === 0)
 			throw new SenderKeyUnavailableError(missingKeyId, groupId, {
 				cause: err,
@@ -345,10 +323,8 @@ export async function decryptGroupMessageWithRecovery(
 				createdAt,
 			);
 		} catch (retryErr) {
-			// The scan brought key material but not this key. The recovery has
-			// still had its turn, so this is the same final answer the empty scan
-			// reaches — said in the same words, here, rather than left as the
-			// control string for each surface to recognise and reword.
+			// The scan brought key material but not this key: the same final
+			// answer the empty scan reaches, in the same words.
 			const stillMissing = unknownSenderKeyId(retryErr);
 			if (stillMissing === null) throw retryErr;
 			throw new SenderKeyUnavailableError(stillMissing, groupId, {

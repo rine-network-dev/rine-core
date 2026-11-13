@@ -2,7 +2,11 @@ import * as fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentRead, GroupRead } from "../src/api-types.js";
-import { RineApiError } from "../src/errors.js";
+import {
+	RineApiError,
+	SENDER_KEY_UNDELIVERED_REFUSAL,
+	SenderKeyUndeliveredError,
+} from "../src/errors.js";
 import {
 	GROUP_ROSTER_LEAD,
 	NO_GROUPS_IN_ORG,
@@ -222,6 +226,8 @@ function compose(vector: Vector): string | null {
 			}
 			return notAConversationUuidRefusal(spelling, surface);
 		}
+		case "sender_key_undelivered":
+			return new SenderKeyUndeliveredError("00000000-0000-0000-0000-000000000000").message;
 		default:
 			throw new Error(`unknown refusal slot '${vector.slot}' in vector '${vector.id}'`);
 	}
@@ -392,6 +398,12 @@ describe("the refusal vectors, replayed on this stack", () => {
 			expect(compose(vector)).toBe(vector.expected);
 		},
 	);
+
+	it("pins the sender-key refusal constant, not only the error that carries it", () => {
+		const vector = fixture.vectors.find((v) => v.slot === "sender_key_undelivered");
+		expect(vector, "the sender_key_undelivered vector is missing").toBeDefined();
+		expect(SENDER_KEY_UNDELIVERED_REFUSAL).toBe(vector!.expected);
+	});
 
 	it.each(fixture.excluded.vectors.map((vector) => [vector.id, vector] as const))(
 		"composes %s the way this stack diverges, and says why",

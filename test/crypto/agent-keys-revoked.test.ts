@@ -79,7 +79,11 @@ describe("a revoked agent's keys", () => {
 
 		const result = await verdict(world, agent, createdAt);
 
-		expect(result).toEqual({ verified: false, verificationStatus: "invalid" });
+		expect(result).toEqual({
+			verified: false,
+			verificationStatus: "invalid",
+			verifyingKey: null,
+		});
 	});
 
 	it("need no created_at while revoked_at is null", async () => {

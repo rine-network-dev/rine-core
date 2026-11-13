@@ -11,7 +11,8 @@
     "invalid_agent_identifier": "invalidAgentIdentifierRefusal(spelling) / invalid_agent_identifier(...) — the sentence resolveToUuid / resolve_to_uuid_{sync,async} raises for a spelling that is neither a UUID nor a handle. One raise site per stack, so the sentence can be compared at all: the resolver is async and reaches WebFinger on its other arm, which is how a one-byte divergence (terminated on TS, unterminated on Python) hides from every per-stack suite while all of them read green. Each stack also asserts locally that its resolver raises exactly this.",
     "join_bare_name": "bareNameJoinRefusal(spelling) / bare_name_join_refusal(...) — first of the two composers JOIN_TAKES_A_HANDLE_OR_AN_ID is spliced into. The constant is pinned as a CONSTANT by the backend gate JOIN_REFUSAL_TWIN_SENTENCES; that gate reads two module sources and cannot see what a composer does with the string, which is the hole these two slots close.",
     "join_unresolved_handle": "unresolvedHandleJoinRefusal(spelling, unread) / unresolved_handle_join_refusal(...) — the other composer JOIN_TAKES_A_HANDLE_OR_AN_ID is spliced into. `unread` picks which middle sentence is spliced in (0 = the directory ran to the end), so both arms are replayed and the constant is proven to survive in each.",
-    "not_a_conversation_uuid": "notAConversationUuidRefusal(spelling, THREAD_REF_SURFACES[surface]) / not_a_conversation_uuid(...) — the surface-parameterised composer. The vector names its `surface` because TypeScript parameterises the two parameter spellings and Python hardcodes the tool ones; the Python replay asserts the vector names the surface it implements rather than composing a sentence for a surface it has never had."
+    "not_a_conversation_uuid": "notAConversationUuidRefusal(spelling, THREAD_REF_SURFACES[surface]) / not_a_conversation_uuid(...) — the surface-parameterised composer. The vector names its `surface` because TypeScript parameterises the two parameter spellings and Python hardcodes the tool ones; the Python replay asserts the vector names the surface it implements rather than composing a sentence for a surface it has never had.",
+    "sender_key_undelivered": "SENDER_KEY_UNDELIVERED_REFUSAL / SENDER_KEY_UNDELIVERED_REFUSAL (rine.sender_key_words), and the message of the SenderKeyUndeliveredError each stack raises when no other member of a group could be given the sender key. A fixed sentence with no slot, so the vector carries no spelling, candidates or agents; each stack asserts its constant AND its raised error's message equal `expected`."
   },
   "vectors": [
     {
@@ -504,6 +505,14 @@
       "candidates": [],
       "agents": [],
       "expected": "conversation_id must be a conversation UUID; \"#ops@acme.rine.network\" is not one. To read a group, name the group instead — group takes a group's whole handle, a bare group name, or its UUID."
+    },
+    {
+      "id": "sender-key-undelivered-no-recipient-holds-it",
+      "slot": "sender_key_undelivered",
+      "spelling": "",
+      "candidates": [],
+      "agents": [],
+      "expected": "Nothing was sent. None of the other members of this group could be given the key to read it, so no one could have opened the post. Try again shortly; if this keeps happening, those members may have no published encryption key."
     }
   ],
   "by_id_disclosure": {

@@ -1,14 +1,7 @@
 // Which principal a set of dirs signs as.
-import {
-	type AssertionSigner,
-	agentSigner,
-	branchReaderSigner,
-	branchSigner,
-	orgReaderSigner,
-	orgSigner,
-} from "./assertion.js";
-import { loadBranchSecrets } from "./branch-files.js";
-import { type OrgKeys, deriveBranch } from "./crypto/derive.js";
+import { type AssertionSigner, agentSigner } from "./assertion.js";
+import { signerFor } from "./auth-signer.js";
+import type { OrgKeys } from "./crypto/derive.js";
 import { loadAgentKeys } from "./crypto/keys.js";
 import { type CustodyDirs, loadOrgFromOwner } from "./custody.js";
 import { type Principal, PrincipalKind, parsePrincipal } from "./principal.js";
@@ -56,62 +49,13 @@ export interface ResolvedAuth {
 	agentId?: string;
 }
 
-function signerFor(
-	principal: Principal,
-	dirs: Pick<CustodyDirs, "configDir">,
-	org: OrgKeys | undefined,
-): { signer: AssertionSigner; fromRoot: boolean } | undefined {
-	switch (principal.kind) {
-		case PrincipalKind.Org:
-			return org && { signer: orgSigner(org), fromRoot: true };
-		case PrincipalKind.Agent:
-			return {
-				signer: agentSigner(
-					principal.agentId,
-					loadAgentKeys(dirs.configDir, principal.agentId),
-				),
-				fromRoot: false,
-			};
-		case PrincipalKind.Branch: {
-			const held = loadBranchSecrets(dirs.configDir, principal.name);
-			if (held) {
-				return { signer: branchSigner(principal.orgId, held), fromRoot: false };
-			}
-			return (
-				org && {
-					signer: branchSigner(principal.orgId, deriveBranch(org, principal.name)),
-					fromRoot: true,
-				}
-			);
-		}
-		case PrincipalKind.Reader: {
-			if (principal.name === undefined) {
-				return org && { signer: orgReaderSigner(org), fromRoot: true };
-			}
-			const held = loadBranchSecrets(dirs.configDir, principal.name);
-			if (held) {
-				return {
-					signer: branchReaderSigner(principal.orgId, held),
-					fromRoot: false,
-				};
-			}
-			return (
-				org && {
-					signer: branchReaderSigner(
-						principal.orgId,
-						deriveBranch(org, principal.name),
-					),
-					fromRoot: true,
-				}
-			);
-		}
-	}
-}
-
 /**
  * The profile a dir acts as. A named profile is looked up in the runtime dir
  * first; the default profile prefers the org when the owner dir holds a
- * `root.key`.
+ * `root.key`. The owner dir's profile applies to a runtime dir only when both
+ * name the same org, so a second org's runtime dir (an agent kit) is never
+ * signed as the org whose root the host holds. The Python twin is
+ * `_choose_profile`.
  */
 function chooseProfile(
 	dirs: CustodyDirs,
@@ -120,7 +64,13 @@ function chooseProfile(
 ): ProfileEntry | undefined {
 	const name = profile ?? DEFAULT_PROFILE;
 	const runtime = getProfile(dirs.configDir, name);
-	const owner = hasOwner ? getProfile(dirs.ownerDir, name) : undefined;
+	let owner = hasOwner ? getProfile(dirs.ownerDir, name) : undefined;
+	if (
+		owner !== undefined &&
+		runtime !== undefined &&
+		runtime.org_id !== owner.org_id
+	)
+		owner = undefined;
 	return profile === undefined ? (owner ?? runtime) : (runtime ?? owner);
 }
 
@@ -137,7 +87,11 @@ function checkOrgClaim(
 	org: OrgKeys | undefined,
 	fromRoot: boolean,
 ): void {
-	if (principal.kind === PrincipalKind.Agent) return;
+	if (
+		principal.kind === PrincipalKind.Agent ||
+		principal.kind === PrincipalKind.Delegate
+	)
+		return;
 	if (
 		principal.orgId !== entry.org_id ||
 		(fromRoot && org !== undefined && org.orgId !== entry.org_id)

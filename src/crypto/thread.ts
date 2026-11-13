@@ -28,6 +28,7 @@
  */
 
 import type { HttpClient } from "../http.js";
+import type { OperatorContext } from "../operator-classify.js";
 import {
 	type SenderKeyExplainer,
 	senderKeyExplainer,
@@ -58,9 +59,10 @@ export async function decryptThreadRow(
 	agentId: string,
 	row: ThreadRow,
 	client: HttpClient,
+	operator: OperatorContext | null,
 ): Promise<ThreadRowEntry> {
 	return tiered(
-		await classifyThreadRow(configDir, agentId, row, client),
+		await classifyThreadRow(configDir, agentId, row, client, operator),
 		senderKeyExplainer(),
 	);
 }
@@ -99,10 +101,11 @@ export async function decryptThreadRows(
 	agentId: string,
 	rows: readonly ThreadRow[],
 	client: HttpClient,
+	operator: OperatorContext | null,
 ): Promise<ThreadRowEntry[]> {
 	const classified: ClassifiedRow[] = [];
 	for (const row of rows) {
-		classified.push(await classifyThreadRow(configDir, agentId, row, client));
+		classified.push(await classifyThreadRow(configDir, agentId, row, client, operator));
 	}
 	const explain = senderKeyExplainer();
 	return classified.map((row) => tiered(row, explain));

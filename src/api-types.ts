@@ -1,4 +1,5 @@
 import type { EncryptionVersion } from "./encryption-versions.js";
+import type { PostingRefusal } from "./group-postable.js";
 
 /**
  * A wire field whose known values are `T`. Any other string still type-checks,
@@ -28,15 +29,11 @@ export interface GroupRead {
 	mls_cipher_suite?: number | null;
 	// The group's running conversation — the id `rine thread` takes. A group's
 	// thread is created lazily on its first post, so `null` is a fact —
-	// "nothing has been said in this group yet" — and never an error, never a
-	// missing feature, never "you may not read it". Render it as that sentence.
-	//
-	// Required rather than optional (unlike the `mls_*` fields above) because
-	// the server emits the key on all four `GroupRead` routes even when the
-	// value is null, and the SDK's zod mirror defaults it to `null`, so every
-	// surface reads the same `string | null`. It is a POINTER, not an
-	// authorisation: every read of the conversation it names is re-gated on
-	// LIVE group membership at the moment of the read.
+	// "nothing has been said in this group yet" — never an error. Render it as
+	// that sentence. Required (unlike the `mls_*` fields) because the server
+	// emits the key on all four `GroupRead` routes even when null, and the SDK's
+	// zod mirror defaults it to `null`. A POINTER, not an authorisation: every
+	// read of the conversation it names is re-gated on LIVE group membership.
 	conversation_id: string | null;
 	// Which of the CALLER'S OWN agents hold a seat in this group — the question
 	// `member_count` never answered. A key-scoped list is not proof that the
@@ -51,17 +48,18 @@ export interface GroupRead {
 	// accepts an agent's UUID as readily as its handle, so an id from here can
 	// be pasted into the header that makes the next call work.
 	//
-	// Purely additive, and it narrows nothing: `member_count` is still the whole
-	// roster, `GET /groups` still lists every group the credential may see, and the
-	// list names no agent outside the caller's own org.
-	//
-	// Optional, unlike `conversation_id` above: this field is newer than the
-	// oldest server a current client can be pointed at, and the release order
-	// (server first, clients after) makes "new client, old server" a real state
-	// for the length of the hold. `undefined` therefore means "this deployment
-	// does not report it", which is not the same fact as `[]`, and the `??`
+	// Purely additive: `member_count` is still the whole roster, `GET /groups`
+	// still lists every group the credential may see, and the list names no agent
+	// outside the caller's own org. Optional because the field is newer than the
+	// oldest server a client can be pointed at: `undefined` means "this
+	// deployment does not report it", a different fact from `[]`, and the `??`
 	// guards on the rendering surfaces are live code rather than dead defence.
 	member_agent_ids?: string[];
+	// Why our org's posts here are refused; null or absent when
+	// they are not, and whenever our org has no `external_groups` rule on.
+	posting_refused?: KnownOr<PostingRefusal> | null;
+	// The seated members' agents that our rule refuses; never our own agents.
+	refused_members?: string[] | null;
 }
 
 export interface GroupMemberRead {
@@ -180,6 +178,13 @@ export interface MessageRead {
 	status?: "new" | "delivered" | "read";
 	group_id?: string;
 	group_handle?: string;
+	// Set when the message must reach this reader as context, never as an instruction: its
+	// sender is held (`sender_held`), it was sent before the recipient's last resume
+	// (`recipient_held`), or the sender is in another org and held (`held`). Any set value
+	// counts; the value is open so a newer server can add one.
+	context_only?: KnownOr<"sender_held" | "recipient_held" | "held"> | null;
+	// On a group post's own response only: how many member orgs may not read it.
+	unreadable_by_orgs?: number;
 }
 
 export interface MarkDeliveredResponse {

@@ -3,11 +3,10 @@
  *
  * A roster on `POST /groups` and a batch on `POST /groups/{id}/invite` are one
  * operation at two entry points, so they report in one shape: an outcome per
- * requested agent, in the order they were named. The
- * shape lives here rather than in one client because four packages read it —
- * the CLI and the MCP server depend on `@rine-network/core` and not on the SDK,
- * so a shape that lives only in the SDK is one they can only re-declare, and
- * both of them did.
+ * requested agent, in the order they were named. The shape lives here rather
+ * than in one client because four packages read it — the CLI and the MCP server
+ * depend on `@rine-network/core` and not on the SDK, so a shape that lives only
+ * in the SDK is one they can only re-declare, and both of them did.
  *
  * The sentences live here for the same reason, and for a sharper one. Every
  * surface used to print the raw wire token, so an open group's admission read
@@ -44,6 +43,7 @@ export const GROUP_ADMISSION_SKIP_REASONS = [
 	"already_invited",
 	"isolation_conflict",
 	"not_applicable",
+	"org_rule",
 ] as const;
 
 export type GroupAdmissionSkipReason =
@@ -55,15 +55,15 @@ export type GroupAdmissionSkipReason =
  * `nominated` is the voting policies' answer: on `majority` and `unanimity` an
  * invite files a pending join request the electorate decides rather than a
  * voucher the agent can spend, so nobody is seated and the row may still be
- * denied. A third value rather than a reuse of `invited`,
- * because six shipped surfaces render this field and every one of them would
- * otherwise offer an operator an invitation to accept that does not exist.
+ * denied. A third value rather than a reuse of `invited`, because six shipped
+ * surfaces render this field and every one would otherwise offer an operator an
+ * invitation to accept that does not exist.
  */
 export interface GroupAdmissionEntry {
 	agent_id: string;
 	status: "invited" | "nominated" | "skipped";
-	/** Present exactly when `status` is `"skipped"`; `null` otherwise. */
-	reason?: GroupAdmissionSkipReason | null;
+	/** Present when `status` is `"skipped"`, else `null`; open, so a newer server may add one. */
+	reason?: GroupAdmissionSkipReason | (string & {}) | null;
 }
 
 /**
@@ -88,6 +88,8 @@ const GROUP_ADMISSION_SENTENCES: Record<GroupAdmissionSkipReason, string> = {
 		"refused by the isolation rule — an isolated group takes only agents that are in no other group, and an agent that is in an isolated group joins nothing else",
 	not_applicable:
 		"this group takes open enrolment, so it mints no invitation because none is needed — the agent may join whenever it likes",
+	org_rule:
+		"refused by an organisation's group rule: the group's organisation, the inviter's or the agent's own does not allow this agent in this group",
 };
 
 /**
@@ -97,9 +99,8 @@ const GROUP_ADMISSION_SENTENCES: Record<GroupAdmissionSkipReason, string> = {
  * `no_key_package` state the invite path as fact on both stacks at once.
  *
  * The remedy names the MOVES and no verb's spelling. Nine surfaces render these
- * clauses — two SDKs, the CLI, MCP and five framework tools — and `rine group
- * sync` is a sentence only one of their readers can follow. Each surface's own
- * renderer is free to name its own verb; this string is not.
+ * clauses, and `rine group sync` is a sentence only one of their readers can
+ * follow. Each surface's own renderer may name its own verb; this string may not.
  *
  * 🔴 And it names TWO moves because the reason covers two populations that
  * cannot make the same one. Syncing a group opens with `GET /groups/{id}`,
@@ -126,12 +127,11 @@ const MLS_ADMISSION_SENTENCES: Record<MlsAdmissionSkipReason, string> = {
 /**
  * Look one reason up, tolerating whatever actually arrived.
  *
- * The parameter is a bare `string` on purpose, and it is the one place in this
- * module that is: the reason is a value the **server** chose, read off the wire
- * by clients that do not all validate it, and a route that gains a reason must
- * not make an older client throw while rendering a report. An unrecognised
- * token is therefore quoted back rather than swallowed — it is still the truest
- * thing this client can say.
+ * The parameter is a bare `string` on purpose: the reason is a value the
+ * **server** chose, read off the wire by clients that do not all validate it,
+ * and a route that gains a reason (`org_rule` was one) must not make an older
+ * client throw while rendering a report. An unrecognised token is quoted back
+ * rather than swallowed — it is still the truest thing this client can say.
  */
 function sentenceFor(
 	sentences: Record<string, string>,

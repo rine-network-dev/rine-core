@@ -1,0 +1,254 @@
+{
+  "presets": {
+    "private": {"directory": false, "card": false, "a2a": false, "did": false},
+    "findable": {"directory": false, "card": true, "a2a": false, "did": true},
+    "listed": {"directory": true, "card": true, "a2a": true, "did": true}
+  },
+  "effective": [
+    {
+      "name": "all stored on with a card and A2A enabled",
+      "stored": {"directory": true, "card": true, "a2a": true, "did": true},
+      "has_card": true,
+      "a2a_enabled": true,
+      "exposure": {"directory": true, "card": true, "a2a": true, "did": true},
+      "a2a_available": true
+    },
+    {
+      "name": "no card row switches directory, card and a2a off",
+      "stored": {"directory": true, "card": true, "a2a": true, "did": true},
+      "has_card": false,
+      "a2a_enabled": true,
+      "exposure": {"directory": false, "card": false, "a2a": false, "did": true},
+      "a2a_available": false
+    },
+    {
+      "name": "card without a2a_enabled keeps a2a off and unavailable",
+      "stored": {"directory": true, "card": true, "a2a": true, "did": true},
+      "has_card": true,
+      "a2a_enabled": false,
+      "exposure": {"directory": true, "card": true, "a2a": false, "did": true},
+      "a2a_available": false
+    },
+    {
+      "name": "card switch off takes a2a down with it",
+      "stored": {"directory": true, "card": false, "a2a": true, "did": true},
+      "has_card": true,
+      "a2a_enabled": true,
+      "exposure": {"directory": true, "card": false, "a2a": false, "did": true},
+      "a2a_available": true
+    },
+    {
+      "name": "did stands alone",
+      "stored": {"directory": false, "card": false, "a2a": false, "did": true},
+      "has_card": false,
+      "a2a_enabled": false,
+      "exposure": {"directory": false, "card": false, "a2a": false, "did": true},
+      "a2a_available": false
+    }
+  ],
+  "invalid": [
+    {
+      "exposure": {"directory": false, "card": false, "a2a": false, "did": false},
+      "surfaces": []
+    },
+    {
+      "exposure": {"directory": false, "card": true, "a2a": false, "did": true},
+      "surfaces": []
+    },
+    {
+      "exposure": {"directory": true, "card": true, "a2a": true, "did": true},
+      "surfaces": []
+    },
+    {
+      "exposure": {"directory": true, "card": false, "a2a": false, "did": false},
+      "surfaces": ["directory"]
+    },
+    {
+      "exposure": {"directory": false, "card": false, "a2a": true, "did": false},
+      "surfaces": ["a2a"]
+    },
+    {
+      "exposure": {"directory": true, "card": false, "a2a": true, "did": true},
+      "surfaces": ["directory", "a2a"]
+    },
+    {
+      "exposure": {"directory": false, "card": false, "a2a": false, "did": true},
+      "surfaces": []
+    }
+  ],
+  "cases": [
+    {
+      "name": "private to listed under a listed ceiling",
+      "current": {"directory": false, "card": false, "a2a": false, "did": false},
+      "target": {"directory": true, "card": true, "a2a": true, "did": true},
+      "ceiling": {"directory": true, "card": true, "a2a": true, "did": true},
+      "a2a_available": true,
+      "above": [],
+      "cap": {"directory": false, "card": false, "a2a": false, "did": false},
+      "diff": {"turned_on": ["directory", "card", "a2a", "did"], "turned_off": []},
+      "preset": "listed",
+      "hides_did": false
+    },
+    {
+      "name": "listed to findable under a findable ceiling",
+      "current": {"directory": true, "card": true, "a2a": true, "did": true},
+      "target": {"directory": false, "card": true, "a2a": false, "did": true},
+      "ceiling": {"directory": false, "card": true, "a2a": false, "did": true},
+      "a2a_available": true,
+      "above": [],
+      "cap": {"directory": false, "card": true, "a2a": false, "did": true},
+      "diff": {"turned_on": [], "turned_off": ["directory", "a2a"]},
+      "preset": "findable",
+      "hides_did": false
+    },
+    {
+      "name": "findable to listed under a findable ceiling",
+      "current": {"directory": false, "card": true, "a2a": false, "did": true},
+      "target": {"directory": true, "card": true, "a2a": true, "did": true},
+      "ceiling": {"directory": false, "card": true, "a2a": false, "did": true},
+      "a2a_available": true,
+      "above": ["directory", "a2a"],
+      "cap": {"directory": false, "card": true, "a2a": false, "did": true},
+      "diff": {"turned_on": ["directory", "a2a"], "turned_off": []},
+      "preset": "listed",
+      "hides_did": false
+    },
+    {
+      "name": "listed to private hides the did document",
+      "current": {"directory": true, "card": true, "a2a": true, "did": true},
+      "target": {"directory": false, "card": false, "a2a": false, "did": false},
+      "ceiling": {"directory": true, "card": true, "a2a": true, "did": true},
+      "a2a_available": true,
+      "above": [],
+      "cap": {"directory": true, "card": true, "a2a": true, "did": true},
+      "diff": {"turned_on": [], "turned_off": ["directory", "card", "a2a", "did"]},
+      "preset": "private",
+      "hides_did": true
+    },
+    {
+      "name": "findable to a custom set swaps did for a2a",
+      "current": {"directory": false, "card": true, "a2a": false, "did": true},
+      "target": {"directory": false, "card": true, "a2a": true, "did": false},
+      "ceiling": {"directory": false, "card": true, "a2a": false, "did": true},
+      "a2a_available": true,
+      "above": ["a2a"],
+      "cap": {"directory": false, "card": true, "a2a": false, "did": true},
+      "diff": {"turned_on": ["a2a"], "turned_off": ["did"]},
+      "preset": "custom",
+      "hides_did": true
+    },
+    {
+      "name": "a2a unavailable: listed ignores the a2a switch",
+      "current": {"directory": false, "card": true, "a2a": false, "did": true},
+      "target": {"directory": true, "card": true, "a2a": false, "did": true},
+      "ceiling": {"directory": true, "card": true, "a2a": true, "did": true},
+      "a2a_available": false,
+      "above": [],
+      "cap": {"directory": false, "card": true, "a2a": false, "did": true},
+      "diff": {"turned_on": ["directory"], "turned_off": []},
+      "preset": "listed",
+      "hides_did": false
+    },
+    {
+      "name": "a2a unavailable: findable ignores the a2a switch",
+      "current": {"directory": false, "card": false, "a2a": false, "did": false},
+      "target": {"directory": false, "card": true, "a2a": true, "did": true},
+      "ceiling": {"directory": true, "card": true, "a2a": true, "did": true},
+      "a2a_available": false,
+      "above": [],
+      "cap": {"directory": false, "card": false, "a2a": false, "did": false},
+      "diff": {"turned_on": ["card", "a2a", "did"], "turned_off": []},
+      "preset": "findable",
+      "hides_did": false
+    },
+    {
+      "name": "a private ceiling caps everything",
+      "current": {"directory": true, "card": true, "a2a": true, "did": true},
+      "target": {"directory": true, "card": true, "a2a": true, "did": true},
+      "ceiling": {"directory": false, "card": false, "a2a": false, "did": false},
+      "a2a_available": true,
+      "above": ["directory", "card", "a2a", "did"],
+      "cap": {"directory": false, "card": false, "a2a": false, "did": false},
+      "diff": {"turned_on": [], "turned_off": []},
+      "preset": "listed",
+      "hides_did": false
+    },
+    {
+      "name": "directory without card is custom",
+      "current": {"directory": false, "card": false, "a2a": false, "did": false},
+      "target": {"directory": true, "card": false, "a2a": false, "did": true},
+      "ceiling": {"directory": true, "card": true, "a2a": true, "did": true},
+      "a2a_available": true,
+      "above": [],
+      "cap": {"directory": false, "card": false, "a2a": false, "did": false},
+      "diff": {"turned_on": ["directory", "did"], "turned_off": []},
+      "preset": "custom",
+      "hides_did": false
+    }
+  ],
+  "copy": {
+    "refused": "This organisation's directory_listing rule does not allow its agents to turn on: {surfaces}.",
+    "preset_labels": {
+      "private": "Private",
+      "findable": "Findable by handle",
+      "listed": "Listed",
+      "custom": "Custom"
+    },
+    "surface_names": {
+      "directory": "directory listing",
+      "card": "profile card",
+      "a2a": "A2A discovery",
+      "did": "DID document"
+    },
+    "none": "none",
+    "summary": {
+      "private": "{name} is private. It is not in the directory, and others cannot read its profile, A2A card or DID document. Anyone who knows its handle can still look up its address.",
+      "findable": "Anyone who knows {name}'s handle can look it up and read its profile. It is not in the directory.",
+      "listed": "{name} is listed in the rine directory. Anyone can find it and read its profile.",
+      "custom": "{name} uses custom settings: {on} on; {off} off."
+    },
+    "switches": {
+      "directory": {
+        "label": "Directory listing",
+        "on": "Shown in the rine directory and its search."
+      },
+      "card": {
+        "label": "Profile card",
+        "on": "Anyone can read {name}'s profile."
+      },
+      "a2a": {
+        "label": "A2A discovery",
+        "on": "Other A2A agents can discover {name} at its agent.json address.",
+        "unavailable": "Not available: A2A is not enabled for {name}."
+      },
+      "did": {
+        "label": "DID document",
+        "on": "Anyone can check {name}'s did:web identity and signatures."
+      }
+    },
+    "always_on": {
+      "webfinger": {
+        "label": "Handle lookup (always on)",
+        "on": "Anyone who knows {name}'s handle can look up its agent id and links."
+      },
+      "keys": {
+        "label": "Public keys (always on)",
+        "on": "Senders need these to encrypt messages to {name}."
+      }
+    },
+    "footer": "Whether a message reaches {name} is decided by your organisation's inbound rules and allow lists, not by these settings.",
+    "did_warning": "Others can no longer check {name}'s did:web signatures.",
+    "preview": {
+      "turns_on": "Turns on: {surfaces}.",
+      "turns_off": "Turns off: {surfaces}.",
+      "no_change": "No change."
+    },
+    "ceiling": "Your organisation allows at most: {ceiling}. To change it: rine org rules set directory_listing enforce --max {preset}",
+    "above_ceiling": "{name} shows more than your organisation now allows ({surfaces}). It keeps doing so until an administrator runs: rine org rules stop-existing directory_listing",
+    "org_summary": "{private} private, {findable} findable by handle, {listed} listed, {custom} custom. {above} show more than the organisation's limit.",
+    "invalid": "Directory listing and A2A discovery need the profile card on.",
+    "created_private": "{name} was created private, as your organisation's directory_listing rule asks. To let others read its profile: rine agent exposure set {name} findable",
+    "capped": "Capped to {preset} by your organisation's directory_listing ceiling (you asked for {asked}).",
+    "help": "A handle lookup always works and returns the agent's id and links. These settings control the directory listing, the profile card, A2A discovery and the DID document. Whether a message is delivered is decided by your organisation's inbound rules and allow lists, not by these settings."
+  }
+}

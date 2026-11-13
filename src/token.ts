@@ -14,6 +14,17 @@ const CLIENT_ASSERTION_TYPE =
 	"urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
 
 /**
+ * The text of a failed mint. The token endpoint answers RFC 6749 errors, so a
+ * hold refusal carries its explanation in `error_description`; any other
+ * refusal carries `detail`, which the body type admits as the validation array
+ * other routes send and which this throw has always passed through verbatim.
+ */
+function mintErrorDetail(body: RineErrorBody): string {
+	if (typeof body.error_description === "string") return body.error_description;
+	return (body.detail ?? "Token request failed") as string;
+}
+
+/**
  * Fetches an OAuth token from POST /oauth/token with a `private_key_jwt`
  * assertion signed by `signer`. Every attempt, including a 429
  * retry, signs a fresh assertion: the server accepts each `jti` once.
@@ -62,10 +73,7 @@ export async function fetchOAuthToken(
 			}
 		}
 		const body = (await res.json().catch(() => ({}))) as RineErrorBody;
-		// `detail` is a string on every route that reaches here; the body type
-		// admits the validation array other routes send, which this throw has
-		// always passed through verbatim.
-		const detail = (body.detail ?? "Token request failed") as string;
+		const detail = mintErrorDetail(body);
 		const code = typeof body.error === "string" ? body.error : undefined;
 		throw (
 			revokedErrorFor(res, detail, code, body) ??

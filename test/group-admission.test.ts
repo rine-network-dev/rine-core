@@ -57,6 +57,7 @@ describe("groupAdmissionSkipSentence", () => {
 	it("says so plainly when there is no reason at all", () => {
 		expect(groupAdmissionSkipSentence(undefined)).toBe("no reason given");
 		expect(groupAdmissionSkipSentence(null)).toBe("no reason given");
+		expect(groupAdmissionSkipSentence("")).toBe("no reason given");
 	});
 });
 
@@ -145,6 +146,33 @@ describe("the Python twin of the MLS reason map", () => {
 			expect(pySentence(reason)).toBe(mlsAdmissionSkipSentence(reason));
 		});
 	}
+
+	// The group map had no binding at all: `org_rule` is the first token added
+	// to it since the maps were declared twins.
+	for (const reason of GROUP_ADMISSION_SKIP_REASONS) {
+		it(`says the same thing about the group reason ${reason} on both stacks`, () => {
+			expect(pySentence(reason)).toBe(groupAdmissionSkipSentence(reason));
+		});
+	}
+});
+
+describe("org_rule", () => {
+	const fixture = JSON.parse(
+		readFileSync(
+			new URL("./fixtures/group-rules.json", import.meta.url).pathname,
+			"utf8",
+		),
+	) as { sentences: { skip_clause: string } };
+
+	it("says the server's clause, not the token", () => {
+		expect(groupAdmissionSkipSentence("org_rule")).toBe(
+			fixture.sentences.skip_clause,
+		);
+	});
+
+	it("never reads as a recognised-token failure", () => {
+		expect(groupAdmissionSkipSentence("org_rule")).not.toMatch(/not recognised/);
+	});
 });
 
 describe("admittedAgentIds", () => {

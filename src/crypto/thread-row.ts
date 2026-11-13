@@ -15,6 +15,8 @@ import {
 	withA2aCleartextNotice,
 } from "../a2a-cleartext.js";
 import type { HttpClient } from "../http.js";
+import type { OperatorContext, SenderClass } from "../operator-classify.js";
+import { classifyShown } from "../operator-frame.js";
 import { decryptGroupMessageWithRecovery } from "../sender-key-ops.js";
 import { asSenderKeyUnavailable } from "../sender-key-words.js";
 import {
@@ -30,6 +32,8 @@ export const THREAD_UNAVAILABLE = "[unavailable]";
 
 /** A row of the both-sided thread, as the server returns it (subset we read). */
 export interface ThreadRow {
+	/** The message id, which the operator ledger keys a redelivery on. */
+	id: string;
 	type: string;
 	encrypted_payload: string;
 	encryption_version?: string;
@@ -46,6 +50,7 @@ export interface ThreadRow {
 	to_agent_id?: string | null;
 	group_id?: string | null;
 	content_type?: string | null;
+	context_only?: string | null;
 	created_at: string;
 }
 
@@ -57,6 +62,10 @@ export interface ThreadRowEntry {
 	verification_status: VerificationStatus;
 	type: string;
 	created_at: string;
+	/** The server-authenticated sender, `null` on a row the server listed without one. */
+	from_agent_id: string | null;
+	/** Computed here from the signed statement and the pin; never read from the row. */
+	sender_class: SenderClass;
 }
 
 /**
@@ -82,6 +91,7 @@ export async function classifyThreadRow(
 	agentId: string,
 	row: ThreadRow,
 	client: HttpClient,
+	operator: OperatorContext | null,
 ): Promise<ClassifiedRow> {
 	const direction = row.direction ?? "received";
 	const senderHandle = row.sender_handle ?? null;
@@ -166,6 +176,20 @@ export async function classifyThreadRow(
 				),
 			);
 		}
+		const senderClass =
+			operator === null || direction === "sent" || isGroup
+				? "other"
+				: (
+						await classifyShown(operator, row.type, {
+							rowId: row.id,
+							contextOnly: row.context_only,
+							fromAgentId,
+							encryptionVersion: row.encryption_version ?? "",
+							encryptedPayload: ciphertext,
+							result,
+							rendersText: true,
+						})
+					).senderClass;
 		return sealed(
 			entry(
 				direction,
@@ -173,6 +197,7 @@ export async function classifyThreadRow(
 				renderThreadText(result.plaintext, row.content_type),
 				result.verificationStatus,
 				row,
+				senderClass,
 			),
 		);
 	} catch (err) {
@@ -209,6 +234,7 @@ function entry(
 	text: string,
 	verification_status: VerificationStatus,
 	row: ThreadRow,
+	sender_class: SenderClass = "other",
 ): ThreadRowEntry {
 	return {
 		direction,
@@ -217,5 +243,7 @@ function entry(
 		verification_status,
 		type: row.type,
 		created_at: row.created_at,
+		from_agent_id: row.from_agent_id ?? null,
+		sender_class,
 	};
 }

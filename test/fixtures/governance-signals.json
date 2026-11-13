@@ -1,0 +1,351 @@
+{
+  "alert_kinds": [
+    "agent.first_external_contact",
+    "counterparty.first_seen",
+    "counterparty.volume_spike",
+    "rule.burst"
+  ],
+  "cases": [
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "agent.created"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "agent.revoked"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "agent.suspended"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "agent.resumed"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "agent.keys_rotated"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "branch.created"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "branch.revoked"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "branch.suspended"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "branch.resumed"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "org.frozen"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "org.unfrozen"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "delegate.created"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "delegate.revoked"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "policy.changed"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "operator.action"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "agent.card_changed"
+    },
+    {
+      "class": "alert",
+      "detail": {},
+      "kind": "agent.first_external_contact"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "agent.acted_as"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "agent.policy_changed"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "token.minted"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "auth.assertion_failed"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "poll_token.created"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "org.updated"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "custody.root_unsealed"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "export.requested"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "admin.denied"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "group.created"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "group.updated"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "group.deleted"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "group.seat_changed"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "group.invited"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "group.external_member_added"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "webhook.created"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "webhook.updated"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "webhook.deleted"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "a2a_push.created"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "funnel.hook_created"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "funnel.hook_deleted"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "directory.listed"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "directory.unlisted"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "reader.ciphertext_fetched"
+    },
+    {
+      "class": "alert",
+      "detail": {},
+      "kind": "counterparty.first_seen"
+    },
+    {
+      "class": "summary",
+      "detail": {},
+      "kind": "counterparty.inbound_summary"
+    },
+    {
+      "class": "alert",
+      "detail": {},
+      "kind": "counterparty.volume_spike"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "access.denied"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "policy.exception_changed"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "counterparty.decided"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "rule.denied"
+    },
+    {
+      "class": "alert",
+      "detail": {},
+      "kind": "rule.burst"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "policy.existing_stopped"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "org.domain_verified"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "org.domain_lost"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "agent.exposure_changed"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "group.postable_changed"
+    },
+    {
+      "class": "record",
+      "detail": {},
+      "kind": "group.member_unreachable"
+    },
+    {
+      "class": "record",
+      "detail": {
+        "agent_has_history": true
+      },
+      "kind": "a2a_push.created"
+    },
+    {
+      "class": "alert",
+      "detail": {
+        "agent_has_history": false
+      },
+      "kind": "a2a_push.created"
+    },
+    {
+      "class": "record",
+      "detail": {
+        "agent_has_history": true
+      },
+      "kind": "funnel.hook_created"
+    },
+    {
+      "class": "alert",
+      "detail": {
+        "agent_has_history": false
+      },
+      "kind": "funnel.hook_created"
+    },
+    {
+      "class": "record",
+      "detail": {
+        "agent_has_history": true
+      },
+      "kind": "webhook.created"
+    },
+    {
+      "class": "alert",
+      "detail": {
+        "agent_has_history": false
+      },
+      "kind": "webhook.created"
+    },
+    {
+      "class": "record",
+      "detail": {
+        "postable": true
+      },
+      "kind": "group.postable_changed"
+    },
+    {
+      "class": "alert",
+      "detail": {
+        "postable": false
+      },
+      "kind": "group.postable_changed"
+    }
+  ],
+  "exit_alert_kinds": [
+    "a2a_push.created",
+    "funnel.hook_created",
+    "webhook.created"
+  ],
+  "history_field": "agent_has_history",
+  "postable_field": "postable",
+  "summary_kinds": [
+    "counterparty.inbound_summary"
+  ]
+}

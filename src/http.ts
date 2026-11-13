@@ -139,14 +139,16 @@ export class HttpClient {
 	 * written as one path literal. `mls_removal_epoch` is the caller
 	 * (`deleteGroupMember`): spliced into the path string it becomes a literal no
 	 * route matches, which is invisible to a reader and to the client⇄server
-	 * contract test that extracts these paths.
+	 * contract test that extracts these paths. `body` is for the one DELETE that
+	 * carries a required reason (`DELETE /org/allow/{id}`).
 	 */
 	delete(
 		path: string,
 		extraHeaders?: Record<string, string>,
 		params?: Record<string, string | number | boolean>,
+		body?: unknown,
 	): Promise<unknown> {
-		return this.request("DELETE", path, undefined, params, extraHeaders);
+		return this.request("DELETE", path, body, params, extraHeaders);
 	}
 
 	async markDelivered(

@@ -58,7 +58,7 @@ afterEach(() => {
 });
 
 describe("fetchPeerCardWords", () => {
-	it("reads the words off the peer's public directory card", async () => {
+	it("reads the words off the peer's agent card", async () => {
 		const paths: string[] = [];
 		const peer = await fetchPeerCardWords(
 			cardClient(
@@ -72,7 +72,7 @@ describe("fetchPeerCardWords", () => {
 			),
 			PEER_ID,
 		);
-		expect(paths).toEqual([`/directory/agents/${PEER_ID}`]);
+		expect(paths).toEqual([`/agents/${PEER_ID}/card`]);
 		expect(peer).toEqual({
 			handle: "bot@acme",
 			words: PEER_WORDS,

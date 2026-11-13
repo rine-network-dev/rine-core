@@ -65,6 +65,7 @@ function fromSigner(signerId: string, payload: unknown): DecryptResult {
 	return {
 		plaintext: JSON.stringify(payload),
 		senderKid: `rine:${signerId}#0`,
+		verifyingKey: null,
 		verified: true,
 		verificationStatus: "verified",
 	};

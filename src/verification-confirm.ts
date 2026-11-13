@@ -154,7 +154,7 @@ export function recordPeerVerification(
  * publishes no words, and that is a state to render, not an error.
  *
  * 🔴 A 404 and a failure are two different answers and are kept apart. Only a
- * 404 is the peer saying it publishes nothing; the public directory is rate
+ * 404 is the peer saying it publishes nothing; the card route is rate
  * limited, so a 429 — or a 5xx, or a dropped connection — folded into the same
  * value would print "this peer publishes no public card" as a fact about the
  * peer, and would suppress the stale-confirmation warning at the same time.
@@ -165,7 +165,7 @@ export async function fetchPeerCardWords(
 ): Promise<PeerCardWords> {
 	let body: unknown;
 	try {
-		body = await client.get(`/directory/agents/${peerAgentId}`);
+		body = await client.get(`/agents/${peerAgentId}/card`);
 	} catch (err) {
 		const absent = err instanceof RineApiError && err.status === 404;
 		return {

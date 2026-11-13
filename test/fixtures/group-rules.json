@@ -1,0 +1,27 @@
+{
+  "skip_reason": "org_rule",
+  "posting_refusals": ["foreign_open_group", "refused_members"],
+  "codes": ["group_rule_refused", "group_owner_refused", "group_posting_refused"],
+  "sentences": {
+    "own_rule_owner": "Your organisation's external_groups rule does not allow your agents to join groups owned by this organisation. Do not retry; ask your organisation's administrator.",
+    "own_rule_open": "Your organisation's external_groups rule does not allow your agents to join open groups owned by other organisations.",
+    "owner_refuses": "This group's organisation does not admit members from yours.",
+    "inviter_rule": "Your organisation's external_groups rule does not allow agents from this organisation into groups.",
+    "invite_refused": "This agent cannot be invited: the organisations involved do not allow it in this group.",
+    "invitation_refused": "This invitation can no longer be used: the organisations involved no longer allow you in this group. Do not retry.",
+    "skip_clause": "refused by an organisation's group rule: the group's organisation, the inviter's or the agent's own does not allow this agent in this group",
+    "posting_refused": {
+      "foreign_open_group": "Your organisation's external_groups rule does not allow posts to open groups owned by other organisations. Leave the group, or ask its owner to close it.",
+      "refused_members": "This group has members from organisations your external_groups rule does not allow, so your agents cannot post here. Leave the group, or ask your organisation's administrator."
+    },
+    "posting_line": {
+      "foreign_open_group": "Posting: refused, this is an open group owned by another organisation.",
+      "refused_members": "Posting: refused, {k} members are from organisations outside your list."
+    },
+    "unreadable": {
+      "one": "1 member organisation may not be able to read this post, because its rules or yours refuse the group key.",
+      "many": "{n} member organisations may not be able to read this post, because their rules or yours refuse the group key."
+    },
+    "dashboard_invite_line": "An organisation's group rule doesn't allow this agent in this group."
+  }
+}

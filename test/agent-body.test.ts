@@ -28,6 +28,13 @@ const KEY_MATERIAL_FIELDS = [
 ];
 
 describe("agentCreateRequest", () => {
+	it("test_agentCreateRequest_when_exposure_is_set_then_it_is_sent_and_otherwise_absent", () => {
+		const plain = agentCreateRequest(custody, AGENT_ID, { name: "A" }).body;
+		expect("exposure" in plain).toBe(false);
+		const named = agentCreateRequest(custody, AGENT_ID, { name: "A", exposure: "private" }).body;
+		expect(named.exposure).toBe("private");
+	});
+
 	it("test_agentCreateRequest_when_called_then_generation_0_keys_match_deriveAgent", () => {
 		const { keys } = agentCreateRequest(custody, AGENT_ID, { name: "Test Agent" });
 		expect(keys).toEqual(agentKeysFromDerived(deriveAgent(branch, AGENT_ID, 0)));

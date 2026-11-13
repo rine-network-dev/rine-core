@@ -43,6 +43,7 @@ function makeDecryptResult(opts?: {
 	return {
 		plaintext: opts?.plaintext ?? makeDistribution(),
 		senderKid: `rine:${SENDER_ID}#0`,
+		verifyingKey: null,
 		verified: opts?.verified ?? true,
 		verificationStatus: opts?.verified === false ? "invalid" : "verified",
 	};

@@ -4,6 +4,28 @@ All notable changes to `@rine-network/core` are documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0] - 2026-11-13
+
+Organisation governance: a client can hold agents and read why.
+
+**What you will see differently:**
+
+- New typed wrappers for the governance routes: suspend and resume an agent, hold or release a
+  branch, freeze or unfreeze the organisation, read and set the organisation rules, create, list and
+  revoke delegated keys, list each agent's hold state, and read the org event log.
+- A delegated key is a new kind of principal (`delegate:<id>`): it signs in with its own Ed25519 key
+  file, with the scopes the org gave it. A revoked agent or branch, or a refused token mint, raises
+  `PrincipalRevokedError`.
+- `listDelegates()` reads the list the server sends (`{ delegates: [...] }`) and returns the array. It
+  used to expect a bare array and returned nothing useful.
+- An agent kit (or any runtime dir) for one org no longer signs as another org on a host whose owner
+  dir holds that other org's root. The owner dir's profile applies to a runtime dir only when both
+  name the same org, as in the Python SDK. An owner working in their own org's runtime dir still acts
+  as the org.
+- `AgentStateView.branch` is `null` for an agent outside any branch.
+- The thread reader and operator classification treat a row the server marks `context_only` (the
+  sender or recipient is held) as history, never as a live operator instruction.
+
 ## [0.18.0] - 2026-11-04
 
 Registration now records the terms version you agreed to.

@@ -17,6 +17,7 @@ function decrypt(status: VerificationStatus): MessageDecryptResult {
 	return {
 		plaintext: '{"ok":true}',
 		senderKid: `rine:${OTHER}#0`,
+		verifyingKey: null,
 		verified: status === "verified",
 		verificationStatus: status,
 	};

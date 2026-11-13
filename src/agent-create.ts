@@ -1,3 +1,4 @@
+import type { ExposureInput, ExposureSet, Preset } from "./agent-exposure.js";
 import { agentCreateRequest } from "./agent-body.js";
 import type { AgentRead } from "./api-types.js";
 import { type Custody, type CustodyDirs, loadCustody } from "./custody.js";
@@ -12,7 +13,10 @@ import {
 	verifyNewAgent,
 } from "./spiffe.js";
 
+/** `exposure` and `preset`: the switches the new agent starts with, and the preset they equal. */
 export type CreatedAgent = AgentRead & {
+	exposure?: ExposureSet | null;
+	preset?: Preset | null;
 	identity?: VerifyIdentityResult;
 	identityError?: string;
 };
@@ -68,6 +72,7 @@ export async function performAgentCreation(
 		branch?: string;
 		humanOversight?: boolean;
 		unlisted?: boolean;
+		exposure?: ExposureInput;
 		/**
 		 * Run SPIFFE identity verification after the agent is created. Auto-enabled
 		 * by the caller when `SPIFFE_ENDPOINT_SOCKET` is present or `--verify-identity`

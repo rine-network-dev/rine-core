@@ -51,12 +51,30 @@ function classifyClose(ev: { code?: number; wasClean?: boolean }): TunnelClose {
 	return { code, clean: ev.wasClean === true || CLEAN_CLOSE_CODES.has(code) };
 }
 
-/** A bind rejection (BIND_NAK / ownership failure). `revoked` stops the relay. */
+/** WS close code the broker sends when the agent is held (suspended, its branch suspended or its org frozen). */
+export const CLOSE_SUSPENDED = 4423;
+
+/** Why the broker rejected a BIND, as it names the reason in `BIND_NAK`. */
+export const BindNakReason = {
+	NotOwned: "not_owned",
+	Forbidden: "forbidden",
+	Inactive: "inactive",
+	Capacity: "capacity",
+	Conflict: "conflict",
+	Suspended: "suspended",
+} as const;
+export type BindNakReason = (typeof BindNakReason)[keyof typeof BindNakReason];
+
+/**
+ * A bind rejection (BIND_NAK / ownership failure). `revoked` stops the relay; a
+ * `suspended` rejection is the one that does not, because the hold lifts.
+ */
 export class TunnelBindError extends Error {
-	readonly revoked = true;
-	constructor(reason: string) {
+	readonly revoked: boolean;
+	constructor(readonly reason: string) {
 		super(`funnel binding rejected: ${reason}`);
 		this.name = "TunnelBindError";
+		this.revoked = reason !== BindNakReason.Suspended;
 	}
 }
 
@@ -113,7 +131,8 @@ function sendBind(ws: MuxWs, agentId: string, hostname: string): void {
  * Open the control WS (Bearer at the upgrade — Node 24's global WebSocket takes
  * a `{protocols, headers}` options object), perform the BIND handshake, and wire
  * the mux driver. The returned handle resolves once BIND_ACK arrives; a BIND_NAK
- * rejects with a TunnelBindError (the relay treats it as revoked and stops).
+ * rejects with a TunnelBindError. The relay stops on a revoked rejection and
+ * pauses on a `suspended` one, because the hold lifts (see {@link TunnelBindError}).
  */
 export function connectTunnel(args: ConnectTunnelArgs): Promise<TunnelHandle> {
 	const { controlWsUrl, token, agentId, hostname, openLocalPipe } = args;

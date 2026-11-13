@@ -316,7 +316,7 @@ describe("scanPendingSKDistributions / fetchAndIngestPendingSKDistributions", ()
 				READER_ID,
 			);
 
-			expect(scan).toEqual({ ingested: 1, unscanned: 136 });
+			expect(scan).toEqual({ ingested: 1, unscanned: 136, failed: 0 });
 		});
 
 		it("test_scan_when_the_page_holds_the_whole_listing_then_nothing_is_reported", async () => {
@@ -328,7 +328,7 @@ describe("scanPendingSKDistributions / fetchAndIngestPendingSKDistributions", ()
 				READER_ID,
 			);
 
-			expect(scan).toEqual({ ingested: 1, unscanned: 0 });
+			expect(scan).toEqual({ ingested: 1, unscanned: 0, failed: 0 });
 		});
 
 		it("test_scan_when_the_server_sends_no_total_then_no_shortfall_is_invented", async () => {
@@ -340,7 +340,7 @@ describe("scanPendingSKDistributions / fetchAndIngestPendingSKDistributions", ()
 				READER_ID,
 			);
 
-			expect(scan).toEqual({ ingested: 1, unscanned: 0 });
+			expect(scan).toEqual({ ingested: 1, unscanned: 0, failed: 0 });
 		});
 
 		it("test_scan_when_the_group_is_retired_then_no_page_is_read_and_none_is_missed", async () => {
@@ -355,7 +355,7 @@ describe("scanPendingSKDistributions / fetchAndIngestPendingSKDistributions", ()
 				GROUP_ID,
 			);
 
-			expect(scan).toEqual({ ingested: 0, unscanned: 0 });
+			expect(scan).toEqual({ ingested: 0, unscanned: 0, failed: 0 });
 		});
 
 		it("test_scan_when_a_target_ends_the_pass_early_then_the_rest_of_the_page_counts_too", async () => {
@@ -374,7 +374,7 @@ describe("scanPendingSKDistributions / fetchAndIngestPendingSKDistributions", ()
 			);
 
 			// 135 past the two-row page, plus the one row the break left behind.
-			expect(scan).toEqual({ ingested: 1, unscanned: 136 });
+			expect(scan).toEqual({ ingested: 1, unscanned: 136, failed: 0 });
 		});
 
 		it("test_scan_when_the_count_only_wrapper_is_called_then_it_is_the_same_pass", async () => {

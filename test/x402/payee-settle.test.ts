@@ -111,6 +111,7 @@ function decryptYields(accepts: PaymentRequirements[]): void {
 	decryptMock.mockResolvedValue({
 		plaintext: JSON.stringify({ x402Version: 2, accepts }),
 		senderKid: `rine:${PAYEE}`,
+		verifyingKey: null,
 		verified: true,
 		verificationStatus: "verified",
 	});
@@ -223,6 +224,7 @@ describe("resolvePayeeRequirement — ref binding", () => {
 		decryptMock.mockResolvedValue({
 			plaintext: JSON.stringify({ x402Version: 2, accepts: [req()] }),
 			senderKid: `rine:${PAYEE}`,
+			verifyingKey: null,
 			verified: false,
 			verificationStatus: "invalid",
 		});
@@ -236,6 +238,7 @@ describe("resolvePayeeRequirement — ref binding", () => {
 		decryptMock.mockResolvedValue({
 			plaintext: JSON.stringify({ x402Version: 2, accepts: [req()] }),
 			senderKid: `rine:${OTHER}`,
+			verifyingKey: null,
 			verified: false,
 			verificationStatus: "sender-mismatch",
 		});

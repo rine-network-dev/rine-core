@@ -18,6 +18,16 @@ export function retryAfterMsFromResponse(res: Response): number {
 	return 0;
 }
 
+/** A status that says the server, not the request, is the problem: a throttle or a 5xx. */
+export function isUnavailableStatus(status: number): boolean {
+	return status === 429 || status >= 500;
+}
+
+/** A status the server pairs with a refusal of one request: a 4xx other than a throttle. */
+export function isRefusalStatus(status: number): boolean {
+	return status >= 400 && status < 500 && status !== 429;
+}
+
 /** Retry-After (ms) carried on a thrown `RineApiError.raw` Response, or 0. */
 export function retryAfterMsFromError(err: RineApiError): number {
 	return err.raw instanceof Response ? retryAfterMsFromResponse(err.raw) : 0;

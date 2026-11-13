@@ -296,11 +296,15 @@ describe("reading an MLS group message twice", () => {
 
 describe("the read cache's bounds", () => {
 	let dir: string;
+	let sync: ReturnType<typeof vi.spyOn> | undefined;
 
 	beforeEach(() => {
 		dir = fs.mkdtempSync(join(tmpdir(), "rine-read-cache-bounds-"));
 	});
-	afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+	afterEach(() => {
+		sync?.mockRestore();
+		fs.rmSync(dir, { recursive: true, force: true });
+	});
 
 	/** The ciphertext of the i-th recorded read. */
 	function nth(i: number): Uint8Array {
@@ -308,6 +312,9 @@ describe("the read cache's bounds", () => {
 	}
 
 	it("test_recording_when_past_the_entry_bound_then_drops_the_oldest", async () => {
+		// Every record rewrites the file and syncs it to disk, which dominates the
+		// run under load; the bound is about which entries survive, not durability.
+		sync = vi.spyOn(fs, "fsyncSync").mockImplementation(() => undefined);
 		const overflow = GROUP_READ_MAX_ENTRIES + 5;
 		for (let i = 0; i < overflow; i++) {
 			recordGroupRead(dir, READER_ID, GROUP_ID, nth(i), new Uint8Array([9, i]));

@@ -1,6 +1,7 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { ascii } from "./bytes.js";
 import { verifyEd25519Strict } from "./ed25519-strict.js";
+import { canonicalize as jcsCanonicalize } from "./jcs.js";
 import { fromBase64Url, toBase64Url } from "./keys.js";
 
 export type JcsValue = string | number;
@@ -29,7 +30,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return proto === Object.prototype || proto === null;
 }
 
-function quoteString(value: unknown): string {
+function assertPrintableAscii(value: unknown): void {
 	if (typeof value !== "string") {
 		throw new JwsError("canonicalize: value must be a string or integer");
 	}
@@ -41,35 +42,34 @@ function quoteString(value: unknown): string {
 			);
 		}
 	}
-	return `"${value}"`;
 }
 
-function canonicalValue(value: unknown): string {
+function assertProfileValue(value: unknown): void {
 	if (typeof value === "number") {
 		if (!Number.isSafeInteger(value) || value < 0 || value > MAX_SAFE) {
 			throw new JwsError("canonicalize: integer outside [0, 2^53)");
 		}
-		return String(value);
+		return;
 	}
-	return quoteString(value);
+	assertPrintableAscii(value);
 }
 
-/** Restricted JCS profile: plain objects of printable-ASCII strings and integers. */
+/**
+ * Restricted profile of {@link jcsCanonicalize}: plain objects of printable-ASCII strings and
+ * integers, with the key set a signed claim may use. A value outside the profile is refused, so
+ * a verifier never accepts bytes the signer's profile could not have produced.
+ */
 export function canonicalize(value: unknown): string {
 	if (!isPlainObject(value)) {
 		throw new JwsError("canonicalize: top level must be a plain object");
 	}
-	const keys = Object.keys(value);
-	for (const key of keys) {
+	for (const key of Object.keys(value)) {
 		if (!KEY_RE.test(key)) {
 			throw new JwsError(`canonicalize: key outside profile: ${key}`);
 		}
+		assertProfileValue(value[key]);
 	}
-	keys.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-	const body = keys
-		.map((key) => `${quoteString(key)}:${canonicalValue(value[key])}`)
-		.join(",");
-	return `{${body}}`;
+	return jcsCanonicalize(value as JcsObject);
 }
 
 export function isCanonicalText(text: string): boolean {

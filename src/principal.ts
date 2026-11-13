@@ -1,4 +1,4 @@
-// The four principal kinds a token request can name. A closed union,
+// The five principal kinds a token request can name. A closed union,
 // so no caller compares a kind against a bare string.
 import { BRANCH_NAME_RE } from "./crypto/derive.js";
 import { CANONICAL_UUID_RE } from "./uuid.js";
@@ -11,6 +11,7 @@ export const PrincipalKind = {
 	Branch: "branch",
 	Agent: "agent",
 	Reader: "reader",
+	Delegate: "delegate",
 } as const;
 export type PrincipalKind = (typeof PrincipalKind)[keyof typeof PrincipalKind];
 
@@ -19,7 +20,9 @@ export type Principal =
 	| { kind: typeof PrincipalKind.Branch; orgId: string; name: string }
 	| { kind: typeof PrincipalKind.Agent; agentId: string }
 	/** `name` absent is the org reader, present is a branch reader. */
-	| { kind: typeof PrincipalKind.Reader; orgId: string; name?: string };
+	| { kind: typeof PrincipalKind.Reader; orgId: string; name?: string }
+	/** A delegated key with a few org-wide powers; the subject names no org, the server knows it. */
+	| { kind: typeof PrincipalKind.Delegate; delegateId: string };
 
 export function principalString(principal: Principal): string {
 	switch (principal.kind) {
@@ -33,6 +36,8 @@ export function principalString(principal: Principal): string {
 			return principal.name === undefined
 				? `reader:${principal.orgId}`
 				: `reader:${principal.orgId}:${principal.name}`;
+		case PrincipalKind.Delegate:
+			return `delegate:${principal.delegateId}`;
 	}
 }
 
@@ -61,6 +66,9 @@ export function parsePrincipal(text: string): Principal {
 		case PrincipalKind.Agent:
 			if (second !== undefined) throw new Error("invalid principal");
 			return { kind: PrincipalKind.Agent, agentId: uuid(first) };
+		case PrincipalKind.Delegate:
+			if (second !== undefined) throw new Error("invalid principal");
+			return { kind: PrincipalKind.Delegate, delegateId: uuid(first) };
 		case PrincipalKind.Branch:
 			return {
 				kind: PrincipalKind.Branch,

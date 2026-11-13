@@ -43,6 +43,7 @@ function clientWith(world: World) {
 }
 
 const baseRow = (over: Partial<ThreadRow>): ThreadRow => ({
+	id: "row-1",
 	type: "rine.v1.task_request",
 	encrypted_payload: "",
 	encryption_version: "hpke-hybrid-v2",
@@ -90,6 +91,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 			SENDER_ID,
 			row,
 			clientWith(world) as never,
+			null,
 		);
 		expect(entry.direction).toBe("sent");
 		expect(entry.text).toBe("from me");
@@ -115,6 +117,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 			RECIPIENT_ID,
 			row,
 			clientWith(world) as never,
+			null,
 		);
 		expect(entry.direction).toBe("received");
 		expect(entry.sender_handle).toBe("alice@org");
@@ -140,6 +143,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 			SENDER_ID,
 			row,
 			clientWith(world) as never,
+			null,
 		);
 		expect(entry.text).toBe(THREAD_UNAVAILABLE);
 	});
@@ -156,6 +160,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 			RECIPIENT_ID,
 			row,
 			clientWith(world) as never,
+			null,
 		);
 		expect(entry.text).toBe(THREAD_UNAVAILABLE);
 		expect(entry.verification_status).toBe("unverifiable");
@@ -182,6 +187,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 			RECIPIENT_ID,
 			row,
 			client as never,
+			null,
 		);
 
 		expect(entry.text).toBe(THREAD_UNAVAILABLE);
@@ -209,6 +215,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 			RECIPIENT_ID,
 			row,
 			clientWith(world) as never,
+			null,
 		);
 
 		expect(entry.text).toBe(THREAD_UNAVAILABLE);
@@ -245,6 +252,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 			RECIPIENT_ID,
 			row,
 			clientWith(world) as never,
+			null,
 		);
 
 		expect(entry.text).toBe(THREAD_UNAVAILABLE);
@@ -275,6 +283,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 			RECIPIENT_ID,
 			row,
 			clientWith(world) as never,
+			null,
 		);
 
 		expect(entry.text).toBe("group hello");
@@ -324,6 +333,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 			RECIPIENT_ID,
 			await unopenableGroupRow(),
 			clientWithNoDistributions(world) as never,
+			null,
 		);
 
 		expect(entry.text).toContain("sealed under sender key");
@@ -347,6 +357,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 			RECIPIENT_ID,
 			rows,
 			clientWithNoDistributions(world) as never,
+			null,
 		);
 
 		expect(entries[0]?.text).toContain("sealed under sender key");
@@ -360,8 +371,8 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 		const rows = [await unopenableGroupRow(), await unopenableGroupRow()];
 		const client = clientWithNoDistributions(world) as never;
 
-		const first = await decryptThreadRows(dir, RECIPIENT_ID, rows, client);
-		const second = await decryptThreadRows(dir, RECIPIENT_ID, rows, client);
+		const first = await decryptThreadRows(dir, RECIPIENT_ID, rows, client, null);
+		const second = await decryptThreadRows(dir, RECIPIENT_ID, rows, client, null);
 
 		expect(first[0]?.text).toContain("sealed under sender key");
 		expect(second[0]?.text).toContain("sealed under sender key");
@@ -382,6 +393,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 			RECIPIENT_ID,
 			rows,
 			clientWithNoDistributions(world) as never,
+			null,
 		);
 
 		expect(entries[0]?.text).toBe(THREAD_UNAVAILABLE);
@@ -437,6 +449,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 			RECIPIENT_ID,
 			rows,
 			client as never,
+			null,
 		);
 
 		expect(entries.map((e) => e.text)).toEqual([
@@ -470,6 +483,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 			RECIPIENT_ID,
 			row,
 			clientWith(world) as never,
+			null,
 		);
 		expect(entry.text).toBe("hello world");
 	});
@@ -485,7 +499,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 		});
 		const client = clientWith(world);
 
-		const [entry] = await decryptThreadRows(dir, RECIPIENT_ID, [row], client as never);
+		const [entry] = await decryptThreadRows(dir, RECIPIENT_ID, [row], client as never, null);
 
 		expect(entry?.text).toBe(`[${A2A_CLEARTEXT_NOTICE}] [{"text":"plain"}]`);
 		expect(entry?.verification_status).toBe("unverifiable");
@@ -499,7 +513,7 @@ describe("decryptThreadRow (the row classifier, one row at a time)", () => {
 			encrypted_payload: Buffer.from('{"text":"x"}').toString("base64url"),
 		});
 
-		const entry = await decryptThreadRow(dir, RECIPIENT_ID, row, clientWith(world) as never);
+		const entry = await decryptThreadRow(dir, RECIPIENT_ID, row, clientWith(world) as never, null);
 
 		expect(entry.text).toBe(THREAD_UNAVAILABLE);
 	});
@@ -521,6 +535,12 @@ describe("renderThreadText (content-type-gated SDK parity)", () => {
 	it("normalizes a JSON object with no text key via JSON.stringify (SDK renderText)", () => {
 		// Whitespace is normalized to match the SDK's stringify, not the raw input.
 		expect(renderThreadText('{ "a": 1 }')).toBe('{"a":1}');
+	});
+
+	it("drops a sender's own rine.operator field from a body with no text key", () => {
+		expect(
+			renderThreadText('{"body":"hi","rine.operator":{"v":1,"nonce":"n"}}'),
+		).toBe('{"body":"hi"}');
 	});
 
 	it("returns a JSON string scalar unwrapped", () => {

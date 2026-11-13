@@ -8,6 +8,7 @@ import {
 	distributeSenderKey,
 	getOrCreateSenderKey,
 } from "../src/sender-key-ops.js";
+import { SENDER_KEY_UNDELIVERED_REFUSAL, SenderKeyUndeliveredError } from "../src/errors-refusals.js";
 import { toBase64Url } from "../src/crypto/keys.js";
 import type { SenderKeyState } from "../src/crypto/sender-keys.js";
 import { generateSenderKey } from "../src/crypto/sender-keys.js";
@@ -876,6 +877,89 @@ describe("getOrCreateSenderKey", () => {
 		expect(senderKeysRetired(dir, SENDER_ID, GROUP_ID)).toBe(true);
 	});
 
+	/** The send path's own entry, as a promise a test can assert on. */
+	const send = (client: ReturnType<typeof makeClient>) =>
+		getOrCreateSenderKey(client as never, dir, SENDER_ID, "group@org.rine.network");
+
+	/** `client.post` refuses a distribution to every id in `refused` and takes the rest. */
+	function refuseDistributionTo(client: ReturnType<typeof makeClient>, refused: string[]) {
+		client.post.mockImplementation((_path: string, body: { to_agent_id: string }) =>
+			refused.includes(body.to_agent_id)
+				? Promise.reject(new Error("503"))
+				: Promise.resolve({ id: "msg-1" }),
+		);
+	}
+
+	it("test_getorcreate_when_every_first_distribution_fails_then_it_refuses_and_saves_nothing_until_recovery", async () => {
+		const failing = makeClient([SENDER_ID, RECIPIENT_A, RECIPIENT_B]);
+		refuseDistributionTo(failing, [RECIPIENT_A, RECIPIENT_B]);
+
+		const err = await send(failing).then(
+			() => null,
+			(e: unknown) => e,
+		);
+
+		expect(err).toBeInstanceOf(SenderKeyUndeliveredError);
+		expect((err as SenderKeyUndeliveredError).message).toBe(SENDER_KEY_UNDELIVERED_REFUSAL);
+		expect((err as SenderKeyUndeliveredError).groupId).toBe(GROUP_ID);
+		expect(loadSenderKeyStates(dir, SENDER_ID, GROUP_ID)).toEqual([]);
+
+		const { state } = await send(makeClient([SENDER_ID, RECIPIENT_A, RECIPIENT_B]));
+		expect(state.messageIndex).toBe(0);
+		expect(state.distributedTo).toEqual([RECIPIENT_A, RECIPIENT_B]);
+		expect(loadSenderKeyStates(dir, SENDER_ID, GROUP_ID)).toHaveLength(1);
+	});
+
+	it("test_getorcreate_when_every_rotation_distribution_fails_then_it_refuses_and_the_old_key_stays_current", async () => {
+		const { state: original } = await send(makeClient([SENDER_ID, RECIPIENT_A, RECIPIENT_B]));
+
+		const rotating = makeClient([SENDER_ID, RECIPIENT_A]);
+		refuseDistributionTo(rotating, [RECIPIENT_A]);
+		await expect(send(rotating)).rejects.toBeInstanceOf(SenderKeyUndeliveredError);
+
+		const saved = loadSenderKeyStates(dir, SENDER_ID, GROUP_ID);
+		expect(saved).toHaveLength(1);
+		expect(saved[0]!.senderKeyId).toBe(original.senderKeyId);
+		const addressed = rotating.post.mock.calls.map(([, body]) => body.to_agent_id);
+		expect(addressed).not.toContain(RECIPIENT_B);
+	});
+
+	it("test_getorcreate_when_a_topup_has_a_holder_and_the_newcomer_fails_then_it_sends", async () => {
+		const { state: original } = await send(makeClient([SENDER_ID, RECIPIENT_A]));
+
+		const topUp = makeClient([SENDER_ID, RECIPIENT_A, RECIPIENT_B]);
+		refuseDistributionTo(topUp, [RECIPIENT_B]);
+		const { state } = await send(topUp);
+
+		expect(state.senderKeyId).toBe(original.senderKeyId);
+		expect(state.distributedTo).toEqual([RECIPIENT_A]);
+	});
+
+	it("test_getorcreate_when_a_topup_has_no_holder_and_the_newcomers_fail_then_it_refuses", async () => {
+		await send(makeClient([SENDER_ID]));
+
+		const topUp = makeClient([SENDER_ID, RECIPIENT_A, RECIPIENT_B]);
+		refuseDistributionTo(topUp, [RECIPIENT_A, RECIPIENT_B]);
+
+		await expect(send(topUp)).rejects.toBeInstanceOf(SenderKeyUndeliveredError);
+	});
+
+	it("test_getorcreate_when_one_of_three_distributions_succeeds_then_it_sends", async () => {
+		const third = "e5f6a7b8-c9d0-1234-efab-345678901234";
+		const client = makeClient([SENDER_ID, RECIPIENT_A, RECIPIENT_B, third]);
+		refuseDistributionTo(client, [RECIPIENT_A, RECIPIENT_B]);
+
+		const { state } = await send(client);
+
+		expect(state.distributedTo).toEqual([third]);
+	});
+
+	it("test_getorcreate_when_the_group_has_no_other_member_then_it_sends", async () => {
+		const { state } = await send(makeClient([SENDER_ID]));
+
+		expect(state.distributedTo).toEqual([]);
+	});
+
 	it("throws when group not found", async () => {
 		const client = {
 			get: vi.fn().mockResolvedValue({ items: [] }),
@@ -998,6 +1082,7 @@ describe("deleteSenderKey", () => {
 				sender_agent_id: peer.senderAgentId,
 			}),
 			senderKid: `rine:${peer.senderAgentId}#0`,
+			verifyingKey: null,
 			verified: true,
 			verificationStatus: "verified" as const,
 		};

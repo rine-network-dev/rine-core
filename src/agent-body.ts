@@ -1,6 +1,7 @@
 // The one builder for the key material of an agent create or rotate request.
 // Create is generation 0 plus id, name and flags; rotate is the next
 // generation and nothing else, so both start from the same body.
+import type { ExposureInput } from "./agent-exposure.js";
 import type { Custody } from "./custody.js";
 import {
 	type AgentKeys,
@@ -28,6 +29,7 @@ export interface AgentCreateParams {
 	name: string;
 	humanOversight?: boolean;
 	unlisted?: boolean;
+	exposure?: ExposureInput;
 }
 
 export type AgentCreateBody = AgentKeyBody & {
@@ -35,6 +37,7 @@ export type AgentCreateBody = AgentKeyBody & {
 	name: string;
 	human_oversight?: boolean;
 	unlisted?: boolean;
+	exposure?: ExposureInput;
 };
 
 /** A request body and the leaf keys to save once the server accepts it. */
@@ -90,6 +93,7 @@ export function agentCreateRequest(
 				? {}
 				: { human_oversight: params.humanOversight }),
 			...(params.unlisted === undefined ? {} : { unlisted: params.unlisted }),
+			...(params.exposure === undefined ? {} : { exposure: params.exposure }),
 			...body,
 		},
 		keys,

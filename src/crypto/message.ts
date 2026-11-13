@@ -94,6 +94,13 @@ export interface DecryptResult {
 	verified: boolean;
 	verificationStatus: VerificationStatus;
 	/**
+	 * The full public Ed25519 key whose signature verified this message, `null`
+	 * unless `verified`.
+	 * It is what an operator pin is compared with: the bytes of the key, never a
+	 * fingerprint of them.
+	 */
+	verifyingKey: Uint8Array | null;
+	/**
 	 * Set when the sender's published signing key no longer matches the copy this
 	 * client had cached — a rotation the recipient may want to notice rather than
 	 * silently accept.

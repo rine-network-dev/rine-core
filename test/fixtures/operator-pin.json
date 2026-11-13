@@ -1,0 +1,284 @@
+{
+  "note": "Hand-written cases for the operator pin comparison. Replayed by rine-core/test/operator-pin-golden.test.ts and rine-sdk/tests/contract/test_operator_pin_golden.py; neither stack regenerates it. The pin may carry the seat handle (pin_handle); it never changes matches_sender or matches_key. seat_lookalike replays the display check on raw handles: both the pinned handle and the sender handle go through the stack's handle cleaner (characters outside A-Za-z0-9#@._- become _, then cut at 128) before the case-insensitive comparison.",
+  "cases": [
+    {
+      "name": "exact match",
+      "pin_agent_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "pin_signing_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "pin_handle": "ops@acme.rine.network",
+      "from_agent_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "verifying_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "matches_sender": true,
+      "matches_key": true
+    },
+    {
+      "name": "upper-case sender id",
+      "pin_agent_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "pin_signing_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "from_agent_id": "A1B2C3D4-E5F6-7890-ABCD-EF1234567890",
+      "verifying_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "matches_sender": true,
+      "matches_key": true
+    },
+    {
+      "name": "padded sender id",
+      "pin_agent_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "pin_signing_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "from_agent_id": "  a1b2c3d4-e5f6-7890-abcd-ef1234567890 ",
+      "verifying_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "matches_sender": true,
+      "matches_key": true
+    },
+    {
+      "name": "different sender",
+      "pin_agent_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "pin_signing_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "pin_handle": "ops@acme.rine.network",
+      "from_agent_id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+      "verifying_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "matches_sender": false,
+      "matches_key": true
+    },
+    {
+      "name": "handle instead of id",
+      "pin_agent_id": "ops@acme.rine.network",
+      "pin_signing_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "from_agent_id": "ops@acme.rine.network",
+      "verifying_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "matches_sender": false,
+      "matches_key": true
+    },
+    {
+      "name": "empty ids",
+      "pin_agent_id": "",
+      "pin_signing_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "from_agent_id": "",
+      "verifying_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "matches_sender": false,
+      "matches_key": true
+    },
+    {
+      "name": "verifying key one bit off",
+      "pin_agent_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "pin_signing_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "pin_handle": "ops@acme.rine.network",
+      "from_agent_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "verifying_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh4",
+      "matches_sender": true,
+      "matches_key": false
+    },
+    {
+      "name": "verifying key absent",
+      "pin_agent_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "pin_signing_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "from_agent_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "verifying_key": null,
+      "matches_sender": true,
+      "matches_key": false
+    },
+    {
+      "name": "verifying key 31 bytes",
+      "pin_agent_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "pin_signing_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "from_agent_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "verifying_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHg",
+      "matches_sender": true,
+      "matches_key": false
+    },
+    {
+      "name": "verifying key 33 bytes",
+      "pin_agent_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "pin_signing_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "from_agent_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "verifying_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8A",
+      "matches_sender": true,
+      "matches_key": false
+    },
+    {
+      "name": "pin padded base64url",
+      "pin_agent_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "pin_signing_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "from_agent_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "verifying_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "matches_sender": true,
+      "matches_key": false
+    },
+    {
+      "name": "pin standard base64 with padding",
+      "pin_agent_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "pin_signing_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "from_agent_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "verifying_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "matches_sender": true,
+      "matches_key": false
+    },
+    {
+      "name": "pin is a 48-bit fingerprint",
+      "pin_agent_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "pin_signing_key": "630dcd2966c4",
+      "from_agent_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "verifying_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "matches_sender": true,
+      "matches_key": false
+    },
+    {
+      "name": "pin key empty",
+      "pin_agent_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "pin_signing_key": "",
+      "from_agent_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "verifying_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "matches_sender": true,
+      "matches_key": false
+    },
+    {
+      "name": "pin key 16 bytes",
+      "pin_agent_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "pin_signing_key": "AAECAwQFBgcICQoLDA0ODw",
+      "from_agent_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "verifying_key": "AAECAwQFBgcICQoLDA0ODw",
+      "matches_sender": true,
+      "matches_key": false
+    },
+    {
+      "name": "pin key non-canonical trailing bits",
+      "pin_agent_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "pin_signing_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHhB",
+      "from_agent_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "verifying_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "matches_sender": true,
+      "matches_key": false
+    },
+    {
+      "name": "sender carries the pinned handle but another id",
+      "pin_agent_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "pin_signing_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "pin_handle": "ops@acme.rine.network",
+      "from_agent_id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+      "verifying_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "matches_sender": false,
+      "matches_key": true
+    }
+  ],
+  "seat_lookalike": [
+    {
+      "name": "no pin and a seat-shaped handle",
+      "pin": null,
+      "handle": "ops@acme.rine.network",
+      "looks_like_seat": false
+    },
+    {
+      "name": "pin without a handle and the ops local part",
+      "pin": {},
+      "handle": "ops@elsewhere.rine.network",
+      "looks_like_seat": true
+    },
+    {
+      "name": "pin without a handle and an ordinary handle",
+      "pin": {},
+      "handle": "kofi@acme.rine.network",
+      "looks_like_seat": false
+    },
+    {
+      "name": "ops local part in upper case",
+      "pin": {},
+      "handle": "OPS@Elsewhere.rine.network",
+      "looks_like_seat": true
+    },
+    {
+      "name": "handle with no at sign that is ops",
+      "pin": {},
+      "handle": "ops",
+      "looks_like_seat": true
+    },
+    {
+      "name": "ops only as a prefix of the local part",
+      "pin": {},
+      "handle": "ops2@acme.rine.network",
+      "looks_like_seat": false
+    },
+    {
+      "name": "ops as the domain",
+      "pin": {},
+      "handle": "kofi@ops",
+      "looks_like_seat": false
+    },
+    {
+      "name": "pinned handle with a different local part",
+      "pin": {
+        "handle": "console@acme.rine.network"
+      },
+      "handle": "console@acme.rine.network",
+      "looks_like_seat": true
+    },
+    {
+      "name": "pinned handle matched case-insensitively",
+      "pin": {
+        "handle": "Console@Acme.rine.network"
+      },
+      "handle": "console@acme.rine.network",
+      "looks_like_seat": true
+    },
+    {
+      "name": "pinned handle with padding",
+      "pin": {
+        "handle": " console@acme.rine.network "
+      },
+      "handle": "console@acme.rine.network",
+      "looks_like_seat": true
+    },
+    {
+      "name": "same local part under another domain",
+      "pin": {
+        "handle": "console@acme.rine.network"
+      },
+      "handle": "console@evil.rine.network",
+      "looks_like_seat": false
+    },
+    {
+      "name": "pinned handle and the ops heuristic together",
+      "pin": {
+        "handle": "ops@acme.rine.network"
+      },
+      "handle": "ops@elsewhere.rine.network",
+      "looks_like_seat": true
+    },
+    {
+      "name": "empty pinned handle never matches an empty handle",
+      "pin": {
+        "handle": ""
+      },
+      "handle": "",
+      "looks_like_seat": false
+    },
+    {
+      "name": "empty handle with a pin",
+      "pin": {},
+      "handle": "",
+      "looks_like_seat": false
+    },
+    {
+      "name": "pinned handle longer than the cleaned length",
+      "pin": {
+        "handle": "seataaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@acme.rine.network"
+      },
+      "handle": "seataaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@acme.rine.network",
+      "looks_like_seat": true
+    },
+    {
+      "name": "pinned handle with characters outside the handle set",
+      "pin": {
+        "handle": "se at@acme.rine.network"
+      },
+      "handle": "se_at@acme.rine.network",
+      "looks_like_seat": true
+    },
+    {
+      "name": "pinned handle cleaned so a different handle still differs",
+      "pin": {
+        "handle": "se at@acme.rine.network"
+      },
+      "handle": "se_bt@acme.rine.network",
+      "looks_like_seat": false
+    }
+  ]
+}

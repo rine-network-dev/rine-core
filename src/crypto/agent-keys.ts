@@ -36,8 +36,20 @@ export interface SenderKeyChange {
 interface SenderVerification {
 	verified: boolean;
 	verificationStatus: VerificationStatus;
+	/**
+	 * The full public Ed25519 key whose signature checked out, `null` unless
+	 * `verified`. After a rotation refetch it is the refetched key when that is
+	 * the one that verified, so a caller comparing it with a pin compares the key
+	 * that actually signed and never the one the cache held.
+	 */
+	verifyingKey: Uint8Array | null;
 	/** Set only when the rotation refetch returned a different signing key. */
 	keyChanged?: SenderKeyChange;
+}
+
+/** A verdict that verified nothing, so there is no key to report. */
+function unverified(verificationStatus: VerificationStatus): SenderVerification {
+	return { verified: false, verificationStatus, verifyingKey: null };
 }
 
 /** What the cache-reading fetch needs; a real {@link HttpClient} satisfies it. */
@@ -197,7 +209,7 @@ export async function verifyEnvelopeSender(
 	try {
 		const { agentId, keyGen } = parseSigningKid(decoded.kid);
 		if (!sameAgentId(agentId, expectedSenderAgentId)) {
-			return { verified: false, verificationStatus: "sender-mismatch" };
+			return unverified("sender-mismatch");
 		}
 		let opts: { bypassCache?: boolean; gen?: number } | undefined;
 		let { keys, fromCache } = await fetchAgentKeys(client, agentId);
@@ -208,6 +220,7 @@ export async function verifyEnvelopeSender(
 		const row = { createdAt, history: opts !== undefined };
 		let verified = verifyAgainst(keys, keyGen, ctx, decoded, row);
 		let keyChanged: SenderKeyChange | undefined;
+		let verifyingKey = keys.signing;
 		if (!verified && fromCache) {
 			const fresh = await fetchAgentKeys(client, agentId, {
 				...opts,
@@ -217,25 +230,29 @@ export async function verifyEnvelopeSender(
 			const currentFingerprint = signingKeyFingerprint(fresh.keys.signing);
 			if (previousFingerprint !== currentFingerprint) {
 				verified = verifyAgainst(fresh.keys, keyGen, ctx, decoded, row);
+				verifyingKey = fresh.keys.signing;
 				keyChanged = { agentId, previousFingerprint, currentFingerprint };
 			}
 		}
 		const verificationStatus: VerificationStatus = verified
 			? "verified"
 			: "invalid";
-		return keyChanged
-			? { verified, verificationStatus, keyChanged }
-			: { verified, verificationStatus };
+		const base = {
+			verified,
+			verificationStatus,
+			verifyingKey: verified ? verifyingKey : null,
+		};
+		return keyChanged ? { ...base, keyChanged } : base;
 	} catch (err) {
 		if (err instanceof KeyChainError) {
-			return { verified: false, verificationStatus: "invalid" };
+			return unverified("invalid");
 		}
 		// A kid no honest client emits names no sender, so it is a refusal and
 		// never a lookup outcome.
 		if (err instanceof InvalidSigningKidError) {
-			return { verified: false, verificationStatus: "sender-mismatch" };
+			return unverified("sender-mismatch");
 		}
 		// Could not fetch sender's key — signature unverifiable.
-		return { verified: false, verificationStatus: "unverifiable" };
+		return unverified("unverifiable");
 	}
 }

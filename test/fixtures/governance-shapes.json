@@ -1,0 +1,130 @@
+{
+	"agent_hold": {
+		"agent_id": "11111111-1111-4111-8111-111111111111",
+		"suspended": true,
+		"suspended_by_org_at": "2026-11-06T09:00:00Z",
+		"suspended_by_branch_at": null,
+		"resumed_at": null,
+		"changed": true
+	},
+	"suspension": {
+		"hold": "agent_suspended",
+		"suspended_by_org_at": "2026-11-06T09:00:00Z",
+		"suspended_by_branch_at": null,
+		"branch_suspended_at": null,
+		"org_frozen_at": null,
+		"operator_frozen": false,
+		"queue_depth": 3,
+		"oldest_queued_at": "2026-11-06T09:00:00Z",
+		"webhook_jobs_held": 0,
+		"rotated_since_suspension": false,
+		"poll_token_set": true,
+		"webhooks": 1
+	},
+	"branch_hold": {
+		"name": "partner-a",
+		"suspended_at": "2026-11-06T09:00:00Z",
+		"resumed_at": null,
+		"changed": true
+	},
+	"org_freeze": {
+		"org_frozen_at": "2026-11-06T09:00:00Z",
+		"operator_frozen": false,
+		"unfrozen_at": null,
+		"changed": true
+	},
+	"policy": {
+		"version": 4,
+		"updated_at": "2026-11-06T09:00:00Z",
+		"rules": {
+			"new_agents": {
+				"mode": "enforce"
+			},
+			"external_outbound": {
+				"mode": "enforce",
+				"default": "deny"
+			},
+			"external_inbound": {
+				"mode": "off",
+				"default": "deny"
+			},
+			"directory_listing": {
+				"mode": "off",
+				"max": {
+					"directory": false,
+					"card": true,
+					"a2a": false,
+					"did": true
+				}
+			},
+			"webhook_hosts": {
+				"mode": "off",
+				"allow": []
+			},
+			"funnel": {
+				"mode": "off"
+			},
+			"acting_as": {
+				"mode": "off",
+				"agents": []
+			}
+		},
+		"groups_covered": false,
+		"existing": {
+			"agents_above_ceiling": 0,
+			"webhooks_outside": 0,
+			"funnel_hooks": 0
+		}
+	},
+	"delegate": {
+		"id": "33333333-3333-4333-8333-333333333333",
+		"name": "ops",
+		"scopes": [
+			"suspend"
+		],
+		"signing_public_key": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+		"key_id": "kid",
+		"created_at": "2026-11-06T09:00:00Z",
+		"revoked_at": null
+	},
+	"delegate_list": {
+		"delegates": [
+			{
+				"id": "33333333-3333-4333-8333-333333333333",
+				"name": "ops",
+				"scopes": [
+					"suspend"
+				],
+				"signing_public_key": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+				"key_id": "kid",
+				"created_at": "2026-11-06T09:00:00Z",
+				"revoked_at": null
+			}
+		]
+	},
+	"agent_states": [
+		{
+			"id": "11111111-1111-4111-8111-111111111111",
+			"handle": "alpha@acme.rine.network",
+			"branch": "main",
+			"hold": null
+		},
+		{
+			"id": "33333333-3333-4333-8333-333333333333",
+			"handle": null,
+			"branch": null,
+			"hold": "org_frozen"
+		}
+	],
+	"events_page": {
+		"events": [
+			{
+				"seq": 1,
+				"hash": "h",
+				"prev_hash": "p"
+			}
+		],
+		"next_after_seq": 1,
+		"chain_epoch": 1
+	}
+}

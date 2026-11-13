@@ -103,3 +103,31 @@ export function isOrgMismatchError(err: unknown): boolean {
 export function isAgentIdMismatchError(err: unknown): boolean {
 	return hasCode(err, AGENT_ID_MISMATCH_CODE);
 }
+
+/** The stable code of {@link SenderKeyUndeliveredError}; the Python twin's `SENDER_KEY_UNDELIVERED_CODE`. */
+export const SENDER_KEY_UNDELIVERED_CODE = "sender_key_undelivered";
+
+/**
+ * The refusal text of {@link SenderKeyUndeliveredError}: a fixed sentence with no
+ * slot, because it carries no caller value. The Python twin
+ * (`rine.sender_key_words.SENDER_KEY_UNDELIVERED_REFUSAL`) is pinned to it byte for
+ * byte by `test/fixtures/refusal-vectors.json`.
+ */
+export const SENDER_KEY_UNDELIVERED_REFUSAL =
+	"Nothing was sent. None of the other members of this group could be given the key to read it, so no one could have opened the post. Try again shortly; if this keeps happening, those members may have no published encryption key.";
+
+/**
+ * A group post refused because none of the other members could be given the
+ * sender key, so the sealed message would have been unreadable to all of them.
+ *
+ * Raised before any state is saved or the chain ratchets, so a retry after the
+ * members recover seals under the same key position. Retryable.
+ */
+export class SenderKeyUndeliveredError extends Error {
+	readonly code = SENDER_KEY_UNDELIVERED_CODE;
+
+	constructor(readonly groupId: string) {
+		super(SENDER_KEY_UNDELIVERED_REFUSAL);
+		this.name = "SenderKeyUndeliveredError";
+	}
+}

@@ -15,6 +15,7 @@
  * attempt can succeed, so it is refused whatever the code says.
  */
 import { PrincipalRevokedError, type RineApiError, RevokedCode } from "./errors.js";
+import { isRefusalStatus, isUnavailableStatus } from "./retry.js";
 
 /** The `error` code of the 409 for a slot the uploader already filled with other bytes. */
 const ESCROW_SLOT_TAKEN_CODE = "escrow_slot_taken";
@@ -49,16 +50,6 @@ export const EscrowAnswer = {
 } as const;
 export type EscrowAnswer = (typeof EscrowAnswer)[keyof typeof EscrowAnswer];
 
-/** A status that says the server, not the file, is the problem. */
-function isUnavailable(status: number): boolean {
-	return status === 429 || status >= 500;
-}
-
-/** A status the server pairs with a refusal of one request: a 4xx other than a throttle. */
-function isRefusalStatus(status: number): boolean {
-	return status >= 400 && status < 500 && status !== 429;
-}
-
 /** Sort a refusal: the slot is already filled, never going to be, may yet be, or the server needs a pause. */
 export function classifyRefusal(err: RineApiError): EscrowAnswer {
 	// A revoked principal is refused whatever the code says: the 401 carries no
@@ -68,5 +59,7 @@ export function classifyRefusal(err: RineApiError): EscrowAnswer {
 		if (err.code === ESCROW_SLOT_TAKEN_CODE) return EscrowAnswer.Stored;
 		if (TERMINAL_CODES.includes(err.code)) return EscrowAnswer.Refused;
 	}
-	return isUnavailable(err.status) ? EscrowAnswer.Backoff : EscrowAnswer.Retry;
+	return isUnavailableStatus(err.status)
+		? EscrowAnswer.Backoff
+		: EscrowAnswer.Retry;
 }

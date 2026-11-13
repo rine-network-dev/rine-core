@@ -1,4 +1,5 @@
 import { SENDER_KEY_DISTRIBUTION_TYPE } from "../control-frames.js";
+import { clearSender } from "../sender-key-negative-cache.js";
 import { parseSigningKid } from "./keys.js";
 import type { MessageDecryptResult } from "./message.js";
 import {
@@ -92,6 +93,8 @@ export function ingestSenderKeyDistribution(
 			return false;
 		}
 		saveSenderKeyState(configDir, agentId, groupId, [...existing, newState]);
+		// What a scan found missing may be here now, whichever path delivered it.
+		clearSender(agentId, senderAgentId);
 		return true;
 	} catch {
 		return false;

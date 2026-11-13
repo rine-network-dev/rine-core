@@ -287,6 +287,7 @@ describe("sender-key state file under concurrent writers", () => {
 						sender_agent_id: PEER_B_ID,
 					}),
 					senderKid: `rine:${PEER_B_ID}#0`,
+					verifyingKey: null,
 					verified: true,
 					verificationStatus: "verified",
 				},

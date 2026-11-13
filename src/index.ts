@@ -16,6 +16,9 @@ export {
 	OrgMismatchError,
 	PrincipalRevokedError,
 	RevokedScope,
+	SENDER_KEY_UNDELIVERED_CODE,
+	SENDER_KEY_UNDELIVERED_REFUSAL,
+	SenderKeyUndeliveredError,
 	RineApiError,
 	formatError,
 	isAgentIdMismatchError,
@@ -28,6 +31,7 @@ export {
 	scopeOfRevokedCode,
 } from "./errors.js";
 export type { RejectedAgent, RineErrorBody } from "./errors.js";
+export { GovernanceRefusal, HoldCode, holdOf } from "./errors-suspended.js";
 export type {
 	ApiError,
 	CachedToken,
@@ -67,7 +71,7 @@ export {
 	saveTokenCache,
 	writeAtomic,
 } from "./config.js";
-export { jitteredRefreshMargin, retryAfterMsFromError } from "./retry.js";
+export { isRefusalStatus, isUnavailableStatus, jitteredRefreshMargin, retryAfterMsFromError } from "./retry.js";
 export {
 	HttpClient,
 	fetchOAuthToken,
@@ -175,11 +179,10 @@ export type {
 	GroupAdmissionReport,
 	GroupAdmissionSkipReason,
 } from "./group-admission.js";
-export {
-	VOTING_ENROLLMENT_POLICIES,
-	inviteNominates,
-} from "./group-enrollment.js";
+export { VOTING_ENROLLMENT_POLICIES, inviteNominates } from "./group-enrollment.js";
 export { encryptionLine, groupEncryption } from "./group-format.js";
+export { GroupPostingRefusedError, PostingRefusal, assertGroupPostable, isGroupPostingRefusedError, postingLine, unreadableByOrgsSentence } from "./group-postable.js";
+export { isCached } from "./sender-key-negative-cache.js";
 export type { GroupEncryption, RenderableGroup } from "./group-format.js";
 export {
 	MLS_FOUNDING_FAILED_MODE,
@@ -192,10 +195,37 @@ export type {
 } from "./group-create-format.js";
 export {
 	GROUP_INVITE_TYPE,
+	HIDDEN_CONTROL_FRAME_READ,
+	OPERATOR_CONTENT_NOTICE,
+	OPERATOR_HISTORY_NOTICE,
 	SENDER_KEY_DISTRIBUTION_TYPE,
+	UNTRUSTED_CONTENT_NOTICE,
 	controlFrameReplyRefusal,
+	groupInviteNotice,
 	isControlFrameType,
+	isGroupInvite,
+	isHiddenFromModel,
+	withoutHiddenFrames,
 } from "./control-frames.js";
+export {
+	OPERATOR_COMMAND_PURPOSE, OPERATOR_FUTURE_SKEW_MS, OPERATOR_STATEMENT_KEY, OPERATOR_WINDOW_MS,
+	parseOperatorStatement, stripOperatorStatement, type OperatorStatement,
+} from "./operator-statement.js";
+export {
+	cleanHandle, looksLikeSeat, pinMatchesKey, pinMatchesSender, type OperatorPin,
+} from "./operator-pin.js";
+export { updateLedger, type LedgerEntry, type LedgerLoc } from "./operator-ledger.js";
+export {
+	UNOPENED_VERDICT, classifyOperatorRow, type ClassReason, type OperatorContext,
+	type OperatorRowInput, type OperatorVerdict, type SenderClass,
+} from "./operator-classify.js";
+export { classifyShown, frameRow, noticeForClass, type FramedRow } from "./operator-frame.js";
+export {
+	NEUTRALISED_NOTICE,
+	neutraliseNotices,
+	randomDelimiter,
+	wrapThirdPartyText,
+} from "./operator-quote.js";
 export {
 	listMyInvites,
 	sendGroupInviteNotification,
@@ -289,11 +319,14 @@ export type { AckDecision, AckRow } from "./read-ack.js";
 export {
 	groupAuthenticityStatus,
 	isPermanent,
+	openInbound,
 	probeReadability,
 } from "./inbound-readability.js";
 export type {
 	OpenInboundArgs,
+	Opened,
 	Probe,
+	Readability,
 	Unreadable,
 } from "./inbound-readability.js";
 export {
@@ -553,7 +586,7 @@ export { nextReconnectBackoffSeconds } from "./funnel/mux-client.js";
 export { FrameType } from "./funnel/mux-codec.js";
 export { handleWebhookRequest } from "./funnel/relay-adapter.js";
 export { startTlsListener } from "./funnel/tls-listener.js";
-export { connectTunnel } from "./funnel/tunnel.js";
+export { BindNakReason, CLOSE_SUSPENDED, TunnelBindError, connectTunnel } from "./funnel/tunnel.js";
 export type { AcmeOptions, CertMeta } from "./funnel/cert-cache.js";
 export type { EnsureCertResult } from "./funnel/cert.js";
 export type { EdgePipeArgs } from "./funnel/edge-pipe.js";
@@ -684,10 +717,12 @@ export {
 	buildAssertion,
 	orgReaderSigner,
 	orgSigner,
+	delegateSigner,
 } from "./assertion.js";
 export type { AssertionSigner } from "./assertion.js";
 export {
 	CorruptProfilesError,
+	addProfileIfAbsent,
 	DEFAULT_PROFILE,
 	getProfile,
 	loadProfiles,
@@ -720,6 +755,58 @@ export type { ApiGetPoster } from "./agent-rotate.js";
 export { performRegistration, validateSlug } from "./onboard.js";
 export type { RegistrationResult } from "./onboard.js";
 export { createBranch, revokeBranch } from "./org-branch.js";
+export { loadDelegateSeed, saveDelegateSeed } from "./delegate-files.js";
+export { JcsError, canonicalize as jcsCanonicalize } from "./crypto/jcs.js";
+export type { JcsJson } from "./crypto/jcs.js";
+export {
+	createDelegate,
+	fetchOrgEvents,
+	freezeOrg,
+	getSuspension,
+	listAgentStates,
+	listDelegates,
+	newDelegateKey,
+	pickAgent,
+	resumeAgent,
+	resumeBranch,
+	revokeDelegate,
+	suspendAgent,
+	suspendBranch,
+	unfreezeOrg,
+} from "./org-governance.js";
+export {
+	DelegateScope, type AgentHold, type AgentHoldView, type AgentStateView,
+	type BranchHoldView, type CounterpartiesPage, type CounterpartyView, type CrossOrgGroup,
+	type DelegateView, type EventHead, type HeadKey, type HeadKeyList, type LogSettings,
+	type MessageMetadata, type MetadataPage, type OrgEvent, type OrgEventsPage,
+	type OrgFreezeView, type RetentionFloor, type SuspensionView,
+} from "./org-governance-types.js";
+export {
+	HEAD_DOMAIN, HeadFault, headMessage, verifyHead, type HeadVerdict,
+} from "./org-event-head.js";
+export { SignalClass, signalClass } from "./org-event-signals.js";
+export {
+	RecordRefusal, fetchCounterparties, fetchCounterpartyGroups, fetchHeadKeys, fetchLogSettings,
+	fetchOrgEventHead, fetchOrgMetadata, forkPointOf, putLogSettings, type ForkPoint,
+} from "./org-governance-record.js";
+export { orgWords } from "./crypto/org-words.js";
+export { PRESETS, Preset, Surface, aboveCeiling, capTo, exposureDiff, hidesDid, invalidSurfaces, isNamedPreset, presetOf } from "./agent-exposure.js";
+export type { ExposureInput, ExposurePlanView, ExposureSet, ExposureView, NamedPreset, OrgExposureView } from "./agent-exposure.js";
+export { getExposure, getOrgExposure, previewExposure, putExposure } from "./agent-exposure-api.js";
+export { EXPOSURE_COPY, aboveCeilingLine, cappedLine, ceilingLine, createdPrivateLine, orgSummaryLine, presetLine, previewLines, refusedLine, summaryLine, switchLines } from "./agent-exposure-words.js";
+export {
+	Decision, MessageDefault, PolicyRule, RULE_MODES,
+	RuleDirection, RuleMode, RuleRefusal, ScopeKind, TypeClass,
+	type ActingAsRule, type ExistingCounts, type ExistingPreview, type GroupsPreview, type ListingRule, type MessagePreview,
+	type MessageRule, type ModeRule, type PolicyPreview, type PolicyView, type PreviewCounterparty,
+	type RuleSet, type RulesPatch, type StopExistingResult, type WebhookHostsRule,
+} from "./org-rules-types.js";
+export { getPolicy, patchRules, previewRule, stopExisting } from "./org-rules.js";
+export {
+	DomainStatus, addDomain, deleteAllow, fetchAllAllow, fetchAllowPage, listDomains,
+	lookupCounterparty, putAllow, removeDomain, verifyDomain,
+	type AllowEntry, type AllowPage, type AllowWrite, type CounterpartyLookup, type DomainView,
+} from "./org-allow.js";
 export { AgentRecoveryStatus, performRecovery } from "./recover.js";
 export type { AgentRecovery, RecoveryReport } from "./recover.js";
 export { restoreOwnerFromPhrase } from "./recover-owner.js";

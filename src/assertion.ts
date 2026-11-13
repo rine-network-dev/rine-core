@@ -57,6 +57,16 @@ export function agentSigner(
 	};
 }
 
+export function delegateSigner(
+	delegateId: string,
+	seed: Uint8Array,
+): AssertionSigner {
+	return {
+		principal: { kind: PrincipalKind.Delegate, delegateId },
+		seed,
+	};
+}
+
 /**
  * A fresh compact assertion: a new 128-bit `jti` and `iat` on every call, because
  * the server accepts each `jti` once, so a retry must never reuse one.

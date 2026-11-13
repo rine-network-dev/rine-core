@@ -234,7 +234,11 @@ describe.each(CONSUMERS)("%s refuses a broken chain", (consumer) => {
 				ctx.agent.id,
 				sigCtx,
 			);
-			expect(result).toEqual({ verified: false, verificationStatus: "invalid" });
+			expect(result).toEqual({
+			verified: false,
+			verificationStatus: "invalid",
+			verifyingKey: null,
+		});
 		}
 	});
 });
@@ -403,7 +407,11 @@ describe("verifyEnvelopeSender", () => {
 			ctx,
 		);
 
-		expect(result).toEqual({ verified: true, verificationStatus: "verified" });
+		expect(result).toEqual({
+			verified: true,
+			verificationStatus: "verified",
+			verifyingKey: agent.derived.ed25519.publicKey,
+		});
 	});
 
 	it("reports invalid when the signature is bound to another recipient", async () => {
@@ -420,6 +428,7 @@ describe("verifyEnvelopeSender", () => {
 
 		expect(result.verified).toBe(false);
 		expect(result.verificationStatus).toBe("invalid");
+		expect(result.verifyingKey).toBeNull();
 	});
 
 	it("reports sender-mismatch without any fetch", async () => {
@@ -438,6 +447,7 @@ describe("verifyEnvelopeSender", () => {
 		expect(result).toEqual({
 			verified: false,
 			verificationStatus: "sender-mismatch",
+			verifyingKey: null,
 		});
 		expect(client.served.length).toBe(0);
 	});
@@ -463,6 +473,7 @@ describe("verifyEnvelopeSender", () => {
 		expect(result).toEqual({
 			verified: false,
 			verificationStatus: "sender-mismatch",
+			verifyingKey: null,
 		});
 		expect(client.served.length).toBe(0);
 	});
@@ -525,7 +536,11 @@ describe("verifyEnvelopeSender", () => {
 			createdAt,
 		);
 
-		expect(result).toEqual({ verified: false, verificationStatus: "invalid" });
+		expect(result).toEqual({
+			verified: false,
+			verificationStatus: "invalid",
+			verifyingKey: null,
+		});
 	});
 
 	it("refuses a history read that carries no superseded_at", async () => {
@@ -624,6 +639,7 @@ describe("verifyEnvelopeSender", () => {
 
 		expect(result.verified).toBe(false);
 		expect(result.verificationStatus).toBe("invalid");
+		expect(result.verifyingKey).toBeNull();
 		expect(result.keyChanged).toEqual({
 			agentId: id,
 			previousFingerprint: fingerprint(gen0.derived.ed25519.publicKey),
@@ -680,6 +696,7 @@ describe("verifyEnvelopeSender", () => {
 
 		expect(result.verified).toBe(true);
 		expect(result.verificationStatus).toBe("verified");
+		expect(result.verifyingKey).toEqual(gen1.derived.ed25519.publicKey);
 		expect(result.keyChanged).toEqual({
 			agentId: id,
 			previousFingerprint: fingerprint(gen0.derived.ed25519.publicKey),

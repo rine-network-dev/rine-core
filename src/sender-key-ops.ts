@@ -22,6 +22,7 @@ import {
 	withSenderKeyStates,
 } from "./crypto/sender-keys-store.js";
 import { fetchGroupMembers } from "./group-members.js";
+import { SenderKeyUndeliveredError } from "./errors-refusals.js";
 import { unseatedGroupSendRefusal } from "./group-words.js";
 import type { HttpClient } from "./http.js";
 import { fetchAgents } from "./resolve-agent.js";
@@ -339,6 +340,14 @@ export async function getOrCreateSenderKey(
 					succeeded,
 				);
 			}
+			// Refused only when NO current recipient holds the key: one holder is
+			// enough for the post to open somewhere, none makes it unreadable to all.
+			const holders = new Set(
+				[...alreadyDistributed, ...succeeded].map((id) => id.toLowerCase()),
+			);
+			if (!recipientIds.some((id) => holders.has(id.toLowerCase()))) {
+				throw new SenderKeyUndeliveredError(groupId);
+			}
 		}
 
 		return { state: own, groupId };
@@ -355,6 +364,11 @@ export async function getOrCreateSenderKey(
 		recipientIds,
 		extraHeaders,
 	);
+	// Before any state is saved: the key was reached by nobody, so a post sealed
+	// under it would ratchet the chain away and open for no one.
+	if (recipientIds.length > 0 && succeeded.length === 0) {
+		throw new SenderKeyUndeliveredError(groupId);
+	}
 	newState.distributedTo = succeeded;
 	// Retain the peers' keys — they open traffic those peers already sent — and
 	// exactly ONE of this agent's own superseded states, the key it was sending

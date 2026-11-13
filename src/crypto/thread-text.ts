@@ -1,3 +1,5 @@
+import { stripOperatorStatement } from "../operator-statement.js";
+
 /**
  * Decrypted plaintext → the body a transcript shows. Split out of `thread.ts`
  * for that module's file-size budget; it is the one piece of the thread render
@@ -14,7 +16,8 @@
  * `JSON.parse`d; any other content type (e.g. `text/plain`) is surfaced verbatim,
  * even if it happens to look like JSON. Connectors wrap the body as
  * `{ "text": "…" }`; that string is surfaced directly. Any other JSON shape is
- * re-`JSON.stringify`d (normalizing whitespace) to match the SDK's `renderText`.
+ * re-`JSON.stringify`d (normalizing whitespace) to match the SDK's `renderText`,
+ * without a sender's own `rine.operator` field: no turn shows a statement.
  */
 export function renderThreadText(
 	plaintext: string,
@@ -37,5 +40,5 @@ export function renderThreadText(
 	) {
 		return (parsed as { text: string }).text;
 	}
-	return JSON.stringify(parsed);
+	return JSON.stringify(stripOperatorStatement(parsed));
 }
