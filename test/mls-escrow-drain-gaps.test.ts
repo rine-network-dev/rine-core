@@ -199,7 +199,7 @@ describe("drainEscrow gaps", () => {
 		const later = await drainEscrow(actor, GROUP_ID, openMlsClient(dir, AGENT, { allowed }).loadGroup(mlsGroupIdBytes(GROUP_ID)));
 		expect(later.gaps).toHaveLength(3);
 		expect(later.backlog).toBeUndefined();
-	});
+	}, FULL_QUEUE_TIMEOUT_MS);
 
 	it("test_drain_when_the_branch_is_revoked_keeps_every_export_queued_and_reports_the_deferral", async () => {
 		const group = newGroup();

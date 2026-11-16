@@ -4,6 +4,17 @@ All notable changes to `@rine-network/core` are documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.1] - 2026-11-15
+
+A client can seat an agent from a branch-only home.
+
+**What you will see differently:**
+
+- `saveBranchSecrets` is exported: it writes a branch's read and signing keys into a config directory,
+  and `loadCustody` reads them back when no owner directory exists.
+- `performAgentCreation` takes `into`, a config directory that receives the new agent's keys,
+  KeyPackages and profile while the custody still comes from `dirs`. Without it, nothing changes.
+
 ## [0.19.0] - 2026-11-13
 
 Organisation governance: a client can hold agents and read why.

@@ -922,4 +922,4 @@ export { displayHandle, identityHandle } from "./display-handle.js";
 export { humanTime } from "./human-time.js";
 export { fitFromTo, fitGroupSender, fitHandle } from "./fit-party.js";
 export type { Block, Scrubbed } from "./terminal-text.js";
-export { holdsBranchKeys } from "./branch-files.js";
+export { holdsBranchKeys, saveBranchSecrets } from "./branch-files.js";

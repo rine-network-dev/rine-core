@@ -18,7 +18,9 @@ vi.mock("../src/mls-ops.js", () => ({
 // ---------------------------------------------------------------------------
 import { publishMlsKeyPackages } from "../src/mls-ops.js";
 import { saveRoot } from "../src/owner.js";
-import { loadProfiles } from "../src/profiles.js";
+import { addProfileIfAbsent, loadProfiles } from "../src/profiles.js";
+import { saveBranchSecrets } from "../src/branch-files.js";
+import { deriveBranch, deriveOrg } from "../src/crypto/derive.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PROFILE = "default";
@@ -353,5 +355,51 @@ describe("performAgentCreation", () => {
 		expect(result.id).toMatch(UUID_RE);
 		expect(result.identity).toBeUndefined();
 		expect(result.identityError).toContain("422");
+	});
+});
+
+describe("performAgentCreation into", () => {
+	const ORG_ID = "00000000-0000-0000-0000-0000000000aa";
+
+	/** A branch-only home: branch keys and a profile naming the org, no owner dir. */
+	function branchHome(): string {
+		const home = join(tmp, "branch-home");
+		mkdirSync(home, { recursive: true });
+		saveBranchSecrets(home, deriveBranch(deriveOrg(new Uint8Array(32).fill(3)), "main"));
+		addProfileIfAbsent(home, "branch", { org_id: ORG_ID, principal: `org:${ORG_ID}`, branch: "main" });
+		return home;
+	}
+
+	it("test_create_when_into_is_given_then_the_pane_dir_holds_the_agent_and_the_branch_home_none", async () => {
+		const home = branchHome();
+		const paneDir = join(tmp, "pane");
+		const client = makeClient();
+		await performAgentCreation(client, { configDir: home, ownerDir: join(tmp, "none") }, PROFILE, {
+			name: "Test Agent",
+			into: paneDir,
+		});
+
+		const id = postBody(client).id as string;
+		expect(existsSync(join(paneDir, "keys", id, "signing.key"))).toBe(true);
+		expect(existsSync(join(home, "keys", id))).toBe(false);
+		const entry = loadProfiles(paneDir)[PROFILE];
+		expect(entry).toMatchObject({ principal: `agent:${id}`, branch: "main", agent_id: id, org_id: ORG_ID });
+	});
+
+	it("test_create_when_into_is_given_then_the_post_body_equals_the_default_path", async () => {
+		const minted = "00000000-0000-4000-8000-000000000042";
+		const bodies: Record<string, unknown>[] = [];
+		for (const into of [undefined, join(tmp, "pane")]) {
+			// The cert's iat comes from the clock: pin it so both mints share one second.
+			vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-01-01T00:00:00Z") });
+			vi.spyOn(crypto, "randomUUID").mockReturnValue(minted);
+			const client = makeClient();
+			const target = into === undefined ? dirs() : { configDir: branchHome(), ownerDir };
+			await performAgentCreation(client, target, PROFILE, { name: "Test Agent", into });
+			bodies.push(postBody(client));
+			vi.restoreAllMocks();
+			vi.useRealTimers();
+		}
+		expect(JSON.stringify(bodies[1])).toBe(JSON.stringify(bodies[0]));
 	});
 });

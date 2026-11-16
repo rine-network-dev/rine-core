@@ -62,6 +62,9 @@ const EXPECTED_PACKAGES = [
 	"rine-cli",
 	"rine-core",
 	"rine-eve",
+	// Depends on `@rine-network/core`, so `openMlsClient` is in reach; its
+	// `src/` is scanned like every other package's.
+	"rine-herdr",
 	"rine-mastra",
 	"rine-mcp",
 	"rine-openclaw",

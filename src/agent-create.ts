@@ -81,6 +81,11 @@ export async function performAgentCreation(
 		verifyIdentity?: boolean;
 		/** Caller-supplied JWT-SVID for the verification step (see verifyIdentitySpiffe). */
 		svid?: string;
+		/**
+		 * Config directory that receives the agent's keys, KeyPackages and profile.
+		 * Defaults to `dirs.configDir`, which then only supplies the custody.
+		 */
+		into?: string;
 		log?: (message: string) => void;
 	},
 ): Promise<CreatedAgent> {
@@ -88,6 +93,14 @@ export async function performAgentCreation(
 	const mintedId = crypto.randomUUID();
 	const { body, keys } = agentCreateRequest(custody, mintedId, params);
 	const agent = (await client.post("/agents", body)) as CreatedAgent;
-	await persistCreatedAgent(client, dirs, profile, custody, agent, mintedId, keys);
+	await persistCreatedAgent(
+		client,
+		{ ...dirs, configDir: params.into ?? dirs.configDir },
+		profile,
+		custody,
+		agent,
+		mintedId,
+		keys,
+	);
 	return { ...agent, ...(await verifyNewAgent(client, agent.id, params)) };
 }
